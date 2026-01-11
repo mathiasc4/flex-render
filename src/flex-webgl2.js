@@ -535,7 +535,7 @@ in vec4 v_vecColor;
 uniform sampler2D u_textures[${this._maxTextures}];
 
 layout(location=0) out vec4 outputColor;
-layout(location=1) out vec4 outputStencil;
+layout(location=1) out float outputStencil;
 
 void main() {
     if (u_renderClippingParams.x < 0.5) {
@@ -550,14 +550,15 @@ void main() {
                  break;
             }
         }
-        outputStencil = vec4(1.0);
+
+        outputStencil = 1.0;
     } else if (u_renderClippingParams.y > 0.5) {
         // Vector geometry draw path (per-vertex color)
         outputColor = v_vecColor;
-        outputStencil = vec4(1.0);
+        outputStencil = 1.0;
     } else {
         // Pure clipping path: write only to stencil (color target value is undefined)
-        outputColor = vec4(0.0);
+        outputStencil = 0.0;
     }
 }
 `;
@@ -931,8 +932,9 @@ void main() {
     }
 
     _createOffscreenTexture(name, width, height, layerCount, filter) {
-        layerCount = Math.max(layerCount, 1);
         const gl = this.gl;
+
+            layerCount = Math.max(layerCount, 1);
 
         let texRef = this[name];
         if (texRef) {
