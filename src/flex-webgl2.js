@@ -560,7 +560,7 @@ void main() {
         // Vector geometry draw path (per-vertex color)
         outputColor = v_vecColor;
         outputStencil = vec4(1.0);
-        gl_FragDepth = v_vecDepth / 4294967295.0;
+        gl_FragDepth = v_vecDepth / 1048575.0; // 2 ^ 20 - 1
     } else {
         // Pure clipping path: write only to stencil (color target value is undefined)
         outputStencil = vec4(0.0);

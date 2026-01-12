@@ -10,7 +10,7 @@ self.onmessage = async (e) => {
         if (msg.type === 'tile') {
             const {key, url, z, x, y} = msg;
 
-            let depth = z << (32 - 5);
+            let level_depth = z << 15;
 
             // lazy-load libs
             if (!self.Pbf || !self.vectorTile || !self.earcut) {
@@ -26,12 +26,13 @@ self.onmessage = async (e) => {
             for (const lname in vt.layers) {
                 const lyr = vt.layers[lname];
                 const lstyle = STYLE.layers[lname] || STYLE.fallback;
+
+                layer_depth = level_depth + lstyle.order + 1;
+
                 for (let f = 0; f < lyr.length; f++) {
                     const feat = lyr.feature(f);
                     const geom = feat.loadGeometry();
                     const fstyle = lstyle; // TODO: evaluate by properties/zoom if needed
-
-                    depth += 1;
 
                     if (feat.type === 3 && fstyle.type === 'fill') {
                         // Polygon with holes; MVT ring rule: outer CW, holes CCW (y down)
@@ -51,7 +52,7 @@ self.onmessage = async (e) => {
                                 for (let v = 0; v < vert_count; v += 1) {
                                     verts[3 * v + 0] = flat[2 * v + 0] / lyr.extent;
                                     verts[3 * v + 1] = flat[2 * v + 1] / lyr.extent;
-                                    verts[3 * v + 2] = depth;
+                                    verts[3 * v + 2] = layer_depth;
                                 }
                                 fills.push({ vertices: verts.buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
                             }
@@ -71,7 +72,7 @@ self.onmessage = async (e) => {
                                 for (let v = 0; v < vert_count; v += 1) {
                                     verts[3 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
                                     verts[3 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
-                                    verts[3 * v + 2] = depth;
+                                    verts[3 * v + 2] = layer_depth;
                                 }
                                 lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
                             }
@@ -86,10 +87,10 @@ self.onmessage = async (e) => {
                             const pts = geom[p];
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
-                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, depth);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, depth);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, depth);
-                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, depth);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, layer_depth);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, layer_depth);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, layer_depth);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, layer_depth);
                             }
                         }
                         points.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color })

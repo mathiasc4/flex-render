@@ -168,21 +168,21 @@ function defaultStyle() {
     // layerName => {type:'fill'|'line', color:[r,g,b,a], widthPx?:number, join?:'miter'|'bevel'|'round', cap?:'butt'|'square'|'round'}
     return {
         layers: {
-            water:          { type: 'fill', color: [0.10, 0.80, 0.80, 0.80] },
-            waterway:       { type: 'line', color: [0.10, 0.10, 0.80, 1.00], widthPx: 1.2, join: 'round', cap: 'round' },
-            landcover:      { type: 'fill', color: [0.10, 0.80, 0.10, 0.80] },
-            landuse:        { type: 'fill', color: [0.80, 0.80, 0.10, 0.80] },
-            park:           { type: 'fill', color: [0.10, 0.80, 0.10, 0.80] },
-            boundary:       { type: 'line', color: [0.60, 0.20, 0.60, 1.00], widthPx: 2.0, join: 'round', cap: 'round' },
-            aeroway:        { type: 'fill', color: [0.10, 0.80, 0.60, 0.80] },
-            transportation: { type: 'line', color: [0.80, 0.60, 0.10, 1.00], widthPx: 1.6, join: 'round', cap: 'round' },
-            building:       { type: 'fill', color: [0.10, 0.10, 0.10, 0.80] },
-            road:           { type: 'line', color: [0.60, 0.60, 0.60, 1.00], widthPx: 1.6, join: 'round', cap: 'round' },
-            poi:            { type: 'point', color: [0.00, 0.00, 0.00, 1.00], size: 10.0 },
-            housenumber:    { type: 'point', color: [0.50, 0.00, 0.50, 1.00], size: 8.0 },
+            water:          { type: 'fill', order: 1, color: [0.10, 0.80, 0.80, 0.80] },
+            landcover:      { type: 'fill', order: 2, color: [0.10, 0.80, 0.10, 0.80] },
+            landuse:        { type: 'fill', order: 3, color: [0.80, 0.80, 0.10, 0.80] },
+            park:           { type: 'fill', order: 4, color: [0.10, 0.80, 0.10, 0.80] },
+            boundary:       { type: 'line', order: 5, color: [0.60, 0.20, 0.60, 1.00], widthPx: 2.0, join: 'round', cap: 'round' },
+            waterway:       { type: 'line', order: 6, color: [0.10, 0.10, 0.80, 1.00], widthPx: 1.2, join: 'round', cap: 'round' },
+            transportation: { type: 'line', order: 7, color: [0.80, 0.60, 0.10, 1.00], widthPx: 1.6, join: 'round', cap: 'round' },
+            road:           { type: 'line', order: 8, color: [0.60, 0.60, 0.60, 1.00], widthPx: 1.6, join: 'round', cap: 'round' },
+            building:       { type: 'fill', order: 9, color: [0.10, 0.10, 0.10, 0.80] },
+            aeroway:        { type: 'fill', order: 10, color: [0.10, 0.80, 0.60, 0.80] },
+            poi:            { type: 'point', order: 11, color: [0.00, 0.00, 0.00, 1.00], size: 10.0 },
+            housenumber:    { type: 'point', order: 12, color: [0.50, 0.00, 0.50, 1.00], size: 8.0 },
         },
         // Default if layer not listed
-        fallback: { type: 'line', color: [0.50, 0.50, 0.50, 1.00], widthPx: 0.8, join: 'bevel', cap: 'butt' }
+        fallback: { type: 'line', order: 0, color: [0.50, 0.50, 0.50, 1.00], widthPx: 0.8, join: 'bevel', cap: 'butt' }
     };
 }
 
