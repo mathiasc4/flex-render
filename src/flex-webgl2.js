@@ -495,6 +495,7 @@ uniform mat3 u_geomMatrix;
 
 out vec2 v_texture_coords;
 flat out int instance_id;
+out float v_vecDepth;
 out vec4 v_vecColor;
 
 const vec3 viewport[4] = vec3[4] (
@@ -516,6 +517,7 @@ void main() {
         matrix * vec3(a_payload0.xy, 1.0) :
         matrix * viewport[gl_VertexID];
 
+    v_vecDepth = a_payload0.z;
     v_vecColor = a_payload1;
 
     gl_Position = vec4(space_2d.xy, 1.0, space_2d.z);
@@ -531,6 +533,7 @@ uniform vec2 u_renderClippingParams;
 
 flat in int instance_id;
 in vec2 v_texture_coords;
+in float v_vecDepth;
 in vec4 v_vecColor;
 uniform sampler2D u_textures[${this._maxTextures}];
 
@@ -552,13 +555,16 @@ void main() {
         }
 
         outputStencil = vec4(1.0);
+        gl_FragDepth = gl_FragCoord.z;
     } else if (u_renderClippingParams.y > 0.5) {
         // Vector geometry draw path (per-vertex color)
         outputColor = v_vecColor;
         outputStencil = vec4(1.0);
+        gl_FragDepth = v_vecDepth / 4294967295.0;
     } else {
         // Pure clipping path: write only to stencil (color target value is undefined)
         outputStencil = vec4(0.0);
+        gl_FragDepth = 0.0;
     }
 }
 `;
@@ -680,8 +686,6 @@ void main() {
     load() {
         this.gl.uniform1iv(this._inputTexturesLoc, this._textureIndexes);
 
-        this.gl.clearColor(0.0, 0.0, 0.0, 0.0);
-
         this.gl.enable(this.gl.BLEND);
         this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
     }
@@ -693,9 +697,15 @@ void main() {
         const gl = this.gl;
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.offScreenBuffer);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.stencilClipBuffer);
+
+        gl.clearColor(0.0, 0.0, 0.0, 0.0);
+
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.GREATER);
+        gl.clearDepth(0.0);
 
         gl.enable(gl.STENCIL_TEST);
-        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.stencilClipBuffer);
 
         // this.fpTexture = this.fpTexture === this.colorTextureA ? this.colorTextureB : this.colorTextureA;
         // this.fpTextureClip = this.fpTextureClip === this.stencilTextureA ? this.stencilTextureB : this.stencilTextureA;
@@ -728,7 +738,8 @@ void main() {
             //}
 
             gl.drawBuffers(attachments);
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
             // First, clip polygons if any required
             if (renderInfo.polygons.length) {
@@ -859,7 +870,9 @@ void main() {
             this._renderOffset++;
         }
 
+        gl.disable(gl.DEPTH_TEST);
         gl.disable(gl.STENCIL_TEST);
+
         gl.bindVertexArray(null);
 
         if (!renderOutput) {
@@ -883,6 +896,7 @@ void main() {
         // this._createOffscreenTexture("stencilTextureB", width, height, dataLayerCount, this.gl.LINEAR);
 
         const gl  = this.gl;
+
         if (this.stencilClipBuffer) {
             gl.deleteRenderbuffer(this.stencilClipBuffer);
         }

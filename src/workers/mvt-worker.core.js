@@ -9,6 +9,9 @@ self.onmessage = async (e) => {
         }
         if (msg.type === 'tile') {
             const {key, url, z, x, y} = msg;
+
+            let depth = z << (32 - 5);
+
             // lazy-load libs
             if (!self.Pbf || !self.vectorTile || !self.earcut) {
                 throw new Error('Missing libs');
@@ -23,10 +26,13 @@ self.onmessage = async (e) => {
             for (const lname in vt.layers) {
                 const lyr = vt.layers[lname];
                 const lstyle = STYLE.layers[lname] || STYLE.fallback;
-                for (let i=0;i<lyr.length;i++) {
-                    const feat = lyr.feature(i);
+                for (let f = 0; f < lyr.length; f++) {
+                    const feat = lyr.feature(f);
                     const geom = feat.loadGeometry();
                     const fstyle = lstyle; // TODO: evaluate by properties/zoom if needed
+
+                    depth += 1;
+
                     if (feat.type === 3 && fstyle.type === 'fill') {
                         // Polygon with holes; MVT ring rule: outer CW, holes CCW (y down)
                         const polys = classifyRings(geom);
@@ -45,12 +51,13 @@ self.onmessage = async (e) => {
                                 for (let v = 0; v < vert_count; v += 1) {
                                     verts[3 * v + 0] = flat[2 * v + 0] / lyr.extent;
                                     verts[3 * v + 1] = flat[2 * v + 1] / lyr.extent;
-                                    verts[3 * v + 2] = z;
+                                    verts[3 * v + 2] = depth;
                                 }
                                 fills.push({ vertices: verts.buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
                             }
                         }
                     }
+
                     if (feat.type === 2 && fstyle.type === 'line') {
                         // Build stroke triangles (bevel joins + requested caps; miter threshold)
                         const widthPx = fstyle.widthPx || 1.0;
@@ -64,12 +71,13 @@ self.onmessage = async (e) => {
                                 for (let v = 0; v < vert_count; v += 1) {
                                     verts[3 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
                                     verts[3 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
-                                    verts[3 * v + 2] = z;
+                                    verts[3 * v + 2] = depth;
                                 }
                                 lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
                             }
                         }
                     }
+
                     if (feat.type === 1 && fstyle.type === 'point') {
                         const size = (fstyle.size || 10.0) / 2.0
                         const verts = [];
@@ -78,10 +86,10 @@ self.onmessage = async (e) => {
                             const pts = geom[p];
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
-                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, z);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, z);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, z);
-                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, z);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, depth);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, depth);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, depth);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, depth);
                             }
                         }
                         points.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color })

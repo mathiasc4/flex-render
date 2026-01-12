@@ -458,23 +458,23 @@
          * @param {OpenSeadragon.Mat3} viewMatrix
          */
         _drawTwoPassFirst(tiledImages, viewport, viewMatrix) {
-            const gl = this._gl;
-
             // FIRST PASS (render things as they are into the corresponding off-screen textures)
             const TI_PAYLOAD = [];
+
             for (let tiledImageIndex = 0; tiledImageIndex < tiledImages.length; tiledImageIndex++) {
                 const tiledImage = tiledImages[tiledImageIndex];
                 const payload = [];
                 const vecPayload = [];
 
                 const tilesToDraw = tiledImage.getTilesToDraw();
+                tilesToDraw.sort((tileA, tileB) => tileB.level - tileA.level);
 
                 let overallMatrix = viewMatrix;
                 let imageRotation = tiledImage.getRotation(true);
                 // if needed, handle the tiledImage being rotated
 
                 // todo consider in-place multiplication, this creates insane amout of arrays
-                if( imageRotation % 360 !== 0) {
+                if (imageRotation % 360 !== 0) {
                     let imageRotationMatrix = $.Mat3.makeRotation(-imageRotation * Math.PI / 180);
                     let imageCenter = tiledImage.getBoundsNoRotate(true).getCenter();
                     let t1 = $.Mat3.makeTranslation(imageCenter.x, imageCenter.y);
@@ -499,7 +499,9 @@
                             //TODO consider drawing some error if the tile is in erroneous state
                             continue;
                         }
+
                         const transformMatrix = this._updateTileMatrix(tileInfo, tile, tiledImage, overallMatrix);
+
                         if (tileInfo.texture) {
                             payload.push({
                                 transformMatrix,
@@ -520,6 +522,7 @@
                             if (tileInfo.vectors.points) {
                                 tileInfo.vectors.points.matrix = transformMatrix;
                             }
+
                             vecPayload.push(tileInfo.vectors);
                         }
                     }
@@ -536,6 +539,7 @@
                 } else {
                     polygons = [];
                 }
+
                 if (tiledImage._clip) {
                     const polygon = [
                         {x: tiledImage._clip.x, y: tiledImage._clip.y},
@@ -560,7 +564,8 @@
 
             // todo flatten render data
 
-            this.renderer.gl.clear(gl.COLOR_BUFFER_BIT); // This ensures that areas that are not drawn into do not show old data
+            this.renderer.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT); // This ensures that areas that are not drawn into do not show old data
 
             this.renderer.firstPassProcessData(TI_PAYLOAD);
             return true;
