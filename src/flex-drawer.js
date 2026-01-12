@@ -790,12 +790,12 @@
                     let vCount = 0,
                         iCount = 0;
                     for (const m of meshes) {
-                        vCount += (m.vertices.length / 2);
+                        vCount += (m.vertices.length / 3);
                         iCount += m.indices.length;
                     }
 
                     // Allocate batched arrays
-                    const positions = new Float32Array(vCount * 2);
+                    const positions = new Float32Array(vCount * 3);
                     const colors    = new Uint8Array(vCount * 4);  // normalized RGBA
                     const indices   = new Uint32Array(iCount);
 
@@ -804,7 +804,7 @@
                         iOfs = 0,
                         baseVertex = 0;
                     for (const m of meshes) {
-                        positions.set(m.vertices, vOfs * 2);
+                        positions.set(m.vertices, vOfs * 3);
 
                         // fill color per-vertex (constant per feature)
                         const rgba = m.color ? m.color : [0, 0, 0, 1];
@@ -812,7 +812,7 @@
                         const g = Math.max(0, Math.min(255, Math.round(rgba[1] * 255)));
                         const b = Math.max(0, Math.min(255, Math.round(rgba[2] * 255)));
                         const a = Math.max(0, Math.min(255, Math.round(rgba[3] * 255)));
-                        for (let k = 0; k < (m.vertices.length / 2); k++) {
+                        for (let k = 0; k < (m.vertices.length / 3); k++) {
                             const cOfs = (vOfs + k) * 4;
                             colors[cOfs + 0] = r;
                             colors[cOfs + 1] = g;
@@ -825,9 +825,9 @@
                             indices[iOfs + k] = baseVertex + m.indices[k];
                         }
 
-                        vOfs += (m.vertices.length / 2);
+                        vOfs += (m.vertices.length / 3);
                         iOfs += m.indices.length;
-                        baseVertex += (m.vertices.length / 2);
+                        baseVertex += (m.vertices.length / 3);
                     }
 
                     // Upload once

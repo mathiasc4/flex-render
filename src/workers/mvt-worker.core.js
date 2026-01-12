@@ -40,8 +40,13 @@ self.onmessage = async (e) => {
                             const idx = self.earcut(flat, holes, 2);
                             if (idx.length) {
                                 // Normalize to 0..1 UV for the renderer
-                                const verts = new Float32Array(flat.length);
-                                for (let j=0;j<flat.length;j+=2){ verts[j] = flat[j]/lyr.extent; verts[j+1] = flat[j+1]/lyr.extent; }
+                                const vert_count = flat.length / 2;
+                                const verts = new Float32Array(3 * vert_count);
+                                for (let v = 0; v < vert_count; v += 1) {
+                                    verts[3 * v + 0] = flat[2 * v + 0] / lyr.extent;
+                                    verts[3 * v + 1] = flat[2 * v + 1] / lyr.extent;
+                                    verts[3 * v + 2] = z;
+                                }
                                 fills.push({ vertices: verts.buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
                             }
                         }
@@ -54,8 +59,13 @@ self.onmessage = async (e) => {
                             const pts = geom[p];
                             const mesh = strokePoly(pts, widthTile, fstyle.join||'bevel', fstyle.cap||'butt', fstyle.miterLimit||2.0);
                             if (mesh && mesh.indices.length) {
-                                const verts = new Float32Array(mesh.vertices.length);
-                                for (let j=0;j<mesh.vertices.length;j+=2){ verts[j] = mesh.vertices[j]/lyr.extent; verts[j+1] = mesh.vertices[j+1]/lyr.extent; }
+                                const vert_count = mesh.vertices.length / 2;
+                                const verts = new Float32Array(3 * vert_count);
+                                for (let v = 0; v < vert_count; v += 1) {
+                                    verts[3 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
+                                    verts[3 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                                    verts[3 * v + 2] = z;
+                                }
                                 lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
                             }
                         }
@@ -64,14 +74,14 @@ self.onmessage = async (e) => {
                         const size = (fstyle.size || 10.0) / 2.0
                         const verts = [];
                         const idx = [0, 1, 2, 0, 2, 3];
-                        for (let p=0;p<geom.length;p++) {
+                        for (let p = 0; p < geom.length; p++) {
                             const pts = geom[p];
-                            for (let pi=0;pi<pts.length;pi++) {
+                            for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
-                                verts.push((pt.x + size)/lyr.extent, (pt.y - size)/lyr.extent);
-                                verts.push((pt.x - size)/lyr.extent, (pt.y - size)/lyr.extent);
-                                verts.push((pt.x - size)/lyr.extent, (pt.y + size)/lyr.extent);
-                                verts.push((pt.x + size)/lyr.extent, (pt.y + size)/lyr.extent);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, z);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, z);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, z);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, z);
                             }
                         }
                         points.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color })

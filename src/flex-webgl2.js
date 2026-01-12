@@ -803,7 +803,7 @@ void main() {
 
                         // Bind positions
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
-                        gl.vertexAttribPointer(this._positionsBuffer, 2, gl.FLOAT, false, 0, 0);
+                        gl.vertexAttribPointer(this._positionsBuffer, 3, gl.FLOAT, false, 0, 0);
 
                         // Bind per-vertex colors (normalized u8 → float 0..1)
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboCol);
@@ -822,7 +822,7 @@ void main() {
 
                         // Bind positions
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
-                        gl.vertexAttribPointer(this._positionsBuffer, 2, gl.FLOAT, false, 0, 0);
+                        gl.vertexAttribPointer(this._positionsBuffer, 3, gl.FLOAT, false, 0, 0);
 
                         // Bind per-vertex colors (normalized u8 → float 0..1)
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboCol);
@@ -841,7 +841,7 @@ void main() {
 
                         // Bind positions
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
-                        gl.vertexAttribPointer(this._positionsBuffer, 2, gl.FLOAT, false, 0, 0);
+                        gl.vertexAttribPointer(this._positionsBuffer, 3, gl.FLOAT, false, 0, 0);
 
                         // Bind per-vertex colors (normalized u8 → float 0..1)
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboCol);
@@ -852,6 +852,7 @@ void main() {
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }
                 }
+
                 gl.uniform2f(this._renderClipping, 0, 0);
             }
 
