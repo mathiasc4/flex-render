@@ -37,6 +37,7 @@ self.onmessage = async (e) => {
             const fills = [];
             const lines = [];
             const points = [];
+            const icons = [];
 
             // Iterate layers
             for (const lname in vt.layers) {
@@ -75,11 +76,12 @@ self.onmessage = async (e) => {
                             if (idx.length) {
                                 // Normalize to 0..1 UV for the renderer
                                 const vertCount = flat.length / 2;
-                                const verts = new Float32Array(3 * vertCount);
+                                const verts = new Float32Array(4 * vertCount);
                                 for (let v = 0; v < vertCount; v += 1) {
-                                    verts[3 * v + 0] = flat[2 * v + 0] / lyr.extent;
-                                    verts[3 * v + 1] = flat[2 * v + 1] / lyr.extent;
-                                    verts[3 * v + 2] = tileDepth;
+                                    verts[4 * v + 0] = flat[2 * v + 0] / lyr.extent;
+                                    verts[4 * v + 1] = flat[2 * v + 1] / lyr.extent;
+                                    verts[4 * v + 2] = tileDepth;
+                                    verts[4 * v + 3] = -1;
                                 }
                                 fills.push({ vertices: verts.buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
                             }
@@ -95,11 +97,12 @@ self.onmessage = async (e) => {
                             const mesh = strokePoly(pts, widthTile, fstyle.join || 'bevel', fstyle.cap || 'butt', fstyle.miterLimit || 2.0);
                             if (mesh && mesh.indices.length) {
                                 const vertCount = mesh.vertices.length / 2;
-                                const verts = new Float32Array(3 * vertCount);
+                                const verts = new Float32Array(4 * vertCount);
                                 for (let v = 0; v < vertCount; v += 1) {
-                                    verts[3 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
-                                    verts[3 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
-                                    verts[3 * v + 2] = tileDepth;
+                                    verts[4 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
+                                    verts[4 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                                    verts[4 * v + 2] = tileDepth;
+                                    verts[4 * v + 3] = -1;
                                 }
                                 lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
                             }
@@ -114,13 +117,48 @@ self.onmessage = async (e) => {
                             const pts = geom[p];
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
-                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth);
-                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
+                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
                             }
                         }
                         points.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
+                    }
+
+                    if (feat.type === 1 && fstyle.type === 'icon') {
+                        const size = fstyle.size || 1.0;
+                        const icon = fstyle.iconMapping[feat.properties.class] || { atlasID: -1, width: 16, height: 16 };
+
+                        const verts = [];
+                        const idx = [0, 1, 3, 0, 2, 3];
+                        const parameters = [];
+
+                        for (let p = 0; p < geom.length; p++) {
+                            const pts = geom[p];
+                            for (let pi = 0; pi < pts.length; pi += 1) {
+                                const pt = pts[pi];
+
+                                const width = size * icon.width;
+                                const height = size * icon.height;
+
+                                const xStart = (pt.x - (width / 2.0)) / lyr.extent;
+                                const xEnd = (pt.x + (width / 2.0)) / lyr.extent;
+                                const yStart = (pt.y - (height / 2.0)) / lyr.extent;
+                                const yEnd = (pt.y + (height / 2.0)) / lyr.extent;
+
+                                verts.push(xStart, yStart, tileDepth, icon.atlasId);
+                                verts.push(xEnd, yStart, tileDepth, icon.atlasId);
+                                verts.push(xStart, yEnd, tileDepth, icon.atlasId);
+                                verts.push(xEnd, yEnd, tileDepth, icon.atlasId);
+
+                                for (let i = 0; i < 4; i += 1) {
+                                    parameters.push(xStart, yStart, width / lyr.extent, height / lyr.extent);
+                                }
+                            }
+                        }
+
+                        icons.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, parameters: new Float32Array(parameters).buffer });
                     }
                 }
             }
@@ -140,7 +178,11 @@ self.onmessage = async (e) => {
                 transfer.push(a.vertices, a.indices);
             }
 
-            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, points } }, transfer);
+            for (const a of icons) {
+                transfer.push(a.vertices, a.indices, a.parameters);
+            }
+
+            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, points, icons } }, transfer);
         }
     } catch (err) {
         self.postMessage({ type: 'tile', key: e.data && e.data.key, ok: false, error: String(err) });

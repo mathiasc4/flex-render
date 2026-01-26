@@ -347,11 +347,13 @@
         /**
          * Add an image. Returns a stable atlasId.
          * @param {ImageBitmap|HTMLImageElement|HTMLCanvasElement|ImageData|Uint8Array} source
-         * @param {number} [w]
-         * @param {number} [h]
+         * @param {{
+         *   width?: number,
+         *   height?: number,
+         * }} [opts]
          * @returns {number}
          */
-        addImage(source, w, h) {
+        addImage(source, opts) {
             throw new Error('TextureAtlas2DArray.addImage: not implemented');
         }
 
@@ -359,8 +361,7 @@
          * Texture atlas works as a single texture unit. Bind the atlas before using it at desired texture unit.
          * @param textureUnit
          */
-        bind(textureUnit) {
-        }
+        bind(textureUnit) {}
 
         /**
          * Get WebGL Atlas shader code. This code must define the following function:

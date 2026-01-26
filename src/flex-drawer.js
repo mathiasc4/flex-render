@@ -538,6 +538,9 @@
                             if (tileInfo.vectors.points) {
                                 tileInfo.vectors.points.matrix = transformMatrix;
                             }
+                            if (tileInfo.vectors.icons) {
+                                tileInfo.vectors.icons.matrix = transformMatrix;
+                            }
 
                             vecPayload.push(tileInfo.vectors);
                         }
@@ -811,21 +814,23 @@
                     let vCount = 0,
                         iCount = 0;
                     for (const m of meshes) {
-                        vCount += (m.vertices.length / 3);
+                        vCount += (m.vertices.length / 4);
                         iCount += m.indices.length;
                     }
 
                     // Allocate batched arrays
-                    const positions = new Float32Array(vCount * 3);
+                    const positions = new Float32Array(vCount * 4);
                     const colors    = new Uint8Array(vCount * 4);  // normalized RGBA
+                    const parameters = new Float32Array(vCount * 4);
                     const indices   = new Uint32Array(iCount);
 
                     // Fill them
                     let vOfs = 0,
                         iOfs = 0,
                         baseVertex = 0;
+
                     for (const m of meshes) {
-                        positions.set(m.vertices, vOfs * 3);
+                        positions.set(m.vertices, vOfs * 4);
 
                         // fill color per-vertex (constant per feature)
                         const rgba = m.color ? m.color : [0, 0, 0, 1];
@@ -833,7 +838,7 @@
                         const g = Math.max(0, Math.min(255, Math.round(rgba[1] * 255)));
                         const b = Math.max(0, Math.min(255, Math.round(rgba[2] * 255)));
                         const a = Math.max(0, Math.min(255, Math.round(rgba[3] * 255)));
-                        for (let k = 0; k < (m.vertices.length / 3); k++) {
+                        for (let k = 0; k < (m.vertices.length / 4); k++) {
                             const cOfs = (vOfs + k) * 4;
                             colors[cOfs + 0] = r;
                             colors[cOfs + 1] = g;
@@ -841,14 +846,18 @@
                             colors[cOfs + 3] = a;
                         }
 
+                        if (m.parameters) {
+                            parameters.set(m.parameters, vOfs * 4);
+                        }
+
                         // rebase indices
                         for (let k = 0; k < m.indices.length; k++) {
                             indices[iOfs + k] = baseVertex + m.indices[k];
                         }
 
-                        vOfs += (m.vertices.length / 3);
+                        vOfs += (m.vertices.length / 4);
                         iOfs += m.indices.length;
-                        baseVertex += (m.vertices.length / 3);
+                        baseVertex += (m.vertices.length / 4);
                     }
 
                     // Upload once
@@ -860,11 +869,15 @@
                     gl.bindBuffer(gl.ARRAY_BUFFER, vboCol);
                     gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
 
+                    const vboParam = gl.createBuffer();
+                    gl.bindBuffer(gl.ARRAY_BUFFER, vboParam);
+                    gl.bufferData(gl.ARRAY_BUFFER, parameters, gl.STATIC_DRAW);
+
                     const ibo = gl.createBuffer();
                     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
                     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
-                    return { vboPos, vboCol, ibo, count: indices.length };
+                    return { vboPos, vboCol, vboParam, ibo, count: indices.length };
                 };
 
                 if (data.fills && data.fills.length) {
@@ -875,6 +888,9 @@
                 }
                 if (data.points && data.points.length) {
                     tileInfo.vectors.points = buildBatch(data.points);
+                }
+                if (data.icons && data.icons.length) {
+                    tileInfo.vectors.icons = buildBatch(data.icons);
                 }
 
                 return Promise.resolve(tileInfo);
@@ -1029,6 +1045,11 @@
                     gl.deleteBuffer(data.vectors.points.vboPos);
                     gl.deleteBuffer(data.vectors.points.vboCol);
                     gl.deleteBuffer(data.vectors.points.ibo);
+                }
+                if (data.vectors.icons) {
+                    gl.deleteBuffer(data.vectors.icons.vboPos);
+                    gl.deleteBuffer(data.vectors.icons.vboCol);
+                    gl.deleteBuffer(data.vectors.icons.ibo);
                 }
                 data.vectors = null;
             }
