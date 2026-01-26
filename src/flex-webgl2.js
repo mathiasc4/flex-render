@@ -592,6 +592,7 @@ void main() {
     } else if (u_renderClippingParams.y > 0.5) {
         // Vector geometry draw path (per-vertex color)
 
+        vec4 stencil = vec4(1.0);
         float depth = v_vecDepth / 255.0; // 2 ^ 8 - 1; 6 bits for z and 2 bits for y and x; assuming the maximal zoom level of tiles to be 64 (no other implementations seem to go past 25 so this should be plenty)
 
         if (v_atlasId < 0) {
@@ -601,11 +602,12 @@ void main() {
             outputColor = texColor;
 
             if (texColor.a < 1.0) {
+                stencil = vec4(0.0);
                 depth = 0.0;
             }
         }
 
-        outputStencil = vec4(1.0);
+        outputStencil = stencil;
         gl_FragDepth = depth;
     } else {
         // Pure clipping path: write only to stencil (color target value is undefined)
@@ -789,6 +791,8 @@ void main() {
 
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
+            this.atlas.bind(gl.TEXTURE15, this._maxTextures);
+
             // First, clip polygons if any required
             if (renderInfo.polygons.length) {
                 gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
@@ -853,8 +857,6 @@ void main() {
                 // Signal geometry branch in shader
                 gl.uniform2f(this._renderClipping, 1, 1);
                 gl.bindVertexArray(this.firstPassVaoGeom);
-
-                this.atlas.bind(gl.TEXTURE15, this._maxTextures);
 
                 for (let vectorTile of vectors) {
                     let batch = vectorTile.fills;
@@ -1157,6 +1159,10 @@ uniform vec2  u_atlasOffset[${this.maxIds}];
 uniform int   u_atlasLayer[${this.maxIds}];
 
 vec4 osd_atlas_texture(int atlasId, vec2 uv) {
+    uv = mod(uv, 2.0);
+    uv = uv - 1.0;
+    uv = sign(uv) * uv;
+    uv = 1.0 - uv;
     vec2 st = u_atlasOffset[atlasId] + uv * u_atlasScale[atlasId];
     float layer = float(u_atlasLayer[atlasId]);
     return texture(u_atlasTex, vec3(st, layer));
