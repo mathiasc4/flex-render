@@ -128,7 +128,7 @@ self.onmessage = async (e) => {
 
                     if (feat.type === 1 && fstyle.type === 'icon') {
                         const size = fstyle.size || 1.0;
-                        const icon = fstyle.iconMapping[feat.properties.class] || { atlasID: -1, width: 16, height: 16 };
+                        const icon = fstyle.iconMapping[feat.properties.class] || { textureId: -1, width: 16, height: 16 };
 
                         const verts = [];
                         const idx = [0, 1, 3, 0, 2, 3];
@@ -147,10 +147,10 @@ self.onmessage = async (e) => {
                                 const yStart = (pt.y - (height / 2.0)) / lyr.extent;
                                 const yEnd = (pt.y + (height / 2.0)) / lyr.extent;
 
-                                verts.push(xStart, yStart, tileDepth, icon.atlasId);
-                                verts.push(xEnd, yStart, tileDepth, icon.atlasId);
-                                verts.push(xStart, yEnd, tileDepth, icon.atlasId);
-                                verts.push(xEnd, yEnd, tileDepth, icon.atlasId);
+                                verts.push(xStart, yStart, tileDepth, icon.textureId);
+                                verts.push(xEnd, yStart, tileDepth, icon.textureId);
+                                verts.push(xStart, yEnd, tileDepth, icon.textureId);
+                                verts.push(xEnd, yEnd, tileDepth, icon.textureId);
 
                                 for (let i = 0; i < 4; i += 1) {
                                     parameters.push(xStart, yStart, width / lyr.extent, height / lyr.extent);

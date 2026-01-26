@@ -59,6 +59,10 @@
         return `osd_texture(${index}, ${vec2coords})`;
     }
 
+    sampleTextureAtlas(textureId, vec2coords) {
+        return `osd_atlas_texture(${textureId}, ${vec2coords})`;
+    }
+
     getTextureSize(index) {
         return `osd_texture_size(${index})`;
     }
@@ -185,7 +189,7 @@ return blendAlpha(fg, bg, bg.rgb + fg.rgb - 2.0 * bg.rgb * fg.rgb);`,
 $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgram {
     constructor(context, gl, atlas) {
         super(context, gl, atlas);
-        this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32);
+        this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1;
         //todo this might be limiting in some wild cases... make it configurable..? or consider 1d texture
         this.textureMappingsUniformSize = 64;
     }
@@ -198,6 +202,7 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
                 '', $.FlexRenderer.ShaderLayer.__globalIncludes);
             return;
         }
+
         let definition = '',
             execution = `
 vec4 intermediate_color = vec4(.0);
@@ -509,7 +514,7 @@ precision mediump float;
 
 layout(location = 0) in mat3 a_transform_matrix;
 // Generic payload args. Used for texture positions, vector positions and colors.
-layout(location = 4) in vec4 a_payload0; // first 4 raster texture coords or vector positions and atlasId (x, y, z, atlasId)
+layout(location = 4) in vec4 a_payload0; // first 4 raster texture coords or vector positions and atlas texture ID (x, y, z, textureId)
 layout(location = 5) in vec4 a_payload1; // second 4 raster texture coords or vector colors or icon parameters (x, y, width, height)
 
 uniform vec2 u_renderClippingParams;
@@ -518,7 +523,7 @@ uniform mat3 u_geomMatrix;
 flat out int instance_id;
 out vec2 v_texture_coords;
 out float v_vecDepth;
-flat out int v_atlasId;
+flat out int v_textureId;
 out vec4 v_vecColor;
 
 const vec3 viewport[4] = vec3[4] (
@@ -545,7 +550,7 @@ void main() {
         matrix * viewport[gl_VertexID];
 
     v_vecDepth = a_payload0.z;
-    v_atlasId = int(a_payload0.w);
+    v_textureId = int(a_payload0.w);
     v_vecColor = a_payload1;
 
     gl_Position = vec4(space_2d.xy, 1.0, space_2d.z);
@@ -563,7 +568,7 @@ uniform vec2 u_renderClippingParams;
 flat in int instance_id;
 in vec2 v_texture_coords;
 in float v_vecDepth;
-flat in int v_atlasId;
+flat in int v_textureId;
 in vec4 v_vecColor;
 
 uniform sampler2D u_textures[${this._maxTextures}];
@@ -595,10 +600,10 @@ void main() {
         vec4 stencil = vec4(1.0);
         float depth = v_vecDepth / 255.0; // 2 ^ 8 - 1; 6 bits for z and 2 bits for y and x; assuming the maximal zoom level of tiles to be 64 (no other implementations seem to go past 25 so this should be plenty)
 
-        if (v_atlasId < 0) {
+        if (v_textureId < 0) {
             outputColor = v_vecColor;
         } else {
-            vec4 texColor = osd_atlas_texture(v_atlasId, v_texture_coords);
+            vec4 texColor = osd_atlas_texture(v_textureId, v_texture_coords);
             outputColor = texColor;
 
             if (texColor.a < 1.0) {
@@ -791,7 +796,7 @@ void main() {
 
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
-            this.atlas.bind(gl.TEXTURE15, this._maxTextures);
+            this.atlas.bind(gl.TEXTURE0 + this._maxTextures, this._maxTextures);
 
             // First, clip polygons if any required
             if (renderInfo.polygons.length) {
@@ -1064,7 +1069,7 @@ $.FlexRenderer.WebGL20.TextureAtlas2DArray = class extends $.FlexRenderer.Textur
 
 
     /**
-     * Add an image. Returns a stable atlasId.
+     * Add an image. Returns a stable textureId.
      * @param {ImageBitmap|HTMLImageElement|HTMLCanvasElement|ImageData|Uint8Array} source
      * @param {{
      *   width?: number,
@@ -1158,13 +1163,19 @@ uniform vec2  u_atlasScale[${this.maxIds}];
 uniform vec2  u_atlasOffset[${this.maxIds}];
 uniform int   u_atlasLayer[${this.maxIds}];
 
-vec4 osd_atlas_texture(int atlasId, vec2 uv) {
+vec4 osd_atlas_texture(int textureId, vec2 uv) {
+    if (textureId < 0) {
+        return vec4(1.0, 0.0, 1.0, 1.0);
+    }
+
     uv = mod(uv, 2.0);
     uv = uv - 1.0;
     uv = sign(uv) * uv;
     uv = 1.0 - uv;
-    vec2 st = u_atlasOffset[atlasId] + uv * u_atlasScale[atlasId];
-    float layer = float(u_atlasLayer[atlasId]);
+
+    vec2 st = u_atlasOffset[textureId] + uv * u_atlasScale[textureId];
+    float layer = float(u_atlasLayer[textureId]);
+
     return texture(u_atlasTex, vec3(st, layer));
 }
 `;

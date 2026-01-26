@@ -772,4 +772,121 @@ $.FlexRenderer.UIControls.Button = class extends $.FlexRenderer.UIControls.ICont
     }
 };
 $.FlexRenderer.UIControls.registerClass("button", $.FlexRenderer.UIControls.Button);
+
+$.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.UIControls.IControl {
+    constructor(owner, name, webGLVariableName, params) {
+        super(owner, name, webGLVariableName);
+        this.atlas = owner.webglContext.secondAtlas;
+        this._params = this.getParams(params);
+    }
+
+    init() {
+        this.encodedTextureId = this.load(this.params.default);
+
+        this.textureId = Number.parseInt(this.encodedTextureId, 10);
+
+        if (this.params.interactive) {
+            const _this = this;
+
+            let number = document.getElementById(`${this.id}_number`);
+            if (number) {
+                let updater = function(e) {
+                    _this.set(e.target.value);
+                    _this.owner.invalidate();
+                };
+
+                number.value = this.encodedTextureId;
+                number.addEventListener("change", updater);
+            }
+
+            let button = document.getElementById(`${this.id}_button`);
+            if (button) {
+                let updater = function(e) {
+                    let file = document.getElementById(`${_this.id}_file`);
+
+                    if (file.files && file.files.length) {
+                        const fr = new FileReader();
+                        fr.onload = function() {
+                            const image = new Image();
+                            image.onload = function() {
+                                _this.atlas.addImage(image);
+                                _this.atlas._commitUploads();
+                            };
+                            image.src = fr.result;
+                        };
+                        fr.readAsDataURL(file.files[0]);
+                    } else {
+                        alert("No file selected");
+                    }
+                };
+
+                button.addEventListener("click", updater);
+            }
+        }
+    }
+
+    set(encodedTextureId) {
+        this.encodedTextureId = encodedTextureId;
+        this.textureId = Number.parseInt(this.encodedTextureId, 10);
+
+        this.changed("default", this.textureId, this.encodedTextureId, this);
+        this.store(this.encodedTextureId);
+        this._needsLoad = true;
+    }
+
+    define() {
+        return `uniform int ${this.webGLVariableName}_textureId;`;
+    }
+
+    glLoaded(program, gl) {
+        this.textureIdLocation = gl.getUniformLocation(program, this.webGLVariableName + "_textureId");
+        this._needsLoad = true;
+    }
+
+    glDrawing(program, gl) {
+        if (this._needsLoad) {
+            gl.uniform1i(this.textureIdLocation, this.textureId);
+            this._needsLoad = false;
+        }
+    }
+
+    toHtml(classes = "", css = "") {
+        return `<span>${this.params.title}</span>
+        <div class="${classes}" style="${css}">
+            Selected: <input type="number" id="${this.id}_number" min="-1" max="16" step="1"><br>
+            <input type="file" id="${this.id}_file" accept="image/png"><br>
+            <button id="${this.id}_button">Add Image</button>
+        </div>`;
+    }
+
+    sample(value = undefined, valueGlType = 'void') {
+        return `${this.webGLVariableName}_textureId`;
+    }
+
+    get supports() {
+        return {
+            title: "Images",
+            interactive: true,
+            default: -1,
+        };
+    }
+
+    get supportsAll() {
+        return {};
+    }
+
+    get raw() {
+        return this.textureId;
+    }
+
+    get encoded() {
+        return this.encodedTextureId;
+    }
+
+    get type() {
+        return "int";
+    }
+};
+$.FlexRenderer.UIControls.registerClass("image", $.FlexRenderer.UIControls.Image);
+
 })(OpenSeadragon);

@@ -42,6 +42,7 @@ module.exports = function(grunt) {
             "src/flex-layers/edge-isoline.js",
             "src/flex-layers/heatmap.js",
             "src/flex-layers/sobel.js",
+            "src/flex-layers/texture.js",
             "src/flex-layers/time-series.js",
             "src/mvt-tile-source.js",
             "src/fabric-tile-source.js",

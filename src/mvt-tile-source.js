@@ -167,17 +167,17 @@ function packMesh(m) {
 
 const iconMapping = {
     country: {
-        atlasId: 0,
+        textureId: 0,
         width: 256,
         height: 256,
     },
     city: {
-        atlasId: 1,
+        textureId: 1,
         width: 256,
         height: 256,
     },
     village: {
-        atlasId: 2,
+        textureId: 2,
         width: 256,
         height: 256,
     },

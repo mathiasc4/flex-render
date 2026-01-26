@@ -123,6 +123,10 @@
             throw("$.FlexRenderer.WebGLImplementation::sampleTexture() must be implemented!");
         }
 
+        sampleTextureAtlas() {
+            throw("$.FlexRenderer.WebGLImplementation::sampleTextureAtlas() must be implemented!");
+        }
+
         getTextureSize() {
             throw("$.FlexRenderer.WebGLImplementation::getTextureSize() must be implemented!");
         }
@@ -345,7 +349,7 @@
         }
 
         /**
-         * Add an image. Returns a stable atlasId.
+         * Add an image. Returns a stable textureId.
          * @param {ImageBitmap|HTMLImageElement|HTMLCanvasElement|ImageData|Uint8Array} source
          * @param {{
          *   width?: number,
