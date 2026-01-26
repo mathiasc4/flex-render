@@ -560,7 +560,7 @@ void main() {
         // Vector geometry draw path (per-vertex color)
         outputColor = v_vecColor;
         outputStencil = vec4(1.0);
-        gl_FragDepth = v_vecDepth / 1048575.0; // 2 ^ 20 - 1
+        gl_FragDepth = v_vecDepth / 255.0; // 2 ^ 8 - 1; 6 bits for z and 2 bits for y and x; assuming the maximal zoom level of tiles to be 64 (no other implementations seem to go past 25 so this should be plenty)
     } else {
         // Pure clipping path: write only to stencil (color target value is undefined)
         outputStencil = vec4(0.0);
@@ -702,7 +702,7 @@ void main() {
         gl.clearColor(0.0, 0.0, 0.0, 0.0);
 
         gl.enable(gl.DEPTH_TEST);
-        gl.depthFunc(gl.GREATER);
+        gl.depthFunc(gl.GEQUAL);
         gl.clearDepth(0.0);
 
         gl.enable(gl.STENCIL_TEST);

@@ -467,7 +467,23 @@
                 const vecPayload = [];
 
                 const tilesToDraw = tiledImage.getTilesToDraw();
-                tilesToDraw.sort((tileA, tileB) => tileB.level - tileA.level);
+
+                // rendering in 4 overlapping groups of non-overlapping tiles so the depth value stays relatively small
+                tilesToDraw.sort(
+                    (entryA, entryB) => {
+                        let levelA = entryA.tile.level;
+                        let levelOrderA = 2 * (entryA.tile.y % 2) + (entryA.tile.x % 2);
+
+                        let levelB = entryB.tile.level;
+                        let levelOrderB = 2 * (entryB.tile.y % 2) + (entryB.tile.x % 2);
+
+                        if (levelA === levelB) {
+                            return levelOrderB - levelOrderA;
+                        }
+
+                        return levelB - levelA;
+                    }
+                );
 
                 let overallMatrix = viewMatrix;
                 let imageRotation = tiledImage.getRotation(true);
