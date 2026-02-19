@@ -189,7 +189,7 @@ return blendAlpha(fg, bg, bg.rgb + fg.rgb - 2.0 * bg.rgb * fg.rgb);`,
 $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgram {
     constructor(context, gl, atlas) {
         super(context, gl, atlas);
-        this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1;
+        this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1; // subtracting 1 to allow texture atlas to be bound; TODO: only bind texture atlas when it is needed
         //todo this might be limiting in some wild cases... make it configurable..? or consider 1d texture
         this.textureMappingsUniformSize = 64;
     }
@@ -500,7 +500,7 @@ $.FlexRenderer.WebGL20.FirstPassProgram = class extends $.FlexRenderer.WGLProgra
      */
     constructor(context, gl, atlas) {
         super(context, gl, atlas);
-        this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1;
+        this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1; // subtracting 1 to allow texture atlas to be bound; TODO: only bind texture atlas when it is needed
         this._textureIndexes = [...Array(this._maxTextures).keys()];
         // Todo: RN we support only MAX_COLOR_ATTACHMENTS in the texture array, which varies beetween devices
         //   make the first pass shader run multiple times if the number does not suffice
@@ -603,7 +603,7 @@ void main() {
         if (v_textureId < 0) {
             outputColor = v_vecColor;
         } else {
-            vec4 texColor = osd_atlas_texture(v_textureId, v_texture_coords);
+            vec4 texColor = osd_atlas_texture(v_textureId, v_texture_coords); // required for icon rendering, needs texture atlas to be bound; TODO: use osd_atlas_texture only when texture atlas is bound
             outputColor = texColor;
 
             if (texColor.a < 1.0) {
@@ -1165,9 +1165,11 @@ uniform int   u_atlasLayer[${this.maxIds}];
 
 vec4 osd_atlas_texture(int textureId, vec2 uv) {
     if (textureId < 0) {
+        // return purple for non-existent texture
         return vec4(1.0, 0.0, 1.0, 1.0);
     }
 
+    // enable mirroring
     uv = mod(uv, 2.0);
     uv = uv - 1.0;
     uv = sign(uv) * uv;

@@ -21,10 +21,6 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
                 acceptsChannelCount: (x) => x === 4,
                 description: "first pass colors",
             },
-            {
-                acceptsChannelCount: (x) => x === 4,
-                description: "texture colors",
-            },
         ];
     }
 
@@ -33,30 +29,19 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             use_channel0: {  // eslint-disable-line camelcase
                 default: "rgba",
             },
-            use_channel1: {  // eslint-disable-line camelcase
-                default: "rgba",
-            },
-            addTexture: {
+            texture: {
                 default: { type: "image" },
-                accepts: (type, instance) => type === "int",
+                accepts: (type, instance) => type === "vec4",
             },
         };
     }
 
     getFragmentShaderExecution() {
         return `
-vec4 chan0 = ${this.sampleChannel('v_texture_coords', 0)};
-vec4 chan1;
+vec4 chan = ${this.sampleChannel('v_texture_coords', 0)};
+vec4 tex = ${this.texture.sample('v_texture_coords * 2.0', 'vec2')};
 
-int textureId = ${this.addTexture.sample()};
-
-if (textureId < 0) {
-    chan1 = vec4(1.0);
-} else {
-    chan1 = ${this.sampleAtlasChannel('textureId', 'v_texture_coords', 1)};
-}
-
-return blendAlpha(chan0, chan1, min(chan0.rgb, chan1.rgb));
+return blendAlpha(chan, tex, min(chan.rgb, tex.rgb));
 `;
     }
 });

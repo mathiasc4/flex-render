@@ -509,17 +509,6 @@
             return this.filter(sampled);
         }
 
-        sampleAtlasChannel(textureId, textureCoords, otherDataIndex = 0, raw = false) {
-            const chan = this.__channels[otherDataIndex];
-            let sampled = `${this.webglContext.sampleTextureAtlas(textureId, textureCoords)}.${chan}`;
-
-            if (raw) {
-                return sampled;
-            }
-
-            return this.filter(sampled);
-        }
-
         /**
          *
          * @param otherDataIndex
@@ -528,7 +517,6 @@
         getTextureSize(otherDataIndex = 0) {
             return this.webglContext.getTextureSize(otherDataIndex);
         }
-
 
         // BLENDING LOGIC
         /**

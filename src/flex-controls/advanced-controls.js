@@ -860,7 +860,15 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.UIControls.IContr
     }
 
     sample(value = undefined, valueGlType = 'void') {
-        return `${this.webGLVariableName}_textureId`;
+        if (!value) {
+            throw new Error("Value is required");
+        }
+
+        if (valueGlType === 'vec2') {
+            return `osd_atlas_texture(${this.webGLVariableName}_textureId, ${value})`;
+        }
+
+        throw new Error(`Incompatible value type '${valueGlType}' for ${this.name}; only vec2 is supported`);
     }
 
     get supports() {
@@ -884,7 +892,7 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.UIControls.IContr
     }
 
     get type() {
-        return "int";
+        return "vec4";
     }
 };
 $.FlexRenderer.UIControls.registerClass("image", $.FlexRenderer.UIControls.Image);

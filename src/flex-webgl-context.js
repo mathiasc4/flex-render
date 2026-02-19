@@ -123,10 +123,6 @@
             throw("$.FlexRenderer.WebGLImplementation::sampleTexture() must be implemented!");
         }
 
-        sampleTextureAtlas() {
-            throw("$.FlexRenderer.WebGLImplementation::sampleTextureAtlas() must be implemented!");
-        }
-
         getTextureSize() {
             throw("$.FlexRenderer.WebGLImplementation::getTextureSize() must be implemented!");
         }
