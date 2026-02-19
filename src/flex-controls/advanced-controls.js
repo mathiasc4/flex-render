@@ -861,14 +861,14 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.UIControls.IContr
 
     sample(value = undefined, valueGlType = 'void') {
         if (!value) {
-            throw new Error("Value is required");
+            throw new Error("Requires a vec2 value/variable specifying the texture coordinate to sample at");
         }
 
         if (valueGlType === 'vec2') {
             return `osd_atlas_texture(${this.webGLVariableName}_textureId, ${value})`;
         }
 
-        throw new Error(`Incompatible value type '${valueGlType}' for ${this.name}; only vec2 is supported`);
+        throw new Error(`Incompatible parameter type '${valueGlType}' for image sampling control '${this.name}'; only vec2 is supported`);
     }
 
     get supports() {
