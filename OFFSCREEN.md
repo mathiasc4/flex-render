@@ -14,7 +14,7 @@ if (viewer.navigator) {
 and don't forget to set dimensions and initial configuration:
 
 ````js
-drawer.renderer.setDimensions(0, 0, viewer.drawer.canvas.width, viewer.drawer.canvas.height, 1);
+drawer.renderer.setDimensions(0, 0, viewer.drawer.canvas.width, viewer.drawer.canvas.height, 1, 1);
 //... compute config
 drawer.overrideConfigureAll(config);
 ````

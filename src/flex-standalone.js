@@ -84,8 +84,13 @@
 
                 if (fullDrawPass) {
                     return Promise.all(tasks).then(() => {
-                        this.renderer.setDimensions(0, 0, size.x, size.y, tiledImages.length);
+                        // Sum of packs across all TIs:
+                        const colorLayers = drawer._computeOffscreenLayerCount();
+                        const stencilLayers = tiledImages.length; // one stencil layer per TI
+
+                        this.renderer.setDimensions(0, 0, size.x, size.y, colorLayers, stencilLayers);
                         this.draw(tiledImages, view);
+
                         const canvas = document.createElement('canvas');
                         const ctx = canvas.getContext('2d');
                         canvas.width = size.x;
@@ -99,23 +104,39 @@
                     });
                 }
 
-                this.renderer.setDimensions(0, 0, size.x, size.y, tiledImages.length);
+                let colorLayers   = tiledImages.length;
+                let stencilLayers = tiledImages.length;
+
+                if (view.renderer.__firstPassResult) {
+                    const srcFP = view.renderer.__firstPassResult;
+                    if (typeof srcFP.textureDepth === "number") {
+                        colorLayers = srcFP.textureDepth;
+                    }
+                    if (typeof srcFP.stencilDepth === "number") {
+                        stencilLayers = srcFP.stencilDepth;
+                    }
+                }
+
                 // Steal FP initialized textures if we differ in reference (different webgl context) or we have no state
                 if (view !== drawer || !this.renderer.__firstPassResult) {
                     // todo dirty, hide the __firstPassResult structure within the program logics
                     const program = view.renderer.getProgram('firstPass');
+                    colorLayers = drawer._computeOffscreenLayerCount();
                     this.renderer.__firstPassResult = {
                         texture: program.colorTextureA,
                         stencil: program.stencilTextureA,
+                        textureDepth: colorLayers,
+                        stencilDepth: stencilLayers,
                     };
                 }
+                this.renderer.setDimensions(0, 0, size.x, size.y, colorLayers, stencilLayers);
 
                 // Instead of re-rendering, we steal last state of the renderer and re-render second pass only.
                 view.renderer.copyRenderOutputToContext(this.renderer);
                 // ! must be called after copy, otherwise we would access wrong context
                 if (this.debug) {
-                    this.renderer._showOffscreenMatrix(this.renderer.__firstPassResult,
-                        tiledImages.length, {scale: 0.5, pad: 8});
+                    const fp = this.renderer.__firstPassResult;
+                    this.renderer._showOffscreenMatrix(fp, {scale: 0.5, pad: 8});
                 }
 
                 this._drawTwoPassSecond({

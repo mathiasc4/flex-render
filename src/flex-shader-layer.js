@@ -123,6 +123,9 @@
 
             // channels used for sampling data from the texture
             this.__channels = null;
+            // channel offset
+            this.__baseChannels = null;
+
             // which blend mode is being used
             this._mode = null;
             // parameters used for applying filters
@@ -446,67 +449,159 @@
 
             // regex to compare with value used with use_channel, to check its correctness
             const channelPattern = new RegExp('[rgba]{1,4}');
-            const parseChannel = (controlName, def, sourceDef) => {
-                const predefined = this.constructor.defaultControls[controlName];
+            this.__channels = [];
+            this.__baseChannels = [];
 
+            const parseChannel = (controlName, def, sourceDef, index) => {
+                const predefined = this.constructor.defaultControls[controlName];
+                const baseName = `use_channel_base${index}`;
+
+                let base = 0;
+                let channel;
+
+                // 1) read raw channel value from options or predefined
                 if (options[controlName] || predefined) {
-                    let channel = predefined && predefined.required;
+                    channel = predefined && predefined.required;
                     if (!channel) {
                         channel = force ? options[controlName] :
                             this.loadProperty(controlName, options[controlName] || predefined.default);
                     }
+                }
 
-                    // (if channel is not defined) or (is defined and not string) or (is string and doesn't contain __channelPattern)
-                    if (!channel || typeof channel !== "string" || channelPattern.exec(channel) === null) {
-                        console.warn(`Invalid channel '${controlName}'. Will use channel '${def}'.`, channel, options);
-                        this.storeProperty(controlName, def);
-                        channel = predefined.default || def;
+                // 2) parse inline "N:pattern" syntax if used
+                if (typeof channel === "string") {
+                    const m = channel.match(/^(\d+):(.*)$/);
+                    if (m) {
+                        base = parseInt(m[1], 10) || 0;
+                        channel = m[2];
                     }
+                }
+
+                // 3) explicit base override via use_channel_baseX
+                if (options[baseName] != null) {  // eslint-disable-line eqeqeq
+                    const v = parseInt(options[baseName], 10);
+                    if (!Number.isNaN(v) && v >= 0) {
+                        base = v;
+                    }
+                }
+
+                // 4) validate / normalize channel pattern as before
+                if (!channel || typeof channel !== "string" || channelPattern.exec(channel) === null) {
+                    console.warn(`Invalid channel '${controlName}'. Will use channel '${def}'.`, channel, options);
+                    this.storeProperty(controlName, def);
+                    channel = predefined && predefined.default ? predefined.default : def;
+                }
+
+                if (!sourceDef.acceptsChannelCount(channel.length)) {
+                    console.warn(`${this.constructor.name()} does not support channel length ${channel.length} for channel: ${channel}. Using default.`);
+                    this.storeProperty(controlName, def);
+                    channel = predefined && predefined.default ? predefined.default : def;
 
                     if (!sourceDef.acceptsChannelCount(channel.length)) {
+                        channel = def;
                         console.warn(`${this.constructor.name()} does not support channel length ${channel.length} for channel: ${channel}. Using default.`);
-                        this.storeProperty(controlName, def);
-                        channel = predefined.default || def;
-
-                        // if def is not compatible with the channel count, try to stack it
-                        if (!sourceDef.acceptsChannelCount(channel.length)) {
-                            channel = def;
-                            console.warn(`${this.constructor.name()} does not support channel length ${channel.length} for channel: ${channel}. Using default.`);
-                            while (channel.length < 5 && !sourceDef.acceptsChannelCount(channel.length)) {
-                                channel += def;
-                            }
-                            this.storeProperty(controlName, channel);
+                        while (channel.length < 5 && !sourceDef.acceptsChannelCount(channel.length)) {
+                            channel += def;
                         }
-                    }
-
-                    if (channel !== options[controlName]) {
                         this.storeProperty(controlName, channel);
                     }
-                    return channel;
                 }
-                return def;
+
+                if (channel !== options[controlName]) {
+                    this.storeProperty(controlName, channel);
+                }
+
+                this.__channels[index] = channel;
+                this.__baseChannels[index] = base;
             };
 
-            this.__channels = this.constructor.sources().map((source, i) => parseChannel(`use_channel${i}`, "r", source));
+            const sources = this.constructor.sources();
+            for (let i = 0; i < sources.length; i++) {
+                parseChannel(`use_channel${i}`, "r", sources[i], i);
+            }
         }
 
         /**
-         * Method for texture sampling with applied channel restrictions and filters.
+         * Unified texture sampling helper.
          *
-         * @param {String} textureCoords valid GLSL vec2 object
-         * @param {Number} otherDataIndex UNUSED; index of the data source, for backward compatibility left here
-         * @param {Boolean} raw whether to output raw value from the texture (do not apply filters)
+         * Usage:
+         *   sampleChannel("v_texCoord")                      // sourceIndex=0, baseChannel=0
+         *   sampleChannel("v_texCoord", 1)                   // sourceIndex=1, baseChannel=0
+         *   sampleChannel("v_texCoord", { baseChannel: 4 })  // sourceIndex=0, baseChannel=4
+         *   sampleChannel("v_texCoord", 0, { baseChannel: 8, raw: true })
          *
-         * @return {String} glsl code for correct texture sampling within the ShaderLayer's methods for generating glsl code (e.g. getFragmentShaderExecution)
+         * Returns GLSL:
+         *   float, vec2, vec3, or vec4 depending on use_channel pattern.
          */
-        sampleChannel(textureCoords, otherDataIndex = 0, raw = false) {
-            const chan = this.__channels[otherDataIndex];
-            let sampled = `${this.webglContext.sampleTexture(otherDataIndex, textureCoords)}.${chan}`;
+        sampleChannel(textureCoords, sourceIndexOrOptions = 0, maybeOptions = undefined) {
+            let sourceIndex = 0;
+            let raw = false;
 
-            if (raw) {
-                return sampled;
+            let opt = null;
+
+            if (typeof sourceIndexOrOptions === "object") {
+                // sampleChannel(uv, { ... })
+                opt = sourceIndexOrOptions || {};
+                sourceIndex = opt.sourceIndex || 0;
+            } else {
+                // sampleChannel(uv, sourceIndex, maybeOptions/raw)
+                sourceIndex = sourceIndexOrOptions || 0;
+
+                if (typeof maybeOptions === "object") {
+                    opt = maybeOptions || {};
+                } else if (typeof maybeOptions === "boolean") {
+                    raw = maybeOptions;
+                }
             }
-            return this.filter(sampled);
+
+            // Default baseChannel from resetChannel
+            let baseChannel = this.getDefaultChannelBase(sourceIndex);
+
+            // Override from options if provided
+            if (opt) {
+                if (typeof opt.baseChannel === "number") {
+                    baseChannel = opt.baseChannel;
+                }
+                if (opt.raw != null) { // eslint-disable-line eqeqeq
+                    raw = !!opt.raw;
+                }
+            }
+
+            const chanPattern = this.__channels[sourceIndex] || "r";
+            const glslExpr = this._buildChannelSampleExpr(sourceIndex, textureCoords, baseChannel, chanPattern);
+
+            return raw ? glslExpr : this.filter(glslExpr);
+        }
+
+        /**
+         * Get number of channels for a given sourceIndex.
+         * @param sourceIndex
+         * @return {number|*|number}
+         */
+        getSourceChannelCount(sourceIndex = 0) {
+            const cfg = this.getConfig();
+            if (!cfg.tiledImages || cfg.tiledImages.length <= sourceIndex) {
+                return 4;
+            }
+            const worldIndex = cfg.tiledImages[sourceIndex];
+            const drawer = this.webglContext.renderer.drawer;
+            if (!drawer || worldIndex == null) {  // eslint-disable-line eqeqeq
+                return 4;
+            }
+            return drawer.getChannelCount(worldIndex);
+        }
+
+        /**
+         * Get the default channel base offset for a given sourceIndex.
+         * @param sourceIndex
+         * @return {number} channel offset, usually 0, read from use_channel_baseX controls
+         */
+        getDefaultChannelBase(sourceIndex = 0) {
+            let baseChannel = this.__baseChannels[sourceIndex];
+            if (typeof baseChannel !== "number") {
+                baseChannel = 0;
+            }
+            return baseChannel;
         }
 
         /**
@@ -529,6 +624,62 @@
         resetMode(options = {}, force = true) {
             this._mode = this._resetOption("use_mode", this.webglContext.supportedUseModes, options, force);
             this._blend = this._resetOption("use_blend", OpenSeadragon.FlexRenderer.BLEND_MODE, options, force);
+        }
+
+        /**
+         * Build GLSL that samples the requested components.
+         * @param {number} sourceIndex   index into config.tiledImages
+         * @param {string} uv            GLSL vec2 identifier
+         * @param {number} baseChannel   first flattened channel index to use
+         * @param {string} pattern       e.g. "r", "rg", "rgba", "bgra"
+         */
+        _buildChannelSampleExpr(sourceIndex, uv, baseChannel, pattern) {
+            // pattern is relative channel order, we must convert "rgba" to offsets 0,1,2,3
+            const offsets = [];
+            for (const ch of pattern) {
+                let off;
+                if (ch === "r") {
+                    off = 0;
+                } else if (ch === "g") {
+                    off = 1;
+                } else if (ch === "b") {
+                    off = 2;
+                } else if (ch === "a") {
+                    off = 3;
+                } else {
+                    continue;
+                } // or warn
+                offsets.push(off);
+            }
+            if (offsets.length === 0) {
+                offsets.push(0);
+            }
+
+            // If this is the common simple case (baseChannel==0, contiguous, canonical "xyz"):
+            const contiguous =
+                baseChannel === 0 &&
+                offsets.length <= 4 &&
+                offsets.every((o, i) => o === i);
+
+            if (contiguous) {
+                // Use the old fast path: osd_texture + swizzle
+                return `${this.webglContext.sampleTexture(sourceIndex, uv)}.${pattern}`;
+            }
+
+            // General case: use osd_channel for each component
+            const comps = offsets.map(off => `osd_channel(${sourceIndex}, ${baseChannel + off}, ${uv})`);
+
+            if (comps.length === 1) {
+                return comps[0];               // float
+            }
+            if (comps.length === 2) {
+                return `vec2(${comps.join(", ")})`;
+            }
+            if (comps.length === 3) {
+                return `vec3(${comps.join(", ")})`;
+            }
+            // 4 or more → vec4, extra components ignored
+            return `vec4(${comps.slice(0, 4).join(", ")})`;
         }
 
         _resetOption(name, supportedValueList, options = {}, force = true) {

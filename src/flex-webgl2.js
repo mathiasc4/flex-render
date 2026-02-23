@@ -67,9 +67,9 @@
         return `osd_texture_size(${index})`;
     }
 
-    setDimensions(x, y, width, height, levels) {
-        this.renderer.getProgram(this.firstPassProgramKey).setDimensions(x, y, width, height, levels);
-        this.renderer.getProgram(this.secondPassProgramKey).setDimensions(x, y, width, height, levels);
+    setDimensions(x, y, width, height, levels, tiledImageCount) {
+        this.renderer.getProgram(this.firstPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
+        this.renderer.getProgram(this.secondPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
         //todo consider some elimination of too many calls
     }
 
@@ -316,6 +316,9 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         this._texturesLocation = gl.getUniformLocation(program, "u_inputTextures");
         this._stencilLocation = gl.getUniformLocation(program, "u_stencilTextures");
 
+        this._tiInfoLoc = gl.getUniformLocation(program, "u_tiInfo");
+        this._tiChannelCountLoc = gl.getUniformLocation(program, "u_tiChannelCount");
+
         this.vao = gl.createVertexArray();
     }
 
@@ -329,6 +332,32 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
             renderInfo.shader.glLoaded(this.webGLProgram, gl);
         }
         this.atlas.load(this.webGLProgram);
+
+        const renderer = this.context;
+        const packInfo = renderer.__flexPackInfo || {};
+        const layout = packInfo.layout || {};
+        const baseLayer = layout.baseLayer || [];
+        const packCount = layout.packCount || [];
+        const channelCount = packInfo.channelCount || [];
+
+        const world = renderer.drawer && renderer.drawer.viewer.world;
+        const itemCount = world ? world.getItemCount() : baseLayer.length;
+
+        const maxTI = this.textureMappingsUniformSize; // or a dedicated MAX_TILED_IMAGES
+        const tiInfo = new Int32Array(maxTI * 2);
+        const tiChannels = new Int32Array(maxTI);
+
+        for (let i = 0; i < Math.min(itemCount, maxTI); i++) {
+            const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i; // fallback
+            const pc = (typeof packCount[i] === "number") ? packCount[i] : 1;
+            tiInfo[i * 2] = base;
+            tiInfo[i * 2 + 1] = pc;
+
+            tiChannels[i] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
+        }
+
+        this.gl.uniform2iv(this._tiInfoLoc, tiInfo);
+        this.gl.uniform1iv(this._tiChannelCountLoc, tiChannels);
     }
 
     /**
@@ -380,7 +409,7 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
     }
 
     // TODO we might want to fire only for active program and do others when really encesarry or with some delay, best at some common implementation level
-    setDimensions(x, y, width, height, levels) {
+    setDimensions(x, y, width, height, levels, tiledImageCount) {
     }
 
     // PRIVATE FUNCTIONS
@@ -428,6 +457,9 @@ uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
 uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
 uniform vec3 u_shaderVariables[${this.textureMappingsUniformSize}];
 
+uniform ivec2 u_tiInfo[${this.textureMappingsUniformSize}];
+uniform int   u_tiChannelCount[${this.textureMappingsUniformSize}];
+
 in vec2 v_texture_coords;
 
 bool stencilPasses;
@@ -439,22 +471,58 @@ float zoom;
 uniform sampler2DArray u_inputTextures;
 uniform sampler2DArray u_stencilTextures;
 
-vec4 osd_texture(int index, vec2 coords) {
+int osd_pack_count(int sourceIndex) {
     int offset = u_instanceOffsets[instance_id];
-    index = u_instanceTextureIndexes[offset + index];
-    return texture(u_inputTextures, vec3(coords, float(index)));
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    return u_tiInfo[worldIndex].y;
 }
 
-vec4 osd_stencil_texture(int instance, int index, vec2 coords) {
+int osd_channel_count(int sourceIndex) {
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    int cc = u_tiChannelCount[worldIndex];
+    if (cc <= 0) {
+        return u_tiInfo[worldIndex].y * 4;
+    }
+    return cc;
+}
+
+vec4 osd_texture(int sourceIndex, vec2 coords) {
+    // backwards compatible: first pack
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    int base = u_tiInfo[worldIndex].x;
+    return texture(u_inputTextures, vec3(coords, float(base)));
+}
+
+vec4 osd_texture_pack(int sourceIndex, int packIndex, vec2 coords) {
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    int base = u_tiInfo[worldIndex].x;
+    int pc = u_tiInfo[worldIndex].y;
+    packIndex = clamp(packIndex, 0, pc - 1);
+    return texture(u_inputTextures, vec3(coords, float(base + packIndex)));
+}
+
+float osd_channel(int sourceIndex, int channelIndex, vec2 coords) {
+    int pack = channelIndex >> 2;
+    int comp = channelIndex & 3;
+    vec4 v = osd_texture_pack(sourceIndex, pack, coords);
+         if (comp == 0) return v.r;
+    else if (comp == 1) return v.g;
+    else if (comp == 2) return v.b;
+    else                return v.a;
+}
+
+vec4 osd_stencil_texture(int instance, int sourceIndex, vec2 coords) {
     int offset = u_instanceOffsets[instance];
-    index = u_instanceTextureIndexes[offset + index];
+    int index = u_instanceTextureIndexes[offset + sourceIndex];
     return texture(u_stencilTextures, vec3(coords, float(index)));
 }
 
-ivec2 osd_texture_size(int index) {
-    int offset = u_instanceOffsets[instance_id];
-    index = u_instanceTextureIndexes[offset + index];
-    return textureSize(u_inputTextures, index).xy;
+// todo index unused, but we might want to keep it
+ivec2 osd_texture_size(int sourceIndex) {
+    return textureSize(u_inputTextures, 0).xy;
 }
 
 ${this.atlas.getFragmentShaderDefinition()}
@@ -571,7 +639,8 @@ in float v_vecDepth;
 flat in int v_textureId;
 in vec4 v_vecColor;
 
-uniform sampler2D u_textures[${this._maxTextures}];
+uniform sampler2DArray u_textures[${this._maxTextures}];
+uniform int u_tileLayer;
 
 ${this.atlas.getFragmentShaderDefinition()}
 
@@ -580,12 +649,11 @@ layout(location=1) out vec4 outputStencil;
 
 void main() {
     if (u_renderClippingParams.x < 0.5) {
-        // Iterate over tiles - textures for each tile (a texture array)
         for (int i = 0; i < ${this._maxTextures}; i++) {
-            // Iterate over data in each tile if the index matches our tile
             if (i == instance_id) {
                  switch (i) {
-    ${this.printN(x => `case ${x}: outputColor = texture(u_textures[${x}], v_texture_coords); break;`,
+    ${ this.printN(x =>
+                    `case ${x}: outputColor = texture(u_textures[${x}], vec3(v_texture_coords, float(u_tileLayer))); break;`,
                 this._maxTextures, "                ")}
                  }
                  break;
@@ -648,6 +716,7 @@ void main() {
         // Texture locations are 0->N uniform indexes, we do not load the data here yet as vao does not store them
         this._inputTexturesLoc = gl.getUniformLocation(program, "u_textures");
         this._renderClipping = gl.getUniformLocation(program, "u_renderClippingParams");
+        this._tileLayerLoc = gl.getUniformLocation(program, "u_tileLayer");
 
         // Alias names to avoid confusion
         this._positionsBuffer = gl.getAttribLocation(program, "a_payload0");
@@ -767,8 +836,6 @@ void main() {
         this.fpTexture = this.colorTextureA;
         this.fpTextureClip = this.stencilTextureA;
 
-        this._renderOffset = 0;
-
         // Allocate reusable buffers once
         if (!this._tempMatrixData) {
             this._tempMatrixData = new Float32Array(this._maxTextures * 9);
@@ -782,17 +849,27 @@ void main() {
 
             const attachments = [];
 
-            // for (let i = 0; i < 1; i++) {
-                gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
-                    this.fpTexture, 0, this._renderOffset);
-                attachments.push(gl.COLOR_ATTACHMENT0);
+            const targetColorLayer   = renderInfo.dataIndex;
+            const targetStencilLayer = renderInfo.stencilIndex;
 
-                gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + 1,
-                    this.fpTextureClip, 0, this._renderOffset);
-                attachments.push(gl.COLOR_ATTACHMENT0 + 1);
+            // for (let i = 0; i < 1; i++) {
+
+            // color
+            gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                this.colorTextureA, 0, targetColorLayer);
+            attachments.push(gl.COLOR_ATTACHMENT0);
+
+            // stencil
+            gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1,
+                this.stencilTextureA, 0, targetStencilLayer);
+            attachments.push(gl.COLOR_ATTACHMENT0 + 1);
+
             //}
 
             gl.drawBuffers(attachments);
+
+            const packIndex = (typeof renderInfo.packIndex === "number") ? renderInfo.packIndex : 0;
+            gl.uniform1i(this._tileLayerLoc, packIndex);
 
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
@@ -840,7 +917,7 @@ void main() {
                         const tile = rasterTiles[currentIndex + i];
 
                         gl.activeTexture(gl.TEXTURE0 + i);
-                        gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+                        gl.bindTexture(gl.TEXTURE_2D_ARRAY, tile.texture);
 
                         this._tempMatrixData.set(tile.transformMatrix, i * 9);
                         this._tempTexCoords.set(tile.position, i * 8);
@@ -942,8 +1019,6 @@ void main() {
 
                 gl.uniform2f(this._renderClipping, 0, 0);
             }
-
-            this._renderOffset++;
         }
 
         gl.disable(gl.DEPTH_TEST);
@@ -956,6 +1031,8 @@ void main() {
         }
         renderOutput.texture = this.fpTexture;
         renderOutput.stencil = this.fpTextureClip;
+        renderOutput.textureDepth = this._dataLayerCount;
+        renderOutput.stencilDepth = this._tiledImageCount;
 
         return renderOutput;
     }
@@ -963,13 +1040,16 @@ void main() {
     unload() {
     }
 
-    setDimensions(x, y, width, height, dataLayerCount) {
+    setDimensions(x, y, width, height, dataLayerCount, tiledImageCount) {
         // Double swapping required else collisions
         this._createOffscreenTexture("colorTextureA", width, height, dataLayerCount, this.gl.LINEAR);
         // this._createOffscreenTexture("colorTextureB", width, height, dataLayerCount, this.gl.LINEAR);
 
-        this._createOffscreenTexture("stencilTextureA", width, height, dataLayerCount, this.gl.LINEAR);
+        this._createOffscreenTexture("stencilTextureA", width, height, tiledImageCount, this.gl.LINEAR);
         // this._createOffscreenTexture("stencilTextureB", width, height, dataLayerCount, this.gl.LINEAR);
+
+        this._dataLayerCount = dataLayerCount;
+        this._tiledImageCount = tiledImageCount;
 
         const gl  = this.gl;
 

@@ -46,7 +46,8 @@
 
     /**
      * @typedef {Object} RenderOutput
-     * @property {Number} sourcesLength
+     * @property {Number} textureDepth
+     * @property {Number} stencilDepth
      */
 
     /**
@@ -177,11 +178,11 @@
          * @instance
          * @memberof FlexRenderer
          */
-        setDimensions(x, y, width, height, levels) {
+        setDimensions(x, y, width, height, levels, tiledImageCount) {
             this.canvas.width = width;
             this.canvas.height = height;
             this.gl.viewport(x, y, width, height);
-            this.webglContext.setDimensions(x, y, width, height, levels);
+            this.webglContext.setDimensions(x, y, width, height, levels, tiledImageCount);
         }
 
         /**
@@ -212,11 +213,10 @@
             const result = program.use(this.__firstPassResult, source, undefined);
 
             if (this.debug) {
-                this._showOffscreenMatrix(result, source.length, {scale: 0.5, pad: 8});
+                this._showOffscreenMatrix(result, {scale: 0.5, pad: 8});
             }
 
             this.__firstPassResult = result;
-            this.__firstPassResult.sourcesLength = source.length;
             return result;
         }
 
@@ -608,7 +608,7 @@
                     dstGL: dst.gl,
                     srcTex: renderOutput.texture,
                     dstTex: prevDstTex,
-                    textureLayerCount: renderOutput.sourcesLength,
+                    textureLayerCount: renderOutput.textureDepth,
                     level,
                     format,
                     type,
@@ -626,7 +626,7 @@
                     dstGL: dst.gl,
                     srcTex: renderOutput.stencil,
                     dstTex: prevDstStencil,
-                    textureLayerCount: renderOutput.sourcesLength,
+                    textureLayerCount: renderOutput.stencilDepth,
                     level,
                     format,
                     type,
@@ -634,7 +634,8 @@
                 });
             }
 
-            out.sourcesLength = renderOutput.sourcesLength || 0;
+            out.textureDepth = renderOutput.textureDepth || 0;
+            out.stencilDepth = renderOutput.stencilDepth || 0;
             dst.__firstPassResult = out;
             return out;
         }
@@ -822,15 +823,17 @@
             return dstTex;
         }
 
-        _showOffscreenMatrix(renderOutput, length, {
+        _showOffscreenMatrix(renderOutput, {
             scale = 1,
             pad = 8,
             drawLabels = true,
             background = '#111'
         } = {}) {
-            // 2 columns: [Texture, Stencil], `length` rows
+            const colorLayers = renderOutput.textureDepth;
+            const stencilLayers = renderOutput.stencilDepth;
+
             const cols = 2;
-            const rows = length;
+            const rows = colorLayers;
             const width = Math.floor(this.canvas.width);
             const height = Math.floor(this.canvas.height);
             const cellW = Math.floor(width * scale);
@@ -897,7 +900,7 @@
             };
 
             // Iterate rows: each row = {texture i, stencil i}
-            for (let i = 0; i < length; i++) {
+            for (let i = 0; i < colorLayers; i++) {
                 // ---- texture ----
                 if (isGL2 && renderOutput.texture /* texture array */) {
                     attachLayer(renderOutput.texture, i);
@@ -920,8 +923,9 @@
                 ctx.drawImage(stage, 0, 0, width, height, xTex, yRow, cellW, cellH);
 
                 // ---- stencil ----
-                if (isGL2 && renderOutput.stencil /* texture array */) {
-                    attachLayer(renderOutput.stencil, i);
+                if (isGL2 && renderOutput.stencil /* texture array */ && stencilLayers > 0) {
+                    const stencilLayer = Math.min(i, stencilLayers - 1);
+                    attachLayer(renderOutput.stencil, stencilLayer);
                 } else {
                     console.error('No valid texture binding for "stencil" at index', i);
                     continue;
