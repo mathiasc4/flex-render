@@ -666,11 +666,11 @@
                 return `${this.webglContext.sampleTexture(sourceIndex, uv)}.${pattern}`;
             }
 
-            // General case: use osd_channel for each component
+            // TODO: we should call here API of the underlying engine to get sampling method, not hardcoding it here!
             const comps = offsets.map(off => `osd_channel(${sourceIndex}, ${baseChannel + off}, ${uv})`);
 
             if (comps.length === 1) {
-                return comps[0];               // float
+                return comps[0];
             }
             if (comps.length === 2) {
                 return `vec2(${comps.join(", ")})`;

@@ -42,7 +42,6 @@
 
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
 
-        //todo consider passing reference to this
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.FirstPassProgram(this, this.gl, this.firstAtlas), "firstPass");
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.SecondPassProgram(this, this.gl, this.secondAtlas), "secondPass");
     }
@@ -71,6 +70,27 @@
         this.renderer.getProgram(this.firstPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
         this.renderer.getProgram(this.secondPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
         //todo consider some elimination of too many calls
+    }
+
+    setBackground(background) {
+        // todo this is not very nice, we need to call setBg before programs are compiled in a generic way, so
+        //  we hit a case where first program is compiled and this setter called, while second program is not available
+        const program = this.renderer.getProgram(this.secondPassProgramKey);
+        if (!program) {
+            return;
+        }
+        let hex = background.replace(/^#/, "").trim();
+        if (hex.length === 6) {
+            hex += "FF";
+        }
+        if (hex.length !== 8) {
+            throw new Error("Hex must be RRGGBB or RRGGBBAA");
+        }
+        const r = parseInt(hex.slice(0, 2), 16) / 255;
+        const g = parseInt(hex.slice(2, 4), 16) / 255;
+        const b = parseInt(hex.slice(4, 6), 16) / 255;
+        const a = parseInt(hex.slice(6, 8), 16) / 255;
+        this.renderer.getProgram(this.secondPassProgramKey)._bgColor = `vec4(${r.toFixed(6)}, ${g.toFixed(6)}, ${b.toFixed(6)}, ${a.toFixed(6)})`;
     }
 
     destroy() {
@@ -192,6 +212,7 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
         this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1; // subtracting 1 to allow texture atlas to be bound; TODO: only bind texture atlas when it is needed
         //todo this might be limiting in some wild cases... make it configurable..? or consider 1d texture
         this.textureMappingsUniformSize = 64;
+        this._bgColor = 'vec4(.0)';
     }
 
     build(shaderMap, keyOrder) {
@@ -203,9 +224,13 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
             return;
         }
 
+        // todo consider clip test before setting intermediate color -> but we would have to test all clips, not just one
+        //   no clip: whole viewport has the color
+        //   clip: only rendered parts have the background color (likely more desirable)
         let definition = '',
             execution = `
-vec4 intermediate_color = vec4(.0);
+vec4 intermediate_color = ${this._bgColor};
+overall_color = intermediate_color;
 vec4 clip_color = vec4(.0);
 `,
             customBlendFunctions = '';
@@ -340,10 +365,8 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         const packCount = layout.packCount || [];
         const channelCount = packInfo.channelCount || [];
 
-        const world = renderer.drawer && renderer.drawer.viewer.world;
-        const itemCount = world ? world.getItemCount() : baseLayer.length;
-
-        const maxTI = this.textureMappingsUniformSize; // or a dedicated MAX_TILED_IMAGES
+        const itemCount = this._tiledImageCount;
+        const maxTI = this._dataLayerCount;
         const tiInfo = new Int32Array(maxTI * 2);
         const tiChannels = new Int32Array(maxTI);
 
@@ -410,6 +433,8 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
 
     // TODO we might want to fire only for active program and do others when really encesarry or with some delay, best at some common implementation level
     setDimensions(x, y, width, height, levels, tiledImageCount) {
+        this._dataLayerCount = levels;
+        this._tiledImageCount = tiledImageCount;
     }
 
     // PRIVATE FUNCTIONS

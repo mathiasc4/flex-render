@@ -79,11 +79,13 @@
          * @param {Boolean} incomingOptions.interactive             if true (default), the layers are configured for interactive changes (not applied by default)
          * @param {HTMLControlsHandler} incomingOptions.htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
          * @param {function} incomingOptions.htmlReset              callback called when a program is reset - html needs to be cleaned
+         * @param {string|undefined} incomingOptions.backgroundColor #RGB or #RGBA hex, default undefined - transparent
          *
          * @param {Object} incomingOptions.canvasOptions
          * @param {Boolean} incomingOptions.canvasOptions.alpha
          * @param {Boolean} incomingOptions.canvasOptions.premultipliedAlpha
          * @param {Boolean} incomingOptions.canvasOptions.stencil
+         *
          *
          * @constructor
          * @memberof FlexRenderer
@@ -104,6 +106,7 @@
             this.interactive = incomingOptions.interactive === undefined ?
                 !!incomingOptions.htmlHandler : !!incomingOptions.interactive;
             this.htmlHandler = this.interactive ? incomingOptions.htmlHandler : null;
+            this._background = incomingOptions.backgroundColor || '#00000000';
 
             if (this.htmlHandler) {
                 if (!incomingOptions.htmlReset) {
@@ -186,6 +189,16 @@
         }
 
         /**
+         * Set viewer background color, supports #RGBA or #RGB syntax. Note that setting the value
+         * does not do anything until you recompile the shaders and should be done as early as possible,
+         * at best using the constructor options.
+         * @param (background)
+         */
+        setBackground(background) {
+            this._background = background || '#00000000';
+        }
+
+        /**
          * Whether the FlexRenderer creates HTML elements in the DOM for ShaderLayers' controls.
          * @return {Boolean}
          *
@@ -252,6 +265,7 @@
             if (!program) {
                 program = this._programImplementations[key];
             }
+            // TODO consider deleting only if succesfully compiled to avoid critical errors
             if (this._programImplementations[key]) {
                 this.deleteProgram(key);
             }
@@ -269,6 +283,9 @@
                     this.createShaderLayer(shaderId, config, false);
                 }
             }
+            // Needs reference early
+            this._programImplementations[key] = program;
+            this.webglContext.setBackground(this._background);
 
             program.build(this._shaders, this.getShaderLayerOrder());
             // Used also to re-compile, set requiresLoad to true
@@ -278,10 +295,10 @@
             if (errMsg) {
                 this.gl.deleteProgram(webglProgram);
                 program._webGLProgram = null;
-                throw Error(errMsg);
+                this._programImplementations[key] = null;
+                throw new Error(errMsg);
             }
 
-            this._programImplementations[key] = program;
             if ($.FlexRenderer.WebGLImplementation._compileProgram(
                 webglProgram, this.gl, program, $.console.error, this.debug
             )) {
@@ -289,6 +306,7 @@
                 program.created(webglProgram, this.canvas.width, this.canvas.height);
                 return key;
             }
+            // else todo consider some cleanup
             return undefined;
         }
 

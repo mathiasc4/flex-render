@@ -69,12 +69,6 @@
             const enabledExpr = this.enabled.sample();
             const colorExpr   = this.color.sample("1.0", "float");
 
-            // Use sampleChannel with baseChannel = ch, raw=true (no filters),
-            // then apply filters via this.filter to keep standard behavior.
-            const rawSample = this.sampleChannel("v_texture_coords");
-
-            const filteredSample = this.filter(rawSample);                 // still a float
-
             return `
     // Total physical channels in source 0
     int nPhys = osd_channel_count(0);
@@ -84,9 +78,7 @@
         return vec4(0.0);
     }
 
-    float v  = ${rawSample};
-    float fv = ${filteredSample};
-
+    float fv = ${this.sampleChannel("v_texture_coords")};
     vec3 col = fv * (${colorExpr});
     return vec4(col, fv);
 `;

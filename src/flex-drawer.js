@@ -79,7 +79,9 @@
                 usePrivateCache: true,
                 preloadCache: true,
                 copyShaderConfig: false,
-                handleNavigator: true
+                handleNavigator: true,
+                // hex bg color, by default transparent
+                backgroundColor: undefined
             };
         }
 
@@ -386,8 +388,8 @@
                 this._buildStamp = Date.now();
                 this.renderer.setDimensions(0, 0, this.canvas.width, this.canvas.height, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
                 // this.renderer.registerProgram(null, this.renderer.webglContext.firstPassProgramKey);
-                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
                 this._updatePackLayout();
+                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
                 this.rebuildCounter++;
                 return $.Promise.resolve();
             }
@@ -401,8 +403,8 @@
                     this._buildStamp = Date.now();
                     this.renderer.setDimensions(0, 0, this.canvas.width, this.canvas.height, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
                     // this.renderer.registerProgram(null, this.renderer.webglContext.firstPassProgramKey);
-                    this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
                     this._updatePackLayout();
+                    this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
                     this.rebuildCounter++;
                     this._rebuildHandle = null;
                     success();
@@ -627,6 +629,7 @@
                         vectors: vecPayload,
                         polygons: polygons,
                         dataIndex: baseLayer + packIndex,
+                        stencilIndex: tiledImageIndex,
                         packIndex: packIndex,
                         _temp: overallMatrix, // todo dirty
                     });

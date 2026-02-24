@@ -159,6 +159,13 @@
             //no-op
         }
 
+        /**
+         * Set viewer background color, supports #RGBA syntax
+         * @param (background)
+         */
+        setBackground(background) {
+        }
+
         destroy() {
         }
 
