@@ -55,7 +55,8 @@
      * @returns {string} glsl code for texture sampling
      */
     sampleTexture(index, vec2coords) {
-        return `osd_texture(${index}, ${vec2coords})`;
+        // todo make pack index configurable and use this instead of hardcoding functions inside shaderlayer sampleChannel(...)
+        return `osd_texture(${index}, 0, ${vec2coords})`;
     }
 
     sampleTextureAtlas(textureId, vec2coords) {
@@ -342,8 +343,6 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         this._stencilLocation = gl.getUniformLocation(program, "u_stencilTextures");
 
         this._tiInfoLoc = gl.getUniformLocation(program, "u_tiInfo");
-        this._tiChannelCountLoc = gl.getUniformLocation(program, "u_tiChannelCount");
-
         this.vao = gl.createVertexArray();
     }
 
@@ -365,22 +364,17 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         const packCount = layout.packCount || [];
         const channelCount = packInfo.channelCount || [];
 
-        const itemCount = this._tiledImageCount;
         const maxTI = this._dataLayerCount;
-        const tiInfo = new Int32Array(maxTI * 2);
-        const tiChannels = new Int32Array(maxTI);
-
-        for (let i = 0; i < Math.min(itemCount, maxTI); i++) {
+        const tiInfo = new Int32Array(maxTI * 3);
+        for (let i = 0; i < maxTI; i++) {
             const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i; // fallback
             const pc = (typeof packCount[i] === "number") ? packCount[i] : 1;
-            tiInfo[i * 2] = base;
-            tiInfo[i * 2 + 1] = pc;
-
-            tiChannels[i] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
+            tiInfo[i * 3] = base;
+            tiInfo[i * 3 + 1] = pc;
+            tiInfo[i * 3 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
         }
 
-        this.gl.uniform2iv(this._tiInfoLoc, tiInfo);
-        this.gl.uniform1iv(this._tiChannelCountLoc, tiChannels);
+        this.gl.uniform3iv(this._tiInfoLoc, tiInfo);
     }
 
     /**
@@ -404,8 +398,10 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
             instanceTextureIndexes.push(...renderInfo.shader.getConfig().tiledImages);
         }
 
+        // todo _instanceOffsets and _instanceTextureIndexes are possibly static per program lifetime, so we could do this once at load()
         gl.uniform1iv(this._instanceOffsets, instanceOffsets);
         gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
+        // todo changes dynamically, but could be stored per tiled image instead of per-shader layer
         gl.uniform3fv(this._shaderVariables, shaderVariables);
 
         gl.activeTexture(gl.TEXTURE0);
@@ -478,12 +474,14 @@ precision mediump int;
 precision mediump float;
 precision mediump sampler2DArray;
 
-uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
+// Stores shader index -> pointer to u_instanceTextureIndexes
 uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
+// Stores texture indexes for each shader, beginning at index obtained from u_instanceOffsets
+uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
+// Carries shader global attributes (opacity, pixelSize, zoom)
 uniform vec3 u_shaderVariables[${this.textureMappingsUniformSize}];
-
-uniform ivec2 u_tiInfo[${this.textureMappingsUniformSize}];
-uniform int   u_tiChannelCount[${this.textureMappingsUniformSize}];
+// For each tiled image, we store (base texture offset, pack count, channel count)
+uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
 
 in vec2 v_texture_coords;
 
@@ -505,22 +503,14 @@ int osd_pack_count(int sourceIndex) {
 int osd_channel_count(int sourceIndex) {
     int offset = u_instanceOffsets[instance_id];
     int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
-    int cc = u_tiChannelCount[worldIndex];
-    if (cc <= 0) {
-        return u_tiInfo[worldIndex].y * 4;
+    ivec3 info = u_tiInfo[worldIndex];
+    if (info.z <= 0) {
+        return info.y * 4;
     }
-    return cc;
+    return info.z;
 }
 
-vec4 osd_texture(int sourceIndex, vec2 coords) {
-    // backwards compatible: first pack
-    int offset = u_instanceOffsets[instance_id];
-    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
-    int base = u_tiInfo[worldIndex].x;
-    return texture(u_inputTextures, vec3(coords, float(base)));
-}
-
-vec4 osd_texture_pack(int sourceIndex, int packIndex, vec2 coords) {
+vec4 osd_texture(int sourceIndex, int packIndex, vec2 coords) {
     int offset = u_instanceOffsets[instance_id];
     int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
     int base = u_tiInfo[worldIndex].x;
@@ -532,7 +522,7 @@ vec4 osd_texture_pack(int sourceIndex, int packIndex, vec2 coords) {
 float osd_channel(int sourceIndex, int channelIndex, vec2 coords) {
     int pack = channelIndex >> 2;
     int comp = channelIndex & 3;
-    vec4 v = osd_texture_pack(sourceIndex, pack, coords);
+    vec4 v = osd_texture(sourceIndex, pack, coords);
          if (comp == 0) return v.r;
     else if (comp == 1) return v.g;
     else if (comp == 2) return v.b;
@@ -545,7 +535,7 @@ vec4 osd_stencil_texture(int instance, int sourceIndex, vec2 coords) {
     return texture(u_stencilTextures, vec3(coords, float(index)));
 }
 
-// todo index unused, but we might want to keep it
+// todo index unused, but we might want to keep it (other rendering engines might need it on the API level, not necessarily here in GLSL)
 ivec2 osd_texture_size(int sourceIndex) {
     return textureSize(u_inputTextures, 0).xy;
 }
@@ -856,6 +846,8 @@ void main() {
 
         gl.enable(gl.STENCIL_TEST);
 
+        let isBlend = true;
+
         // this.fpTexture = this.fpTexture === this.colorTextureA ? this.colorTextureB : this.colorTextureA;
         // this.fpTextureClip = this.fpTextureClip === this.stencilTextureA ? this.stencilTextureB : this.stencilTextureA;
         this.fpTexture = this.colorTextureA;
@@ -932,6 +924,12 @@ void main() {
 
             const tileCount = rasterTiles.length;
             if (tileCount) {
+                // Tiles MUST NOT blend - alpha channel can carry data just like another channel payload
+                if (isBlend) {
+                    gl.disable(gl.BLEND);
+                    isBlend = false;
+                }
+                isBlend = false;
                 // Then draw join tiles
                 gl.bindVertexArray(this.firstPassVao);
                 let currentIndex = 0;
@@ -961,6 +959,11 @@ void main() {
 
             const vectors = renderInfo.vectors;
             if (vectors && vectors.length) {
+                // Vectors MUST blend, as they can overlap within single layer
+                if (!isBlend) {
+                    gl.enable(gl.BLEND);
+                    isBlend = true;
+                }
                 // Signal geometry branch in shader
                 gl.uniform2f(this._renderClipping, 1, 1);
                 gl.bindVertexArray(this.firstPassVaoGeom);
@@ -1048,6 +1051,11 @@ void main() {
 
         gl.disable(gl.DEPTH_TEST);
         gl.disable(gl.STENCIL_TEST);
+
+        // blending by default ON
+        if (!isBlend) {
+            gl.enable(gl.BLEND);
+        }
 
         gl.bindVertexArray(null);
 

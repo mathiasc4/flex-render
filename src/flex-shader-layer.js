@@ -452,9 +452,11 @@
             this.__channels = [];
             this.__baseChannels = [];
 
-            const parseChannel = (controlName, def, sourceDef, index) => {
+            const parseChannel = (def, sourceDef, index) => {
+                const controlName = `use_channel${index}`;
                 const predefined = this.constructor.defaultControls[controlName];
                 const baseName = `use_channel_base${index}`;
+                const predefinedBase = this.constructor.defaultControls[baseName];
 
                 let base = 0;
                 let channel;
@@ -478,11 +480,17 @@
                 }
 
                 // 3) explicit base override via use_channel_baseX
-                if (options[baseName] != null) {  // eslint-disable-line eqeqeq
-                    const v = parseInt(options[baseName], 10);
-                    if (!Number.isNaN(v) && v >= 0) {
-                        base = v;
+                if (options[baseName] || predefinedBase) {
+                    base = predefinedBase && predefinedBase.required;
+                    if (!base) {
+                        base = force ? options[baseName] :
+                            this.loadProperty(baseName, options[baseName] || predefinedBase.default);
                     }
+                    base = parseInt(base, 10);
+                }
+
+                if (Number.isNaN(base) || base < 0) {
+                    base = 0;
                 }
 
                 // 4) validate / normalize channel pattern as before
@@ -517,7 +525,7 @@
 
             const sources = this.constructor.sources();
             for (let i = 0; i < sources.length; i++) {
-                parseChannel(`use_channel${i}`, "r", sources[i], i);
+                parseChannel("r", sources[i], i);
             }
         }
 
@@ -667,6 +675,7 @@
             }
 
             // TODO: we should call here API of the underlying engine to get sampling method, not hardcoding it here!
+            //       we should also rely on osd_channel_pack instead of calling X times osd_channel
             const comps = offsets.map(off => `osd_channel(${sourceIndex}, ${baseChannel + off}, ${uv})`);
 
             if (comps.length === 1) {
