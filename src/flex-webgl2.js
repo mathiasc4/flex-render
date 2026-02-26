@@ -979,8 +979,8 @@ void main() {
                         gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
 
                         // Bind per-vertex colors (normalized u8 → float 0..1)
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboCol);
-                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
 
                         // Bind indices and draw one instance
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
@@ -998,8 +998,8 @@ void main() {
                         gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
 
                         // Bind per-vertex colors (normalized u8 → float 0..1)
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboCol);
-                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
 
                         // Bind indices and draw one instance
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
@@ -1017,8 +1017,8 @@ void main() {
                         gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
 
                         // Bind per-vertex colors (normalized u8 → float 0..1)
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboCol);
-                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
 
                         // Bind indices and draw one instance
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
