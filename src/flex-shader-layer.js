@@ -300,7 +300,7 @@
             // add opacity control manually to every ShaderLayer; if not already defined
             if (defaultControls.opacity === undefined || (typeof defaultControls.opacity === "object" && !defaultControls.opacity.accepts("float"))) {
                 defaultControls.opacity = {
-                    default: {type: "range", default: 1, min: 0, max: 1, step: 0.1, title: "Opacity: "},
+                    default: {type: "range", default: 1, min: 0, max: 1, step: 0.1, title: "Opacity"},
                     accepts: (type, instance) => type === "float"
                 };
             }

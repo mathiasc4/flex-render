@@ -49,7 +49,7 @@
                     default: {
                         type: "color",
                         default: "#ff00ff",
-                        title: "Channel color"
+                        title: "Color"
                     },
                     accepts: (type) => type === "vec3"
                 }
@@ -60,7 +60,6 @@
             const ch = this.getDefaultChannelBase();
 
             // Controls as GLSL expressions
-            const enabledExpr = this.enabled.sample();
             const colorExpr   = this.color.sample("1.0", "float");
 
             // todo avoid calling osd_* methods, use API calls e,g, $(this.channelCount(optionalIndex))
