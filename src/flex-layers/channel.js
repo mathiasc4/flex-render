@@ -44,12 +44,6 @@
                     default: "r"
                 },
 
-                // Enable/disable this logical channel
-                enabled: {
-                    default: { type: "bool", default: true, title: "Enabled" },
-                    accepts: (type) => type === "bool"
-                },
-
                 // Color for this channel
                 color: {
                     default: {
@@ -69,12 +63,9 @@
             const enabledExpr = this.enabled.sample();
             const colorExpr   = this.color.sample("1.0", "float");
 
+            // todo avoid calling osd_* methods, use API calls e,g, $(this.channelCount(optionalIndex))
             return `
-    // Total physical channels in source 0
-    int nPhys = osd_channel_count(0);
-
-    // If disabled or not enough channels, output transparent
-    if (!(${enabledExpr}) || ${ch} < 0 || ${ch} >= nPhys) {
+    if (${ch} < 0 || ${ch} >= osd_channel_count(0)) {
         return vec4(0.0);
     }
 

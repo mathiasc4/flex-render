@@ -619,14 +619,14 @@ $.FlexRenderer.UIControls.IControl = class {
      * Load a value from cache to support its caching - should be used on all values
      * that are available for the user to play around with and change using UI controls
      *
-     * @param defaultValue value to return in case of no cached value
+     * @param defaultValue value to return in case of no cached value, if undefined, it is fetched from supports()
      * @param paramName name of the parameter, must be equal to the name from 'supports' definition
-     *  - default value can be empty string
      * @return {*} cached or default value
      */
     load(defaultValue, paramName = "") {
-        const value = this.owner.loadProperty(this.name + (paramName === "default" ? "" : paramName), defaultValue);
-        return value;
+        return this.owner.loadProperty(this.name + (paramName === "default" ? "" : paramName),
+            defaultValue === undefined ? this.supports[paramName] : defaultValue,
+        );
     }
 
     /**
