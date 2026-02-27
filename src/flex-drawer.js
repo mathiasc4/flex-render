@@ -1055,7 +1055,15 @@
                 gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
                 tileInfo.texture = texture;
-                // todo might need to rebuild since we changed TI dimensions... :/
+
+                if (this._packLayoutDirty) {
+                    // todo rebuild should not be necessary, but this does not work, likely beacuse we need to also call again program.load() due to uniforms
+                    //this._updatePackLayout();
+                    //this.renderer.setDimensions(0, 0, this.canvas.width, this.canvas.height, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
+                    this._packLayoutDirty = false;
+                    this._requestRebuild();
+                }
+
                 return $.Promise.resolve(tileInfo);
             }
 

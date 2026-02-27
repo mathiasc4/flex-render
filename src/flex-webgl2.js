@@ -357,14 +357,14 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         }
         this.atlas.load(this.webGLProgram);
 
-        const renderer = this.context;
+        const renderer = this.context.renderer;
         const packInfo = renderer.__flexPackInfo || {};
         const layout = packInfo.layout || {};
         const baseLayer = layout.baseLayer || [];
         const packCount = layout.packCount || [];
         const channelCount = packInfo.channelCount || [];
 
-        const maxTI = this._dataLayerCount;
+        const maxTI = this._tiledImageCount;
         const tiInfo = new Int32Array(maxTI * 3);
         for (let i = 0; i < maxTI; i++) {
             const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i; // fallback
@@ -415,6 +415,12 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         this.atlas.bind(gl.TEXTURE2, 2);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        // Unbinding textures removes feedback loop when we write to it in the first pass
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
         gl.bindVertexArray(null);
 
         return renderOutput;
