@@ -516,6 +516,7 @@
                 const tilesToDraw = tiledImage.getTilesToDraw();
 
                 // rendering in 4 overlapping groups of non-overlapping tiles so the depth value stays relatively small
+                // TODO: move the tile ordering elsewhere to reduce amount of time spent recomputing it - possibly to TiledImage
                 tilesToDraw.sort(
                     (entryA, entryB) => {
                         let levelA = entryA.tile.level;

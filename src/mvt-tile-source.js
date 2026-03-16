@@ -165,6 +165,7 @@ function packMesh(m) {
     };
 }
 
+// TODO: make icons dynamic
 const iconMapping = {
     country: {
         textureId: 0,

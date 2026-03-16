@@ -22,6 +22,8 @@
     init() {
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
 
+        // TODO: make icons dynamic
+
         const countryIcon = new Image();
         countryIcon.src = "/icons/place/country-icon.png";
         countryIcon.onload = () => {
@@ -896,7 +898,7 @@ void main() {
 
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
-            this.atlas.bind(gl.TEXTURE0 + this._maxTextures, this._maxTextures);
+            this.atlas.bind(gl.TEXTURE0 + this._maxTextures, this._maxTextures); // TODO: find out if this could be run only once at setup
 
             // First, clip polygons if any required
             if (renderInfo.polygons.length) {
@@ -1031,6 +1033,7 @@ void main() {
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }
 
+                    // TODO: find out if we can somehow combine points and icons
                     batch = vectorTile.icons;
                     if (batch) {
                         if (!vectorTile.fills && !vectorTile.lines && !vectorTile.points) {
