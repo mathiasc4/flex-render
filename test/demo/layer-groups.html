@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Drawer Comparison Demo</title>
+    <script type="text/javascript" src='../../openseadragon/openseadragon.js'></script>
+    <script type="text/javascript" src='/build/openseadragon/flex-renderer.js'></script>
+    <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
+    <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
+    <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+
+    <script type="module" src="./layer-groups.js"></script>
+    <style type="text/css">
+        .content{
+            max-width:960px;
+            margin: 0 auto;
+        }
+        .viewer-container {
+            aspect-ratio: 4 / 3;
+            border: thin gray solid;
+            position:relative;
+        }
+        .example-code{
+            background-color:tan;
+            border: thin black solid;
+            padding:10px;
+            display:inline-block;
+            width:95%;
+        }
+        .description pre{
+            display:inline-block;
+            background-color:gainsboro;
+            padding:0;
+            margin:0;
+        }
+        .image-options{
+            display: grid;
+            grid-template-columns: 2em 9em 1fr;
+            padding:3px;
+            border: thin gray solid;
+        }
+        .option-grid{
+            display: grid;
+            grid-template-columns: 7em 7em 9em 9em 10em 9em;
+            /* grid-template-columns: repeat(5, auto); */
+        }
+        .image-options input[type=number]{
+            width: 5em;
+        }
+        .image-options select{
+            width: 5em;
+        }
+    </style>
+</head>
+<body>
+    <div class="content">
+        <h2>Shader Layer Group Test</h2>
+        <div style="display: flex; flex-direction: row; flex-wrap: wrap;">
+            <section style="flex: auto">
+                <h3 id="title-w">Loading...</h3>
+                <div id="drawer-canvas" class="viewer-container"></div>
+            </section>
+            <section id="my-shader-ui-container" style="width: 300px; padding: 10px; border: 1px solid #ccc; margin-left: 20px;">
+                <h2>Shader Layer Controls</h2>
+            </section>
+        </div>
+
+        <h3>Image options (drag and drop to re-order images)</h3>
+        <div id="image-picker">
+
+        </div>
+    </div>
+
+</body>
+</html>
