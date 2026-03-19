@@ -42,6 +42,7 @@ module.exports = function(grunt) {
             "src/flex-layers/colormap.js",
             "src/flex-layers/default.js",
             "src/flex-layers/edge-isoline.js",
+            "src/flex-layers/group.js",
             "src/flex-layers/heatmap.js",
             "src/flex-layers/sobel.js",
             "src/flex-layers/texture.js",

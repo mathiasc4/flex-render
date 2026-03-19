@@ -61,10 +61,6 @@
         return `osd_texture(${index}, 0, ${vec2coords})`;
     }
 
-    sampleTextureAtlas(textureId, vec2coords) {
-        return `osd_atlas_texture(${textureId}, ${vec2coords})`;
-    }
-
     getTextureSize(index) {
         return `osd_texture_size(${index})`;
     }

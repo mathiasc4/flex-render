@@ -115,13 +115,16 @@
             // If custom rendering used, use arbitrary external configuration
             this._configuredExternally = true;
             this.renderer.deleteShaders();
+
             for (let shaderID in shaders) {
-                $.console.log("Registering shader", shaderID, shaders[shaderID], this._isNavigatorDrawer);
                 let config = shaders[shaderID];
+                $.console.log("Creating shader layer", shaderID, config, this._isNavigatorDrawer);
                 this.renderer.createShaderLayer(shaderID, config, this.options.copyShaderConfig);
             }
+
             shaderOrder = shaderOrder || Object.keys(shaders);
             this.renderer.setShaderLayerOrder(shaderOrder);
+
             return this._requestRebuild(0);
         }
 

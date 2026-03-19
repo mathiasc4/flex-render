@@ -416,7 +416,7 @@
         }
 
         /**
-         * Create and initialize new ShaderLayer instantion and its controls.
+         * Create and initialize new ShaderLayer instance and its controls.
          * @param id
          * @param {ShaderConfig} shaderConfig object bound to a concrete ShaderLayer instance
          * @param {boolean} [copyConfig=false] if true, deep copy of the config is used to avoid modification of the parameter

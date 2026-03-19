@@ -134,7 +134,7 @@
         }
 
         /**
-         * Manuall constructor for ShaderLayer. Keeped for backward compatibility.
+         * Manual constructor for ShaderLayer. Kept for backward compatibility.
          */
         construct() {
             // Default init respects cached value, manual usage overrides.
@@ -744,7 +744,7 @@
             if (!code) {
                 $.console.warn("Invalid blending - using default", this._blend, this);
                 // Set to mask, typical wanted value if mode is not show. If mode=show, there is a hardcoded blend function.
-                this._blend = 'blend';
+                this._blend = 'mask';
                 code = this.webglContext.getBlendingFunction(this._blend);
             }
             return `vec4 ${functionName}(vec4 fg, vec4 bg) {
