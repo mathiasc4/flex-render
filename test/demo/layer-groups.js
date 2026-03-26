@@ -95,31 +95,28 @@ let shaderLayerConfig = {
         "shaders": {
             "leaves": {
                 "type": "identity",
-                "tiledImages": [1]
+                "tiledImages": [1],
             },
             "bblue": {
                 "type": "identity",
-                "tiledImages": [2]
+                "tiledImages": [2],
             },
         },
     },
 };
 
-// let shaderLayerConfig = {
+// shaderLayerConfig = {
 //     "rainbow": {
 //         "type": "identity",
 //         "tiledImages": [0],
-//         "visible": true,
 //     },
 //     "leaves": {
 //         "type": "identity",
 //         "tiledImages": [1],
-//         "visible": true,
 //     },
 //     "bblue": {
 //         "type": "identity",
 //         "tiledImages": [2],
-//         "visible": true,
 //     },
 // };
 

@@ -17,6 +17,14 @@
                 return "Group shader layers.";
             }
 
+            static sources() {
+                return [];
+            }
+
+            static get defaultControls() {
+                return {};
+            }
+
             createShaderLayer(id, config) {
                 const ShaderLayer = $.FlexRenderer.ShaderMediator.getClass(config.type);
                 if (!ShaderLayer) {
@@ -60,6 +68,8 @@
             }
 
             construct() {
+                super.construct();
+
                 this.shaderLayers = {};
 
                 const shaderLayerConfigs = this.__shaderConfig["shaders"] || {};
@@ -73,12 +83,28 @@
                 this.shaderLayerOrder = this.__shaderConfig["order"] || Object.keys(shaderLayerConfigs);
             }
 
-            static sources() {
-                return [];
+            init() {
+                super.init();
+
+                for (let id of this.shaderLayerOrder) {
+                    this.shaderLayers[id].init();
+                }
             }
 
-            static get defaultControls() {
-                return {};
+            glLoaded(program, gl) {
+                super.glLoaded(program, gl);
+
+                for (let id of this.shaderLayerOrder) {
+                    this.shaderLayers[id].glLoaded(program, gl);
+                }
+            }
+
+            glDrawing(program, gl) {
+                super.glDrawing(program, gl);
+
+                for (let id of this.shaderLayerOrder) {
+                    this.shaderLayers[id].glDrawing(program, gl);
+                }
             }
 
             constructShaderLayerCode(shaderLayer) {
@@ -95,9 +121,7 @@ vec4 compute_${shaderLayer.uid}() {
             }
 
             getFragmentShaderDefinition() {
-                console.log(this.shaderLayers);
-                console.log(this.shaderLayerOrder);
-                let definition = "";
+                let definition = super.getFragmentShaderDefinition() + "\n";
 
                 for (let id of this.shaderLayerOrder) {
                     let shaderLayer = this.shaderLayers[id];
@@ -109,7 +133,7 @@ vec4 compute_${shaderLayer.uid}() {
             }
 
             getFragmentShaderExecution() {
-                let execution = "";
+                let execution = "vec4 new_color = vec4(0.0);\nvec4 combined_color = vec4(0.0);\nvec4 clip_color = vec4(0.0);";
 
                 const shaderMap = this.shaderLayers;
                 const keyOrder = this.shaderLayerOrder;
@@ -117,12 +141,10 @@ vec4 compute_${shaderLayer.uid}() {
                 let remainingBlenForShaderID = '';
                 const getRemainingBlending = () => { //todo next blend argument
                     if (remainingBlenForShaderID) {
-                        const i = keyOrder.indexOf(remainingBlenForShaderID);
                         const shader = shaderMap[remainingBlenForShaderID];
-                        // Set stencilPasses again: we are going to blend deferred data
+                        // stencilPasses override removed, currently using the stencil for the whole group, will need extra logic if we want stencil checks for every child separate
                         return `
-    stencilPasses = osd_stencil_texture(${i}, 0, v_texture_coords).r > 0.995;
-    overall_color = ${shader.mode === "show" ? "blend_source_over" : shader.uid + "_blend_func"}(intermediate_color, overall_color);
+    combined_color = ${shader.mode === "show" ? "blend_source_over" : shader.uid + "_blend_func"}(new_color, combined_color);
 `;
                     }
                     return '';
@@ -142,15 +164,17 @@ vec4 compute_${shaderLayer.uid}() {
                         if (previousShaderLayer._mode !== "clip") {
                             execution += `${getRemainingBlending()}
 // ${previousShaderLayer.constructor.type()} - Disabled (error or visible = false)
-intermediate_color = vec4(.0);`;
+new_color = vec4(0.0);`;
                             remainingBlenForShaderID = previousShaderID;
                         } else {
                             execution += `
 // ${previousShaderLayer.constructor.type()} - Disabled with Clipmask (error or visible = false)
-intermediate_color = ${previousShaderLayer.uid}_blend_func(vec4(.0), intermediate_color);`;
+new_color = ${previousShaderLayer.uid}_blend_func(vec4(0.0), new_color);`;
                         }
                         continue;
                     }
+
+                    const global_i
 
                     execution += `
     instance_id = ${i};
@@ -167,22 +191,24 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(vec4(.0), intermediat
                     if (previousShaderLayer._mode !== "clip") {
                         execution += `${getRemainingBlending()}
 // ${previousShaderLayer.constructor.type()} - Blending
-intermediate_color = ${previousShaderLayer.uid}_execution();
-intermediate_color.a = intermediate_color.a * ${opacityModifier};`;
+new_color = compute_${previousShaderLayer.uid}();
+new_color.a = new_color.a * ${opacityModifier};`;
 
                         remainingBlenForShaderID = previousShaderID;
                     } else {
                         execution += `
 // ${previousShaderLayer.constructor.type()} - Clipping
-clip_color = ${previousShaderLayer.uid}_execution();
+clip_color = compute_${previousShaderLayer.uid}();
 clip_color.a = clip_color.a * ${opacityModifier};
-intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermediate_color);`;
+new_color = ${previousShaderLayer.uid}_blend_func(clip_color, new_color);`;
                     }
                 } // end of for cycle
 
                 if (remainingBlenForShaderID) {
                     execution += getRemainingBlending();
                 }
+
+                execution += "return combined_color;";
 
                 return execution;
             }
