@@ -387,6 +387,7 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
         const shaderVariables = [];
         const instanceOffsets = [];
         const instanceTextureIndexes = [];
+
         for (const renderInfo of renderArray) {
             renderInfo.shader.glDrawing(this.webGLProgram, gl);
 

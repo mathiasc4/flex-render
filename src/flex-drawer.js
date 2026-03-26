@@ -649,29 +649,37 @@
             return true;
         }
 
+        _collectShaderUniforms(shaders, shaderOrder, viewport) {
+            const sources = [];
+
+            for (let id of shaderOrder) {
+                const shader = shaders[id];
+                const config = shader.getConfig();
+
+                const tiledImage = this.viewer.world.getItemAt(config.tiledImages[0]);
+
+                sources.push({
+                    zoom: viewport.zoom,
+                    pixelSize: tiledImage ? this._tiledImageViewportToImageZoom(tiledImage, viewport.zoom) : 1,
+                    opacity: tiledImage ? tiledImage.getOpacity() : 1,
+                    shader: shader,
+                });
+
+                if (shader.constructor.type() === "group") {
+                    sources.push(...this._collectShaderUniforms(shader.shaderLayers, shader.shaderLayerOrder, viewport));
+                }
+            }
+
+            return sources;
+        }
+
         /**
          * During the second-pass draw from the off-screen textures into the rendering canvas,
          * applying the image-processing operations and rendering customizations.
          * @param {Object} viewport has bounds, center, rotation, zoom
          */
         _drawTwoPassSecond(viewport) {
-            const sources = [];
-            const shaders = this.renderer.getAllShaders();
-
-            for (let shaderID of this.renderer.getShaderLayerOrder()) {
-                const shader = shaders[shaderID];
-                const config = shader.getConfig();
-
-                // TODO Here we could do some nicer logics, RN we just treat TI0 as a source of truth
-                // also when rendering offscreen, the tiled image might be detached
-                const tiledImage = this.viewer.world.getItemAt(config.tiledImages[0]);
-                sources.push({
-                    zoom: viewport.zoom,
-                    pixelSize: tiledImage ? this._tiledImageViewportToImageZoom(tiledImage, viewport.zoom) : 1,
-                    opacity: tiledImage ? tiledImage.getOpacity() : 1,
-                    shader: shader
-                });
-            }
+            const sources = this._collectShaderUniforms(this.renderer.getAllShaders(), this.renderer.getShaderLayerOrder(), viewport);
 
             if (!sources.length) {
                 this.viewer.forceRedraw();
