@@ -214,33 +214,208 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
         this._bgColor = 'vec4(.0)';
     }
 
+    // PRIVATE FUNCTIONS
+
+    /**
+     * Get vertex shader's glsl code.
+     * @returns {string} vertex shader's glsl code
+     */
+    _getVertexShaderSource() {
+        const vertexShaderSource = `#version 300 es
+precision mediump int;
+precision mediump float;
+
+out vec2 v_texture_coords;
+
+const vec3 viewport[4] = vec3[4] (
+    vec3(-1.0, 1.0, 1.0),
+    vec3(-1.0, -1.0, 1.0),
+    vec3(1.0, 1.0, 1.0),
+    vec3(1.0, -1.0, 1.0)
+);
+
+void main() {
+    v_texture_coords = vec2(viewport[gl_VertexID]) / 2.0 + 0.5;
+    gl_Position = vec4(viewport[gl_VertexID], 1.0);
+}
+`;
+
+        return vertexShaderSource;
+    }
+
+    /**
+     * Get fragment shader's glsl code.
+     * @param {string} definition ShaderLayers' glsl code placed outside the main function
+     * @param {string} execution ShaderLayers' glsl code placed inside the main function
+     * @param {string} customBlendFunctions ShaderLayers' GLSL code for custom blend functions
+     * @param {Object} globalScopeCode ShaderLayers' glsl code shared between the their instantions
+     * @returns {string} fragment shader's glsl code
+     */
+    _getFragmentShaderSource(definition, execution, customBlendFunctions, globalScopeCode) {
+        const fragmentShaderSource = `#version 300 es
+precision mediump int;
+precision mediump float;
+precision mediump sampler2DArray;
+
+
+// UNIFORMS
+
+// Stores shader index -> pointer to u_instanceTextureIndexes
+uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
+
+// Stores texture indexes for each shader, beginning at index obtained from u_instanceOffsets
+uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
+
+// Carries shader global attributes (opacity, pixelSize, zoom)
+uniform vec3 u_shaderVariables[${this.textureMappingsUniformSize}];
+
+// For each tiled image, we store (base texture offset, pack count, channel count)
+uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
+
+uniform sampler2DArray u_inputTextures;
+uniform sampler2DArray u_stencilTextures;
+
+
+// INPUT VARIABLES
+
+in vec2 v_texture_coords;
+
+
+// OUTPUT VARIABLES
+
+out vec4 final_color;
+
+
+// GLOBAL VARIABLES
+
+int instance_id;
+bool stencilPasses;
+float opacity;
+float pixelSize;
+float zoom;
+
+
+// FUNCTION DEFINITIONS
+
+int osd_pack_count(int sourceIndex) {
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    return u_tiInfo[worldIndex].y;
+}
+
+int osd_channel_count(int sourceIndex) {
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    ivec3 info = u_tiInfo[worldIndex];
+    if (info.z <= 0) {
+        return info.y * 4;
+    }
+    return info.z;
+}
+
+vec4 osd_texture(int sourceIndex, int packIndex, vec2 coords) {
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    int base = u_tiInfo[worldIndex].x;
+    int pc = u_tiInfo[worldIndex].y;
+    packIndex = clamp(packIndex, 0, pc - 1);
+    return texture(u_inputTextures, vec3(coords, float(base + packIndex)));
+}
+
+float osd_channel(int sourceIndex, int channelIndex, vec2 coords) {
+    int pack = channelIndex >> 2;
+    int comp = channelIndex & 3;
+    vec4 v = osd_texture(sourceIndex, pack, coords);
+         if (comp == 0) return v.r;
+    else if (comp == 1) return v.g;
+    else if (comp == 2) return v.b;
+    else                return v.a;
+}
+
+vec4 osd_stencil_texture(int instance, int sourceIndex, vec2 coords) {
+    int offset = u_instanceOffsets[instance];
+    int index = u_instanceTextureIndexes[offset + sourceIndex];
+    return texture(u_stencilTextures, vec3(coords, float(index)));
+}
+
+// todo index unused, but we might want to keep it (other rendering engines might need it on the API level, not necessarily here in GLSL)
+ivec2 osd_texture_size(int sourceIndex) {
+    return textureSize(u_inputTextures, 0).xy;
+}
+
+${this.atlas.getFragmentShaderDefinition()}
+
+// UTILITY FUNCTION
+bool close(float value, float target) {
+    return abs(target - value) < 0.001;
+}
+
+
+// BLEND FUNCTIONS
+
+vec4 blendAlpha(vec4 fg, vec4 bg, vec3 rgb) {
+    float a = fg.a + bg.a * (1.0 - fg.a);
+    return vec4(rgb, a);
+}
+
+vec4 blend_source_over(vec4 fg, vec4 bg) {
+    if (!stencilPasses) return bg;
+    vec4 pre_fg = vec4(fg.rgb * fg.a, fg.a);
+    return pre_fg + bg * (1.0 - pre_fg.a);
+}
+
+// CUSTOM BLEND FUNCTIONS
+
+${customBlendFunctions ? customBlendFunctions : "    // No custom blend functions here..."}
+
+
+// GLOBAL SCOPE SHADER LAYER CODE
+
+${Object.keys(globalScopeCode).length !== 0 ? Object.values(globalScopeCode).join("\n") : "    // No global scope shader layer code here..."}
+
+
+// SHADER LAYERS DEFINITIONS
+
+${definition !== "" ? definition : "    // No shader layer definitions here..."}
+
+
+// MAIN FUNCTION
+
+void main() {
+${execution}
+}`;
+
+        return fragmentShaderSource;
+    }
+
     build(shaderMap, keyOrder) {
         if (!keyOrder.length) {
             // Todo prevent unimportant first init build call
             this.vertexShader = this._getVertexShaderSource();
-            this.fragmentShader = this._getFragmentShaderSource('', '',
-                '', $.FlexRenderer.ShaderLayer.__globalIncludes);
+            this.fragmentShader = this._getFragmentShaderSource("", "", "", $.FlexRenderer.ShaderLayer.__globalIncludes);
             return;
         }
 
         // todo consider clip test before setting intermediate color -> but we would have to test all clips, not just one
         //   no clip: whole viewport has the color
         //   clip: only rendered parts have the background color (likely more desirable)
-        let definition = '',
-            execution = `
-vec4 intermediate_color = ${this._bgColor};
-overall_color = intermediate_color;
-vec4 clip_color = vec4(.0);
-`,
-            customBlendFunctions = '';
+        let definition = "";
+        let execution = `
+    vec4 intermediate_color = ${this._bgColor};
+    vec4 overall_color = intermediate_color;
+    vec4 clip_color = vec4(.0);
+`;
+        let customBlendFunctions = "";
 
         const addShaderDefinition = shader => {
             definition += `
-// ${shader.constructor.type()} - Definition
+// ${shader.uid} - Definition
 ${shader.getFragmentShaderDefinition()}
-// ${shader.constructor.type()} - Custom blending function for a given shader
+
+// ${shader.uid} - Custom blending function for a given shader
 ${shader.getCustomBlendFunction(shader.uid + "_blend_func")}
-// ${shader.constructor.type()} - Shader code execution
+
+// ${shader.uid} - Shader code execution
 vec4 ${shader.uid}_execution() {
 ${shader.getFragmentShaderExecution()}
 }
@@ -263,54 +438,64 @@ ${shader.getFragmentShaderExecution()}
 
         let i = 0;
         for (; i < keyOrder.length; i++) {
-            const previousShaderID = keyOrder[i];
-            const previousShaderLayer = shaderMap[previousShaderID];
-            const shaderConf = previousShaderLayer.getConfig();
+            const shaderLayerId = keyOrder[i];
+            const shaderLayer = shaderMap[shaderLayerId];
+            const shaderLayerConfig = shaderLayer.getConfig();
 
-            const opacityModifier = previousShaderLayer.opacity ? `opacity * ${previousShaderLayer.opacity.sample()}` : 'opacity';
-            if (shaderConf.type === "none" || shaderConf.error || !shaderConf.visible) {
-                //prevents the layer from being accounted for in the rendering (error or not visible)
+            const opacityModifier = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : 'opacity';
+
+            execution += `\n    // ${shaderLayer.uid}\n`;
+
+            if (shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
+                // prevents the layer from being accounted for in the rendering (error or not visible)
 
                 // For explanation of this logics see main shader part below
-                if (previousShaderLayer._mode !== "clip") {
+                if (shaderLayer._mode !== "clip") {
                     execution += `${getRemainingBlending()}
-// ${previousShaderLayer.constructor.type()} - Disabled (error or visible = false)
-intermediate_color = vec4(.0);`;
-                    remainingBlenForShaderID = previousShaderID;
+    // ${shaderLayer.uid} - Disabled (error or visible = false)
+    intermediate_color = vec4(0.0);
+`;
+                    remainingBlenForShaderID = shaderLayerId;
                 } else {
                     execution += `
-// ${previousShaderLayer.constructor.type()} - Disabled with Clipmask (error or visible = false)
-intermediate_color = ${previousShaderLayer.uid}_blend_func(vec4(.0), intermediate_color);`;
+    // ${shaderLayer.uid} - Disabled with Clipmask (error or visible = false)
+    intermediate_color = ${shaderLayer.uid}_blend_func(vec4(0.0), intermediate_color);
+`;
                 }
+
                 continue;
             }
 
-            addShaderDefinition(previousShaderLayer);
+            addShaderDefinition(shaderLayer);
+
             execution += `
     instance_id = ${i};
     stencilPasses = osd_stencil_texture(${i}, 0, v_texture_coords).r > 0.995;
     vec3 attrs_${i} = u_shaderVariables[${i}];
     opacity = attrs_${i}.x;
     pixelSize = attrs_${i}.y;
-    zoom = attrs_${i}.z;`;
+    zoom = attrs_${i}.z;
+`;
 
             // To understand the code below: show & mask are basically same modes: they blend atop
             // of existing data. 'Show' just uses built-in alpha blending.
             // However, clip blends on the previous output only (and it can chain!).
 
-            if (previousShaderLayer._mode !== "clip") {
+            if (shaderLayer._mode !== "clip") {
                     execution += `${getRemainingBlending()}
-// ${previousShaderLayer.constructor.type()} - Blending
-intermediate_color = ${previousShaderLayer.uid}_execution();
-intermediate_color.a = intermediate_color.a * ${opacityModifier};`;
+    // ${shaderLayer.uid} - blending
+    intermediate_color = ${shaderLayer.uid}_execution();
+    intermediate_color.a = intermediate_color.a * ${opacityModifier};
+`;
 
-                remainingBlenForShaderID = previousShaderID;
+                remainingBlenForShaderID = shaderLayerId;
             } else {
                 execution += `
-// ${previousShaderLayer.constructor.type()} - Clipping
-clip_color = ${previousShaderLayer.uid}_execution();
-clip_color.a = clip_color.a * ${opacityModifier};
-intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermediate_color);`;
+    // ${shaderLayer.uid} - clipping
+    clip_color = ${shaderLayer.uid}_execution();
+    clip_color.a = clip_color.a * ${opacityModifier};
+    intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
+`;
             }
         } // end of for cycle
 
@@ -318,9 +503,10 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
             execution += getRemainingBlending();
         }
 
+        execution += "\n    final_color = overall_color;\n";
+
         this.vertexShader = this._getVertexShaderSource();
-        this.fragmentShader = this._getFragmentShaderSource(definition, execution,
-            customBlendFunctions, $.FlexRenderer.ShaderLayer.__globalIncludes);
+        this.fragmentShader = this._getFragmentShaderSource(definition, execution, customBlendFunctions, $.FlexRenderer.ShaderLayer.__globalIncludes);
     }
 
     /**
@@ -436,145 +622,6 @@ intermediate_color = ${previousShaderLayer.uid}_blend_func(clip_color, intermedi
     setDimensions(x, y, width, height, levels, tiledImageCount) {
         this._dataLayerCount = levels;
         this._tiledImageCount = tiledImageCount;
-    }
-
-    // PRIVATE FUNCTIONS
-    /**
-     * Get vertex shader's glsl code.
-     * @returns {string} vertex shader's glsl code
-     */
-    _getVertexShaderSource() {
-        const vertexShaderSource = `#version 300 es
-precision mediump int;
-precision mediump float;
-
-out vec2 v_texture_coords;
-
-const vec3 viewport[4] = vec3[4] (
-    vec3(-1.0, 1.0, 1.0),
-    vec3(-1.0, -1.0, 1.0),
-    vec3(1.0, 1.0, 1.0),
-    vec3(1.0, -1.0, 1.0)
-);
-
-void main() {
-    v_texture_coords = vec2(viewport[gl_VertexID]) / 2.0 + 0.5;
-    gl_Position = vec4(viewport[gl_VertexID], 1.0);
-}
-`;
-
-        return vertexShaderSource;
-    }
-
-    /**
-     * Get fragment shader's glsl code.
-     * @param {string} definition ShaderLayers' glsl code placed outside the main function
-     * @param {string} execution ShaderLayers' glsl code placed inside the main function
-     * @param {string} globalScopeCode ShaderLayers' glsl code shared between the their instantions
-     * @returns {string} fragment shader's glsl code
-     */
-    _getFragmentShaderSource(definition, execution, globalScopeCode) {
-        const fragmentShaderSource = `#version 300 es
-precision mediump int;
-precision mediump float;
-precision mediump sampler2DArray;
-
-// Stores shader index -> pointer to u_instanceTextureIndexes
-uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
-// Stores texture indexes for each shader, beginning at index obtained from u_instanceOffsets
-uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
-// Carries shader global attributes (opacity, pixelSize, zoom)
-uniform vec3 u_shaderVariables[${this.textureMappingsUniformSize}];
-// For each tiled image, we store (base texture offset, pack count, channel count)
-uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
-
-in vec2 v_texture_coords;
-
-bool stencilPasses;
-int instance_id;
-float opacity;
-float pixelSize;
-float zoom;
-
-uniform sampler2DArray u_inputTextures;
-uniform sampler2DArray u_stencilTextures;
-
-int osd_pack_count(int sourceIndex) {
-    int offset = u_instanceOffsets[instance_id];
-    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
-    return u_tiInfo[worldIndex].y;
-}
-
-int osd_channel_count(int sourceIndex) {
-    int offset = u_instanceOffsets[instance_id];
-    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
-    ivec3 info = u_tiInfo[worldIndex];
-    if (info.z <= 0) {
-        return info.y * 4;
-    }
-    return info.z;
-}
-
-vec4 osd_texture(int sourceIndex, int packIndex, vec2 coords) {
-    int offset = u_instanceOffsets[instance_id];
-    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
-    int base = u_tiInfo[worldIndex].x;
-    int pc = u_tiInfo[worldIndex].y;
-    packIndex = clamp(packIndex, 0, pc - 1);
-    return texture(u_inputTextures, vec3(coords, float(base + packIndex)));
-}
-
-float osd_channel(int sourceIndex, int channelIndex, vec2 coords) {
-    int pack = channelIndex >> 2;
-    int comp = channelIndex & 3;
-    vec4 v = osd_texture(sourceIndex, pack, coords);
-         if (comp == 0) return v.r;
-    else if (comp == 1) return v.g;
-    else if (comp == 2) return v.b;
-    else                return v.a;
-}
-
-vec4 osd_stencil_texture(int instance, int sourceIndex, vec2 coords) {
-    int offset = u_instanceOffsets[instance];
-    int index = u_instanceTextureIndexes[offset + sourceIndex];
-    return texture(u_stencilTextures, vec3(coords, float(index)));
-}
-
-// todo index unused, but we might want to keep it (other rendering engines might need it on the API level, not necessarily here in GLSL)
-ivec2 osd_texture_size(int sourceIndex) {
-    return textureSize(u_inputTextures, 0).xy;
-}
-
-${this.atlas.getFragmentShaderDefinition()}
-
-// UTILITY function
-bool close(float value, float target) {
-    return abs(target - value) < 0.001;
-}
-
-// BLEND attributes
-out vec4 overall_color;
-vec4 blendAlpha(vec4 fg, vec4 bg, vec3 rgb) {
-    float a = fg.a + bg.a * (1.0 - fg.a);
-    return vec4(rgb, a);
-}
-vec4 blend_source_over(vec4 fg, vec4 bg) {
-    if (!stencilPasses) return bg;
-    vec4 pre_fg = vec4(fg.rgb * fg.a, fg.a);
-    return pre_fg + bg * (1.0 - pre_fg.a);
-}
-
-// GLOBAL SCOPE CODE:
-${Object.keys(globalScopeCode).length !== 0 ? Object.values(globalScopeCode).join("\n") : '\n    // No global scope code here...'}
-
-// DEFINITIONS OF SHADERLAYERS:
-${definition !== '' ? definition : '\n    // No shaderLayer here to define...'}
-
-void main() {
-    ${execution}
-}`;
-
-        return fragmentShaderSource;
     }
 };
 
