@@ -404,6 +404,8 @@ ${execution}
     vec4 intermediate_color = ${this._bgColor};
     vec4 overall_color = intermediate_color;
     vec4 clip_color = vec4(.0);
+
+    vec3 attrs;
 `;
         let customBlendFunctions = "";
 
@@ -471,10 +473,10 @@ ${shader.getFragmentShaderExecution()}
             execution += `
     instance_id = ${i};
     stencilPasses = osd_stencil_texture(${i}, 0, v_texture_coords).r > 0.995;
-    vec3 attrs_${i} = u_shaderVariables[${i}];
-    opacity = attrs_${i}.x;
-    pixelSize = attrs_${i}.y;
-    zoom = attrs_${i}.z;
+    attrs = u_shaderVariables[${i}];
+    opacity = attrs.x;
+    pixelSize = attrs.y;
+    zoom = attrs.z;
 `;
 
             // To understand the code below: show & mask are basically same modes: they blend atop
