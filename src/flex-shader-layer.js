@@ -140,11 +140,11 @@
             // Default init respects cached value, manual usage overrides.
 
             // set up the color channel(s) for texture sampling
-            this.resetChannel(this._customControls, false);
+            this.resetChannel(this._customControls, false, false);
             // set up the blending mode
-            this.resetMode(this._customControls, false);
+            this.resetMode(this._customControls, false, false);
             // set up the filters to be applied to sampled data from the texture
-            this.resetFilters(this._customControls, false);
+            this.resetFilters(this._customControls, false, false);
             // build the ShaderLayer's controls
             this._buildControls();
         }
@@ -442,7 +442,7 @@
          * @param {String} options.use_channel[X] "r", "g" or "b" channel to sample index X, default "r"
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
-        resetChannel(options = {}, force = true) {
+        resetChannel(options = {}, force = true, evented = true) {
             if (Object.keys(options) === 0) {
                 options = this._customControls;
             }
@@ -526,6 +526,14 @@
             const sources = this.constructor.sources();
             for (let i = 0; i < sources.length; i++) {
                 parseChannel("r", sources[i], i);
+            }
+
+            if (evented) {
+                this.webglContext.renderer.notifyVisualizationChanged({
+                    reason: "channel-change",
+                    shaderId: this.id,
+                    shaderType: this.constructor.type()
+                });
             }
         }
 
@@ -629,9 +637,19 @@
          * @param {String} options.use_blend blending mode to use: one of standard supported blending modes (+ "mask")
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
-        resetMode(options = {}, force = true) {
+        resetMode(options = {}, force = true, evented = true) {
             this._mode = this._resetOption("use_mode", this.webglContext.supportedUseModes, options, force);
             this._blend = this._resetOption("use_blend", OpenSeadragon.FlexRenderer.BLEND_MODE, options, force);
+
+            if (evented) {
+                this.webglContext.renderer.notifyVisualizationChanged({
+                    reason: "mode-change",
+                    shaderId: this.id,
+                    shaderType: this.constructor.type(),
+                    mode: this._mode,
+                    blend: this._blend
+                });
+            }
         }
 
         /**
@@ -766,7 +784,7 @@ ${code}
          * @param {Object} options contains filters to apply, currently supported are "use_gamma", "use_exposure", "use_logscale"
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
-        resetFilters(options = {}, force = true) {
+        resetFilters(options = {}, force = true, evented = true) {
             if (Object.keys(options) === 0) {
                 options = this._customControls;
             }
@@ -792,6 +810,14 @@ ${code}
             }
             this.__scalePrefix = this.__scalePrefix.join("");
             this.__scaleSuffix = this.__scaleSuffix.reverse().join("");
+
+            if (evented) {
+                this.webglContext.renderer.notifyVisualizationChanged({
+                    reason: "filter-change",
+                    shaderId: this.id,
+                    shaderType: this.constructor.type()
+                });
+            }
         }
 
         /**

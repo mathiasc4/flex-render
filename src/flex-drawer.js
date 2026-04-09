@@ -122,6 +122,12 @@
             }
             shaderOrder = shaderOrder || Object.keys(shaders);
             this.renderer.setShaderLayerOrder(shaderOrder);
+
+            this.renderer.notifyVisualizationChanged({
+                reason: "external-config",
+                external: true
+            });
+
             return this._requestRebuild(0);
         }
 
@@ -172,6 +178,11 @@
                     $.console.warn("Could not find corresponding tiled image for the navigator!");
                 }
             }
+
+            this.renderer.notifyVisualizationChanged({
+                reason: "configure-tiled-image",
+                shaderId: shader.id
+            });
 
             return shader;
         }
@@ -792,7 +803,21 @@
         /**
          * @returns {Boolean} true if canvas and webgl are supported
          */
-        static isSupported() {
+        static isSupported(options = {}) {
+            const rendererClass = $.FlexRenderer;
+            if (rendererClass && typeof rendererClass.ensureRuntimeSupport === "function") {
+                try {
+                    return !!rendererClass.ensureRuntimeSupport({
+                        webGLPreferredVersion: options.webGLPreferredVersion || "2.0",
+                        force: options.force === true,
+                        throwOnFailure: false,
+                        debug: !!options.debug,
+                    }).ok;
+                } catch (e) {
+                    return false;
+                }
+            }
+
             let canvasElement = document.createElement('canvas');
             let webglContext = $.isFunction(canvasElement.getContext) &&
                 canvasElement.getContext('webgl');

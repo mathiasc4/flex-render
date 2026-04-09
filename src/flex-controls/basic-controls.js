@@ -361,7 +361,7 @@ $.FlexRenderer.UIControls._impls = {
 /**
  * @interface
  */
-$.FlexRenderer.UIControls.IControl = class {
+$.FlexRenderer.UIControls.IControl = class IControl {
 
     /**
      * Sets common properties needed to create the controls:
@@ -525,7 +525,8 @@ $.FlexRenderer.UIControls.IControl = class {
     /**
      * TODO: improve overall setter API
      * Allows to set the control value programatically.
-     * Does not trigger canvas re-rednreing, must be done manually (e.g. control.owner.invalidate())
+     * Does not trigger canvas re-rednreing, must be done manually (e.g. control.owner.invalidate()).
+     * You should raise the 'change' event when the value is changed.
      * @param encodedValue any value the given control can support, encoded
      *  (e.g. as the control acts on the GUI - for input number of
      *    values between 5 and 42, the value can be '6' or 6 or 6.15
@@ -707,6 +708,7 @@ $.FlexRenderer.UIControls.IControl = class {
      *  - most controls support "default" event - change of default value
      *  - see specific control implementation to see what events are fired (Advanced Slider fires "breaks" and "mask" for instance)
      * @param {function} clbck(rawValue, encodedValue, context) call once change occurs, context is the control instance
+     * TODO: use openseadragon event system directly here too
      */
     on(event, clbck) {
         this.__onchange[event] = clbck; //only one possible event -> rewrite?
@@ -740,6 +742,16 @@ $.FlexRenderer.UIControls.IControl = class {
         if (typeof this.__onchange[event] === "function") {
             this.__onchange[event](value, encodedValue, context);
         }
+
+        this.owner.webglContext.renderer.notifyVisualizationChanged({
+            reason: "control-change",
+            shaderId: this.owner.id,
+            shaderType: this.owner.constructor.type(),
+            controlName: this.name,
+            controlVariableName: event,  // we use here event for names of the control vars like 'default', 'breaks'
+            encodedValue: this.encodedValue,
+            value: this.value
+        });
     }
 
     /**

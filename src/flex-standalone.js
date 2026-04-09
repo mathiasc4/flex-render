@@ -96,7 +96,10 @@
                         canvas.height = size.y;
                         ctx.drawImage(this.renderer.canvas, 0, 0);
                         return ctx;
-                    }).catch(e => console.error(e)).finally(() => {
+                    }).catch(e => {
+                        console.error(e);
+                        throw e;
+                    }).finally(() => {
                         // free data
                         const dId = drawer.getId();
                         tiles.forEach(t => t.tile.getCache().destroyInternalCache(dId));

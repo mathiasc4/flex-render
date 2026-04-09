@@ -1,168 +1,151 @@
-1. ShaderLayer 101 – what a layer actually is
+# FlexRenderer ShaderLayer Guide
 
-A ShaderLayer is a little bundle of:
+## 1. ShaderLayer 101
 
-Static metadata – name, description, sources (channel expectations), default controls.
+A `ShaderLayer` is a bundle of:
 
-Instance config – which tiled images to use, what the user set in use_* controls.
+- **Static metadata**: `name()`, `description()`, `sources()`, `defaultControls()`
+- **Instance config**: selected tiled images and user-defined `use_*` settings
+- **GLSL snippets**: definitions plus fragment shader execution for the second pass
+- **Helpers**: `sampleChannel(...)`, `filter(...)`, `getTextureSize(...)`, and related utilities
 
-GLSL snippets – definitions + fragment shader “main body” for the second pass.
+The base class lives in `flex-shader-layer.js` as `$.FlexRenderer.ShaderLayer`.
 
-Helpers – sampleChannel, filter, getTextureSize, etc.
+When Flex builds the second pass, it:
 
-The class lives in flex-shader-layer.js as $.FlexRenderer.ShaderLayer.
+1. Reads static API from the shader class
+2. Instantiates the layer with `shaderConfig`
+3. Runs `construct()`, which calls:
+    - `resetChannel(...)`
+    - `resetMode(...)`
+    - `resetFilters(...)`
+    - `_buildControls()`
+4. Builds GLSL using:
+    - `getFragmentShaderDefinition()` for declarations and helper code
+    - `getFragmentShaderExecution()` for the code that returns a `vec4`
 
-When Flex builds the second pass:
+Inside shader execution code, sample through `this.sampleChannel(...)`, not manual `texture(...)` calls.
 
-It calls your static methods (name(), sources(), defaultControls).
+---
 
-It instantiates layers with a shaderConfig (your JSON config, including tiledImages).
+## 2. Static API you must implement
 
-Each layer’s construct() runs:
+### 2.1 `static name()` and `static description()`
 
-resetChannel → fills this.__channels from use_channelX options.
+Used for UI and diagnostics.
 
-resetMode, resetFilters, _buildControls.
-
-At GLSL build time it calls:
-
-getFragmentShaderDefinition() → everything outside main (uniforms, helpers, etc.).
-
-getFragmentShaderExecution() → the body that produces a vec4.
-
-Inside your execution code you are supposed to only sample via this.sampleChannel(...), not manually texture(...).
-
-2. Static API you must implement
-   2.1. static name() and static description()
-   static name() { return "my_edge_shader"; }
+```js
+static name() {
+    return "my_edge_shader";
+}
 
 static description() {
-return "Sobel edge detection on a multi-channel TIFF.";
+    return "Sobel edge detection on a multi-channel TIFF.";
 }
+```
 
-Just used for UI / debugging.
+### 2.2 `static sources()`
 
-2.2. static sources()
+Describes what each source slot expects **per sample**, independent of how many physical channels the underlying `TiledImage` has.
 
-This describes what each “source slot” expects per sample, independent of how many physical channels the TiledImage has.
-
-The typedef looks like:
-
+```js
 /**
-* @typedef channelSettings
-* @type {Object}
-* @property {Function} acceptsChannelCount
-* @property {String} description
-  */
+ * @typedef {Object} channelSettings
+ * @property {Function} acceptsChannelCount
+ * @property {String} description
+ */
+```
 
-And the method:
-
+```js
 static sources() {
-throw "ShaderLayer::sources() must be implemented!";
+    return [{
+        acceptsChannelCount: (n) => n === 3,
+        description: "Data to detect edges on"
+    }];
 }
-
-Example (your snippet):
-
-static sources() {
-return [{
-acceptsChannelCount: (n) => n === 3,
-description: "Data to detect edges on"
-}];
-}
+```
 
 What actually happens:
 
-When the layer is constructed, resetChannel() runs.
+- `construct()` calls `resetChannel(...)`
+- `resetChannel(...)` resolves `use_channel0`, `use_channel1`, ...
+- `parseChannel(...)` validates the selected swizzle such as `"r"`, `"rg"`, `"rgb"`, `"rgba"`
+- `acceptsChannelCount(n)` receives only the **swizzle length** (`1..4`)
 
-It builds this.__channels from use_channel0, use_channel1, … using parseChannel(...).
+That means `acceptsChannelCount(...)` answers:
 
-parseChannel does:
+> Does this shader make sense if `sampleChannel(...)` returns a float / vec2 / vec3 / vec4 for this source?
 
-const channelPattern = /[rgba]{1,4}/;
+It does **not** verify that the underlying image truly contains enough physical channels.
 
-// resolves a channel string (e.g. "r", "rgba", "bg") from options/defaults
-// …
+Example for RGB input:
 
-// Then checks:
-if (!sourceDef.acceptsChannelCount(channel.length)) {
-// warn & fall back to default / stacked pattern
-}
-
-So acceptsChannelCount(x) only sees the length of the use_channelX string (1–4); it does not inspect the underlying image or pack count. It answers “does this shader make sense if I return a vecX from sampleChannel for this source?”
-
-✅ YES: your new flexible multi-channel backend does not break this.
-It still works exactly as before: it validates the vector size you want per sample (float/vec2/vec3/vec4).
-
-If you make a shader that needs 3 components per sample (e.g. RGB for edge detection), then:
-
+```js
 static sources() {
-return [{
-acceptsChannelCount: (n) => n === 3,
-description: "Edge input (RGB vec3)"
-}];
+    return [{
+        acceptsChannelCount: (n) => n === 3,
+        description: "Edge input (RGB vec3)"
+    }];
 }
+```
 
-is still correct.
+### 2.3 `static get defaultControls()`
 
-⚠️ It does not automatically verify that the TiledImage actually has ≥3 physical channels; that’s a separate concern (see §6).
+Defines UI controls and built-in `use_*` options.
 
-2.3. static get defaultControls()
-
-This describes your UI + defaults (including use_channelX).
-
-Example:
-
+```js
 static get defaultControls() {
-return {
-// Built-in opacity control:
-// (Flex extends this automatically if you don’t specify it)
-opacity: {
-default: { type: "range", default: 1, min: 0, max: 1, step: 0.1, title: "Opacity:" },
-accepts: (type) => type === "float"
-},
-
-        // Channel selection for source #0:
-        use_channel0: {
-            default: "rgb",  // user can change to e.g. "bgr", "g"
-            required: null   // or "rg" to force 2 components
+    return {
+        opacity: {
+            default: {
+                type: "range",
+                default: 1,
+                min: 0,
+                max: 1,
+                step: 0.1,
+                title: "Opacity:"
+            },
+            accepts: (type) => type === "float"
         },
 
-        // Optional channel offset, in case your image carries more than 4 channels
-        // and your shader can only consume a subset:
+        use_channel0: {
+            default: "rgb",
+            required: null
+        },
+
         use_channel_base0: 0,
 
-        // Filters:
         use_gamma: {
             default: 1.0
         },
+
         use_exposure: {
             default: 0.0
         }
     };
 }
+```
 
 Flex then:
 
-Reads / stores these in its internal settings.
+- stores these settings in shader config
+- exposes them to control/UI logic
+- applies them through `resetChannel(...)`, `resetFilters(...)`, and `resetMode(...)`
 
-Exposes them to your controls UI (this._customControls etc.).
+---
 
-Runs resetChannel, resetFilters, resetMode using them.
+## 3. Instance-side API for shader code
 
-3. Instance-side API for shader code
-   3.1. getFragmentShaderExecution()
+### 3.1 `getFragmentShaderExecution()`
 
-You override this to produce the body of your fragment shader. It must return GLSL that evaluates to a vec4.
+Override this to produce the GLSL body that returns a `vec4`.
 
-You must use this.sampleChannel() (and this.filter()) instead of writing texture(...) yourself.
+Use `this.sampleChannel(...)` and `this.filter(...)`, not raw `texture(...)` calls.
 
-Example:
-
+```js
 getFragmentShaderExecution() {
-const uv = "v_texture_coords";
-
-    // Single source, use default use_channel0 (e.g. "rgb")
-    const rgb = this.sampleChannel(uv, 0); // returns GLSL expr → vec3 or vec4
+    const uv = "v_texture_coords";
+    const rgb = this.sampleChannel(uv, 0);
 
     const edge = `vec3(
         abs(dFdx(${rgb}.r)) + abs(dFdy(${rgb}.r)),
@@ -175,130 +158,333 @@ const uv = "v_texture_coords";
         return vec4(color, 1.0);
     `;
 }
-3.2. getFragmentShaderDefinition()
+```
 
-Optional override for helper functions; by default it concatenates GLSL snippets from your controls (so uniforms/functions for sliders etc. appear here).
+### 3.2 `getFragmentShaderDefinition()`
 
+Optional override for GLSL helpers outside `main`. By default it includes GLSL emitted by controls.
+
+```js
 getFragmentShaderDefinition() {
-const base = super.getFragmentShaderDefinition();
-return `
+    const base = super.getFragmentShaderDefinition();
+    return `
 ${base}
 
-        float myHelper(float x) {
-            return x * x;
-        }
-    `;
+float myHelper(float x) {
+    return x * x;
 }
-3.3. sampleChannel(textureCoords, sourceIndex = 0, raw = false)
+`;
+}
+```
 
-Current implementation (in your code right now):
+### 3.3 `sampleChannel(textureCoords, sourceIndex = 0, raw = false)`
 
+Current behavior:
+
+```js
 sampleChannel(textureCoords, otherDataIndex = 0, raw = false) {
-const chan = this.__channels[otherDataIndex];  // from use_channelN
-let sampled = `${this.webglContext.sampleTexture(otherDataIndex, textureCoords)}.${chan}`;
+    const chan = this.__channels[otherDataIndex];
+    let sampled = `${this.webglContext.sampleTexture(otherDataIndex, textureCoords)}.${chan}`;
 
     if (raw) {
         return sampled;
     }
     return this.filter(sampled);
 }
+```
 
-otherDataIndex is the index into config.tiledImages for this ShaderLayer.
+Meaning:
 
-Under WebGL2, this.webglContext.sampleTexture(i, uv) is osd_texture(i, packIndex=0, uv), which samples pack 0 for the chosen TiledImage.
-
-chan is the use_channelN pattern ("r", "rg", "rgba", "bg", …).
-
-Return value:
-
-float if chan.length==1
-
-vec2 / vec3 / vec4 for length 2/3/4.
+- `otherDataIndex` selects the source entry from `config.tiledImages`
+- `chan` is the resolved swizzle from `use_channelN`
+- return type depends on swizzle length:
+    - `1` → `float`
+    - `2` → `vec2`
+    - `3` → `vec3`
+    - `4` → `vec4`
 
 So today:
 
-sampleChannel(uv, 0) → “some swizzle of the first pack’s RGBA for source #0”.
+```js
+this.sampleChannel(uv, 0)
+```
 
-The sources() acceptsChannelCount(n) checks only chan.length and ensures you don’t accidentally ask for a vec3 when your shader expects a float, etc.
+means “sample source 0, pack 0, then apply the selected RGBA swizzle”.
 
-🔴 It does not yet use osd_channel to reach channels beyond the first 4. That’s the extension we discussed earlier.
+Current limitation: this path still samples only the first RGBA pack unless extended further with multi-pack channel addressing.
 
-3.4. filter(glslScalarExpr)
+### 3.4 `filter(glslExpr)`
 
-This applies the configured filters (use_gamma, use_exposure, use_logscale, etc.) to a scalar expression.
+Applies configured filters such as `use_gamma`, `use_exposure`, `use_logscale`, and similar.
 
-Very roughly:
+```js
+const val = this.sampleChannel("v_texCoord", 0);
+const filtered = this.filter(val);
+```
 
-const filtered = this.filter("raw_value");
+Conceptually this becomes something like:
 
-returns something like:
+```glsl
+logScale(exposure(gamma(raw_value)))
+```
 
-float filteredValue = logScale(exposure(gamma(raw_value)));
+### 3.5 `getTextureSize(sourceIndex = 0)`
 
-(Exact composition depends on your implementation, but logically it’s that.)
+Exposes GLSL texture size lookup for the selected source.
 
-You probably want:
-
-const val = this.sampleChannel("v_texCoord", 0);          // scalar
-const valFiltered = this.filter(val);                     // scalar with filters
-3.5. getTextureSize(sourceIndex = 0)
-
-This surfaces textureSize in GLSL form:
-
+```js
 getTextureSize(otherDataIndex = 0) {
-return this.webglContext.getTextureSize(otherDataIndex);
+    return this.webglContext.getTextureSize(otherDataIndex);
+}
+```
+
+Useful for pixel-space kernels, derivative scaling, and neighborhood logic.
+
+---
+
+## 4. Multiple tiled images per shader
+
+The pipeline supports multiple `TiledImage` sources per shader.
+
+### 4.1 Configuration
+
+```js
+const myShaderConfig = {
+    tiledImages: [0, 3, 2, 1],
+    use_channel0: "r",
+    use_channel1: "g",
+    use_channel2: "b",
+    use_channel3: "a"
+};
+```
+
+Meaning:
+
+- `tiledImages[0] = 0` → source index `0` reads world item `0`
+- `tiledImages[1] = 3` → source index `1` reads world item `3`
+- and so on
+
+Usage in shader code:
+
+```js
+getFragmentShaderExecution() {
+    const uv = "v_texture_coords";
+    const src0 = this.sampleChannel(uv, 0);
+    const src1 = this.sampleChannel(uv, 1);
+
+    return `
+        float a = ${src0};
+        float b = ${src1};
+        float m = max(a, b);
+        return vec4(vec3(m), 1.0);
+    `;
+}
+```
+
+Under the hood, second-pass rendering resolves source indices through Flex renderer uniforms and per-layer source mapping.
+
+### 4.2 Important note
+
+In internal mode, where shaders are created implicitly per tiled image, `tiledImageCreated(...)` wraps config so each shader effectively sees only its own tiled image. Multi-source shaders are therefore mainly for **external configuration** via `overrideConfigureAll(...)`.
+
+---
+
+## 5. Events
+
+`FlexRenderer` is an `OpenSeadragon.EventSource`. Subscribe with `addHandler(...)`.
+
+### 5.1 Listening to events
+
+```js
+const renderer = viewer.drawer.renderer;
+
+renderer.addHandler('visualization-change', (e) => {
+    console.log('visualization-change', e.reason, e.snapshot);
+});
+
+renderer.addHandler('program-used', (e) => {
+    console.log('program-used', e.name, e.program);
+});
+
+renderer.addHandler('html-controls-created', (e) => {
+    console.log('html-controls-created', e.name);
+});
+```
+
+### 5.2 `visualization-change`
+
+Canonical semantic event for:
+
+- persistence
+- sync
+- autosave
+- undo/redo
+- history
+
+Payload:
+
+```js
+{
+    reason: "control-change" |
+            "mode-change" |
+            "filter-change" |
+            "channel-change" |
+            "external-config" |
+            "configure-tiled-image",
+
+    snapshot: {
+        order: ["shaderA", "shaderB"],
+        shaders: {
+            shaderA: {
+                id: "shaderA",
+                name: "Layer A",
+                type: "identity",
+                visible: 1,
+                fixed: false,
+                tiledImages: [0],
+                params: { ... },
+                cache: { ... }
+            }
+        }
+    },
+
+    shaderId: "shaderA",
+    shaderType: "identity",
+
+    controlName: "opacity",
+    controlVariableName: "default",
+    encodedValue: "0.5",
+    value: 0.5,
+
+    mode: "show",
+    blend: "source-over",
+
+    external: true
+}
+```
+
+Emission points:
+
+- `control-change`: UI control change path
+- `mode-change`: mode / blend reset
+- `filter-change`: filter reset
+- `channel-change`: channel reset
+- `external-config`: `overrideConfigureAll(...)`
+- `configure-tiled-image`: `configureTiledImage(...)`
+
+Notes:
+
+- `snapshot` is always included
+- `snapshot` is JSON-safe and intended for export/persistence
+- `params` holds effective shader settings
+- `cache` holds stored UI control values
+
+### 5.3 Lifecycle events
+
+#### `program-used`
+
+Fired after a WebGL program is switched to and before shader-layer JS initialization runs.
+
+```js
+{
+    name: "first-pass" | "second-pass",
+    program: programInstance,
+    shaderLayers: renderer.getAllShaders()
+}
+```
+
+#### `html-controls-created`
+
+Fired after `htmlHandler(...)` generates controls during second-pass initialization.
+
+```js
+{
+    name: "second-pass",
+    program: programInstance,
+    shaderLayers: renderer.getAllShaders()
+}
+```
+
+Use lifecycle events for instrumentation and UI orchestration, not as the primary persistence trigger.
+
+---
+
+## 6. Snapshot and export API
+
+### 6.1 Get current snapshot
+
+```js
+const snapshot = renderer.getVisualizationSnapshot();
+```
+
+### 6.2 Explicit export alias
+
+```js
+const snapshot = renderer.exportVisualization();
+```
+
+### 6.3 Snapshot shape
+
+```js
+{
+    order: ["shaderA", "shaderB"],
+    shaders: {
+        shaderA: {
+            id: "shaderA",
+            name: "Layer A",
+            type: "identity",
+            visible: 1,
+            fixed: false,
+            tiledImages: [0],
+            params: { ... },
+            cache: { ... }
+        }
+    }
+}
+```
+
+Notes:
+
+- `order` is render order
+- `shaders` is `shader id -> serialized ShaderConfig`
+- private/runtime fields are excluded by serialization
+- persist this object, not live shader/control/program instances
+
+---
+
+## 7. Autosave example with debounce
+
+```js
+function debounce(fn, wait = 250) {
+    let timer = null;
+    return function (...args) {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn.apply(this, args), wait);
+    };
 }
 
-Under WebGL2 that becomes something like:
+const renderer = viewer.drawer.renderer;
 
-ivec2 size = textureSize(u_inputTextures, 0).xy; // fixed lod 0
+const persistVisualization = debounce((snapshot) => {
+    localStorage.setItem('viewer.visualization', JSON.stringify(snapshot));
+}, 250);
 
-Useful when you want pixel-space derivatives, etc.
+renderer.addHandler('visualization-change', (e) => {
+    persistVisualization(e.snapshot);
+});
+```
 
-4. Multiple tiled images per shader
+---
 
-Your pipeline does support multiple TIs per shader.
+## 8. Restore example
 
-4.1. Configuration
+```js
+async function restoreVisualization(viewer) {
+    const raw = localStorage.getItem('viewer.visualization');
+    if (!raw) return;
 
-In your shader config (passed to overrideConfigureAll):
-
-const myShaderConfig = {
-tiledImages: [0, 3, 2, 1], // indices into viewer.world
-// controls:
-use_channel0: "r",    // for source 0 (world item 0)
-use_channel1: "g",    // for source 1 (world item 3)
-use_channel2: "b",
-use_channel3: "a"
-};
-
-tiledImages[0] = 0 → sourceIndex 0 samples world item 0.
-
-tiledImages[1] = 3 → sourceIndex 1 samples world item 3.
-
-etc. (you can have permutations, subsets, duplicates).
-
-In getFragmentShaderExecution():
-
-const uv = "v_texture_coords";
-
-const src0 = this.sampleChannel(uv, 0);   // from world item 0
-const src1 = this.sampleChannel(uv, 1);   // from world item 3
-
-// Do something:
-return `
-    float a = ${src0};
-    float b = ${src1};
-    float m = max(a, b);
-    return vec4(vec3(m), 1.0);
-`;
-
-Under the hood:
-
-During second pass, Flex uploads u_instanceTextureIndexes per layer.
-
-osd_texture(sourceIndex, packIndex, uv) resolves to the correct world item and offscreen layer via u_tiInfo.
-
-So multiple TIs per shader are fully supported.
-
-⚠️ In the internal mode (no overrideConfigureAll), tiledImageCreated wraps config.tiledImages so each shader sees only [thisTiledImageIndex]. So multi-TI per shader is for external configs.
+    const snapshot = JSON.parse(raw);
+    await viewer.drawer.overrideConfigureAll(snapshot.shaders, snapshot.order);
+    viewer.forceRedraw();
+}
+```

@@ -152,7 +152,7 @@
             const namespace = $.FlexRenderer;
             for (let property in namespace) {
                 const context = namespace[ property ],
-                    proto = context.prototype;
+                    proto = context && context.prototype;
                 if (proto && proto instanceof namespace.WebGLImplementation &&
                     $.isFunction( proto.getVersion ) && proto.getVersion.call( context ) === version) {
                         return context;
@@ -561,6 +561,51 @@
             }
         }
 
+        /**
+         * Build a stable JSON-safe snapshot of the current visualization state.
+         * Includes shader order and full shader configs, including params and cache.
+         * Runtime/private fields are filtered out using FlexRenderer.jsonReplacer.
+         *
+         * @returns {{
+         *   order: string[],
+         *   shaders: Object<string, ShaderConfig>
+         * }}
+         */
+        getVisualizationSnapshot() {
+            const snapshot = {
+                order: this.getShaderLayerOrder().slice(),
+                shaders: {}
+            };
+
+            for (const [shaderId, shader] of Object.entries(this.getAllShaders())) {
+                snapshot.shaders[shaderId] = JSON.parse(
+                    JSON.stringify(shader.getConfig(), $.FlexRenderer.jsonReplacer)
+                );
+            }
+
+            return snapshot;
+        }
+
+        /**
+         * Alias that makes intent explicit when used by application code.
+         * @returns {{order: string[], shaders: Object<string, ShaderConfig>}}
+         */
+        exportVisualization() {
+            return this.getVisualizationSnapshot();
+        }
+
+        /**
+         * Notify observers that visualization state changed.
+         * This is the canonical event to listen to.
+         *
+         * @param {object} payload
+         */
+        notifyVisualizationChanged(payload = {}) {
+            this.raiseEvent('visualization-change', $.extend(true, {
+                snapshot: this.getVisualizationSnapshot()
+            }, payload));
+        }
+
         destroy() {
             this.htmlReset();
             this.deleteShaders();
@@ -582,6 +627,167 @@
                 }
             }
             return key;
+        }
+
+        static _buildSelfTestColorData(width, height, rgba) {
+            const out = new Uint8Array(width * height * 4);
+            for (let i = 0; i < width * height; i++) {
+                const offset = i * 4;
+                out[offset] = rgba[0];
+                out[offset + 1] = rgba[1];
+                out[offset + 2] = rgba[2];
+                out[offset + 3] = rgba[3];
+            }
+            return out;
+        }
+
+        static _createSelfTestTextureArray(gl, width, height, depth, pixels, internalFormat = null) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, internalFormat || gl.RGBA8, width, height, depth);
+            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, depth, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+            return texture;
+        }
+
+        static runSelfTest({
+            width = 2,
+            height = 2,
+            tolerance = 8,
+            webGLPreferredVersion = "2.0",
+            debug = false,
+        } = {}) {
+            let renderer = null;
+            let colorTexture = null;
+            let stencilTexture = null;
+            const testedAt = Date.now();
+            const expected = [67, 255, 100, 255];
+
+            try {
+                // TODO! instantiated test could be later used to run rendering itself, i.e. drawer.supports() consumes the instance
+                renderer = new $.FlexRenderer({
+                    uniqueId: "selftest_renderer",
+                    webGLPreferredVersion,
+                    redrawCallback: () => {},
+                    refetchCallback: () => {},
+                    debug: !!debug,
+                    interactive: false,
+                    backgroundColor: '#00000000',
+                    canvasOptions: {
+                        stencil: true
+                    }
+                });
+
+                const shaderId = 'selftest_layer';
+                renderer.createShaderLayer(shaderId, {
+                    id: shaderId,
+                    name: 'Self test',
+                    type: 'identity',
+                    visible: 1,
+                    fixed: false,
+                    tiledImages: [0],
+                    params: {},
+                    cache: {}
+                }, true);
+                renderer.setShaderLayerOrder([shaderId]);
+                renderer.setDimensions(0, 0, width, height, 1, 1);
+                renderer.registerProgram(null, renderer.webglContext.secondPassProgramKey);
+
+                const gl = renderer.gl;
+                const colorPixels = $.FlexRenderer._buildSelfTestColorData(width, height, expected);
+                const stencilPixels = $.FlexRenderer._buildSelfTestColorData(width, height, [255, 0, 0, 255]);
+                colorTexture = $.FlexRenderer._createSelfTestTextureArray(gl, width, height, 1, colorPixels);
+                stencilTexture = $.FlexRenderer._createSelfTestTextureArray(gl, width, height, 1, stencilPixels);
+
+                renderer.__firstPassResult = {
+                    texture: colorTexture,
+                    stencil: stencilTexture,
+                    textureDepth: 1,
+                    stencilDepth: 1,
+                };
+
+                renderer.secondPassProcessData([{
+                    zoom: 1,
+                    pixelSize: 1,
+                    opacity: 1,
+                    shader: renderer.getShaderLayer(shaderId),
+                }]);
+                gl.finish();
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+                const pixels = new Uint8Array(width * height * 4);
+                gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+                for (let i = 0; i < width * height; i++) {
+                    const offset = i * 4;
+                    for (let c = 0; c < 4; c++) {
+                        if (Math.abs(pixels[offset + c] - expected[c]) > tolerance) {
+                            throw new Error(
+                                `Renderer self-test pixel mismatch at index ${i}: expected [${expected.join(', ')}], got [${Array.from(pixels.slice(offset, offset + 4)).join(', ')}].`
+                            );
+                        }
+                    }
+                }
+
+                return {
+                    ok: true,
+                    testedAt,
+                    width,
+                    height,
+                    tolerance,
+                    webGLPreferredVersion,
+                    webglVersion: renderer.webglVersion,
+                };
+            } catch (error) {
+                return {
+                    ok: false,
+                    testedAt,
+                    width,
+                    height,
+                    tolerance,
+                    webGLPreferredVersion,
+                    error: error && error.message ? error.message : String(error),
+                };
+            } finally {
+                if (renderer && renderer.gl) {
+                    const gl = renderer.gl;
+                    if (colorTexture) {
+                        gl.deleteTexture(colorTexture);
+                    }
+                    if (stencilTexture) {
+                        gl.deleteTexture(stencilTexture);
+                    }
+                }
+                if (renderer) {
+                    try {
+                        renderer.destroy();
+                    } catch (e) {
+                        $.console.warn('FlexRenderer self-test cleanup failed.', e);
+                    }
+                }
+            }
+        }
+
+        static ensureRuntimeSupport(options = {}) {
+            const useCache = options.force !== true;
+            if (useCache && $.FlexRenderer.__runtimeSupportCache) {
+                const cached = $.FlexRenderer.__runtimeSupportCache;
+                if (!cached.ok && options.throwOnFailure !== false) {
+                    throw new Error(cached.error || 'FlexRenderer runtime support test failed.');
+                }
+                return cached;
+            }
+
+            const result = $.FlexRenderer.runSelfTest(options);
+            $.FlexRenderer.__runtimeSupportCache = result;
+            if (!result.ok && options.throwOnFailure !== false) {
+                throw new Error(result.error || 'FlexRenderer runtime support test failed.');
+            }
+            return result;
         }
 
         // Todo below are debug and other utilities hardcoded for WebGL2. In case of other engines support, these methods
@@ -1042,6 +1248,7 @@
      * @memberof FlexRenderer
      */
     $.FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
+    $.FlexRenderer.__runtimeSupportCache = null;
 
     $.FlexRenderer.BLEND_MODE = [
         'mask',
