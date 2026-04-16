@@ -325,12 +325,11 @@
 
             if (this._program) {
                 const reused = !program._justCreated;
+
                 if (this.running && this._program === program && reused) {
                     return false;
                 }
-                if (reused) {
-                    program._justCreated = false;
-                }
+
                 this._program.unload();
             }
 
@@ -387,9 +386,12 @@
                 }
             }
 
+            program._justCreated = false;
+
             if (!this.running) {
                 this.running = true;
             }
+
             return needsUpdate;
         }
 
