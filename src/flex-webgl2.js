@@ -20,6 +20,10 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
         return "secondPass";
     }
 
+    get inspectorCompositorProgramKey() {
+        return "inspectorCompositor";
+    }
+
     init() {
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
 
@@ -44,9 +48,11 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
         };
 
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
+        this._namedColorTargets = {};
 
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.FirstPassProgram(this, this.gl, this.firstAtlas), "firstPass");
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.SecondPassProgram(this, this.gl, this.secondAtlas), "secondPass");
+        this.renderer.registerProgram(new $.FlexRenderer.WebGL20.InspectorCompositorProgram(this, this.gl, this.secondAtlas), "inspectorCompositor");
     }
 
     getVersion() {
@@ -69,6 +75,10 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
     setDimensions(x, y, width, height, levels, tiledImageCount) {
         this.renderer.getProgram(this.firstPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
         this.renderer.getProgram(this.secondPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
+        const compositor = this.renderer.getProgram(this.inspectorCompositorProgramKey);
+        if (compositor) {
+            compositor.setDimensions(x, y, width, height, levels, tiledImageCount);
+        }
         //todo consider some elimination of too many calls
     }
 
@@ -94,8 +104,150 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
     }
 
     destroy() {
+        if (this._namedColorTargets) {
+            for (const key of Object.keys(this._namedColorTargets)) {
+                this._destroyColorTarget(this._namedColorTargets[key]);
+            }
+            this._namedColorTargets = {};
+        }
         this.firstAtlas.destroy();
         this.secondAtlas.destroy();
+    }
+
+    _createColorTarget(width, height, options = {}) {
+        const gl = this.gl;
+        const target = {
+            key: options.key,
+            width: width,
+            height: height,
+            ownsTexture: true,
+            ownsFramebuffer: true,
+        };
+        const filter = options.filter || gl.LINEAR;
+        target.texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, target.texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+        target.framebuffer = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.texture, 0);
+
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            this._destroyColorTarget(target);
+            throw new Error(`FlexRenderer color target is incomplete: 0x${status.toString(16)}`);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return target;
+    }
+
+    _destroyColorTarget(target) {
+        if (!target) {
+            return;
+        }
+        const gl = this.gl;
+        if (target.ownsFramebuffer && target.framebuffer) {
+            gl.deleteFramebuffer(target.framebuffer);
+            target.framebuffer = null;
+        }
+        if (target.ownsTexture && target.texture) {
+            gl.deleteTexture(target.texture);
+            target.texture = null;
+        }
+    }
+
+    _ensureColorTarget(targetOrKey, width, height, options = {}) {
+        let target = typeof targetOrKey === 'string' ? this._namedColorTargets[targetOrKey] : targetOrKey;
+        const key = typeof targetOrKey === 'string' ? targetOrKey : (target && target.key);
+
+        if (!target || target.width !== width || target.height !== height || !target.texture || !target.framebuffer) {
+            if (target) {
+                this._destroyColorTarget(target);
+            }
+            target = this._createColorTarget(width, height, {
+                ...options,
+                key: key,
+            });
+            if (key) {
+                this._namedColorTargets[key] = target;
+            }
+        }
+
+        return target;
+    }
+
+    _clearColorTarget(target, rgba = [0, 0, 0, 0]) {
+        if (!target || !target.framebuffer) {
+            return;
+        }
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.clearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * Reference implementation of the backend offscreen second-pass contract.
+     * This renders the normal second pass exactly as it would appear on screen,
+     * but into a reusable color target.
+     */
+    renderSecondPassToTexture(renderArray, options = {}) {
+        const width = options.width || this.renderer.canvas.width || this.gl.drawingBufferWidth;
+        const height = options.height || this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const target = options.target ?
+            this._ensureColorTarget(options.target, width, height, options) :
+            this._ensureColorTarget(options.targetKey || '__second_pass_texture', width, height, options);
+
+        if (!renderArray || !renderArray.length) {
+            this._clearColorTarget(target, options.clearColor || [0, 0, 0, 0]);
+            return target;
+        }
+
+        const program = this.renderer.getProgram(this.secondPassProgramKey);
+        if (this.renderer.useProgram(program, 'second-pass')) {
+            program.load(renderArray);
+        }
+        program.use(this.renderer.__firstPassResult, renderArray, {
+            framebuffer: target.framebuffer
+        });
+        return target;
+    }
+
+    /**
+     * Reference implementation of the phase-1 inspector compositor contract.
+     * Only `lens-zoom` is routed here by the outer renderer. Reveal/A-B behavior
+     * stays inside the normal second-pass shader.
+     */
+    processSecondPassWithInspector(renderArray, options = undefined) {
+        const width = this.renderer.canvas.width || this.gl.drawingBufferWidth;
+        const height = this.renderer.canvas.height || this.gl.drawingBufferHeight;
+
+        const fullTarget = this._ensureColorTarget("__inspector_full", width, height, { filter: this.gl.LINEAR });
+
+        this.renderSecondPassToTexture(renderArray, {
+            target: fullTarget,
+            width,
+            height
+        });
+
+        const compositor = this.renderer.getProgram(this.inspectorCompositorProgramKey);
+        if (this.renderer.useProgram(compositor, "inspector-compositor")) {
+            compositor.load();
+        }
+
+        return compositor.use(undefined, undefined, {
+            framebuffer: options ? options.framebuffer : null,
+            inspectorState: this.renderer.getInspectorState(),
+            fullTarget: fullTarget
+        });
     }
 
     getBlendingFunction(name) {
@@ -317,6 +469,28 @@ uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
 uniform sampler2DArray u_inputTextures;
 uniform sampler2DArray u_stencilTextures;
 
+//  u_inspectorA = [
+//     centerPx.x,
+//     centerPx.y,
+//     radiusPx,
+//     featherPx
+//   ];
+//
+//   u_inspectorB = [
+//     enabled ? 1 : 0,
+//     modeInt,
+//     shaderSplitIndex,
+//     lensZoom
+//   ];
+//
+//   Mode mapping:
+//   - 0 disabled
+//   - 1 reveal-inside
+//   - 2 reveal-outside
+//   - 3 lens-zoom
+uniform vec4 u_inspectorA;
+uniform vec4 u_inspectorB;
+
 
 // INPUT VARIABLES
 
@@ -325,7 +499,7 @@ in vec2 v_texture_coords;
 
 // OUTPUT VARIABLES
 
-out vec4 final_color;
+layout(location=0) out vec4 final_color;
 
 
 // GLOBAL VARIABLES
@@ -390,6 +564,48 @@ ${this.atlas.getFragmentShaderDefinition()}
 // UTILITY FUNCTION
 bool close(float value, float target) {
     return abs(target - value) < 0.001;
+}
+
+bool inspector_enabled() {
+    return u_inspectorB.x > 0.5;
+}
+
+int inspector_mode() {
+    return int(round(u_inspectorB.y));
+}
+
+int inspector_shader_split_index() {
+    return int(round(u_inspectorB.z));
+}
+
+float inspector_lens_zoom() {
+    return max(u_inspectorB.w, 1.0);
+}
+
+float inspector_mask(vec2 fragPx) {
+    float feather = max(u_inspectorA.w, 0.0001);
+    float distPx = distance(fragPx, u_inspectorA.xy);
+    float inner = max(u_inspectorA.z - feather, 0.0);
+    float outer = max(u_inspectorA.z + feather, feather);
+    return 1.0 - smoothstep(inner, outer, distPx);
+}
+
+float inspector_layer_alpha(int shaderSlot) {
+    if (!inspector_enabled()) {
+        return 1.0;
+    }
+
+    int mode = inspector_mode();
+    if (mode != 1 && mode != 2) {
+        return 1.0;
+    }
+
+    if (shaderSlot < inspector_shader_split_index()) {
+        return 1.0;
+    }
+
+    float mask = inspector_mask(gl_FragCoord.xy);
+    return mode == 1 ? mask : (1.0 - mask);
 }
 
 
@@ -502,7 +718,8 @@ ${getStencilPassCode(remainingBlendShader)}
             const shaderLayer = shaderMap[shaderLayerId];
             const shaderLayerConfig = shaderLayer.getConfig();
             const slot = shaderLayer.__renderSlot;
-            const opacityModifier = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
+            const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
+            const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
 
             execution += `\n    // ${shaderLayer.uid}\n`;
 
@@ -584,6 +801,8 @@ ${getStencilPassCode(shaderLayer)}
         this._stencilLocation = gl.getUniformLocation(program, "u_stencilTextures");
 
         this._tiInfoLoc = gl.getUniformLocation(program, "u_tiInfo");
+        this._inspectorALocation = gl.getUniformLocation(program, "u_inspectorA");
+        this._inspectorBLocation = gl.getUniformLocation(program, "u_inspectorB");
         this.vao = gl.createVertexArray();
 
         // TODO: is this refreshing logic necessary? if enableing this, delete the above refresh, not needed, will be done at use(...)
@@ -600,25 +819,7 @@ ${getStencilPassCode(shaderLayer)}
             renderInfo.shader.glLoaded(this.webGLProgram, gl);
         }
         this.atlas.load(this.webGLProgram);
-
-        const renderer = this.context.renderer;
-        const packInfo = renderer.__flexPackInfo || {};
-        const layout = packInfo.layout || {};
-        const baseLayer = layout.baseLayer || [];
-        const packCount = layout.packCount || [];
-        const channelCount = packInfo.channelCount || [];
-
-        const maxTI = this._tiledImageCount;
-        const tiInfo = new Int32Array(maxTI * 3);
-        for (let i = 0; i < maxTI; i++) {
-            const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i; // fallback
-            const pc = (typeof packCount[i] === "number") ? packCount[i] : 1;
-            tiInfo[i * 3] = base;
-            tiInfo[i * 3 + 1] = pc;
-            tiInfo[i * 3 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
-        }
-
-        this.gl.uniform3iv(this._tiInfoLoc, tiInfo);
+        this._uploadTiledImageInfo();
     }
 
     /**
@@ -629,7 +830,10 @@ ${getStencilPassCode(shaderLayer)}
         gl.bindFramebuffer(gl.FRAMEBUFFER, options ? options.framebuffer : null);
         gl.bindVertexArray(this.vao);
 
-        // TODO: is this refreshing logic necessary?
+        // TODO: is refreshing necessary here?
+        // Second-pass source layout can change without recompiling the program.
+        // Refresh texture metadata uniforms every draw so helper wrappers around
+        // osd_texture()/osd_channel() see the same layout as inline sampling.
         // this._uploadTiledImageInfo();
 
         const shaderVariables = [];
@@ -659,6 +863,29 @@ ${getStencilPassCode(shaderLayer)}
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, renderOutput.stencil);
         gl.uniform1i(this._stencilLocation, 1);
 
+        const inspectorState = this.context.renderer.getInspectorState();
+        const inspectorMode = {
+            "reveal-inside": 1,
+            "reveal-outside": 2,
+            "lens-zoom": 3
+        }[inspectorState.mode] || 0;
+
+        gl.uniform4f(
+            this._inspectorALocation,
+            inspectorState.centerPx.x,
+            inspectorState.centerPx.y,
+            inspectorState.radiusPx,
+            inspectorState.featherPx
+        );
+
+        gl.uniform4f(
+            this._inspectorBLocation,
+            inspectorState.enabled ? 1 : 0,
+            inspectorMode,
+            inspectorState.shaderSplitIndex,
+            inspectorState.lensZoom
+        );
+
         this.atlas.bind(gl.TEXTURE2, 2);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -673,37 +900,28 @@ ${getStencilPassCode(shaderLayer)}
         return renderOutput;
     }
 
-    // TODO: is this refreshing logic necessary?
-    // _uploadTiledImageInfo() {
-    //     const renderer = this.context.renderer;
-    //     const packInfo = renderer.__flexPackInfo || {};
-    //     const version = packInfo.version || 0;
-    //
-    //     if (this._uploadedPackInfoVersion === version) {
-    //         return;
-    //     }
-    //
-    //     const gl = this.gl;
-    //     const layout = packInfo.layout || {};
-    //     const baseLayer = layout.baseLayer || [];
-    //     const packCount = layout.packCount || [];
-    //     const channelCount = packInfo.channelCount || [];
-    //
-    //     const maxTI = this._tiledImageCount;
-    //     const tiInfo = new Int32Array(maxTI * 3);
-    //
-    //     for (let i = 0; i < maxTI; i++) {
-    //         const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i;
-    //         const pc = (typeof packCount[i] === "number") ? packCount[i] : 1;
-    //
-    //         tiInfo[i * 3 + 0] = base;
-    //         tiInfo[i * 3 + 1] = pc;
-    //         tiInfo[i * 3 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
-    //     }
-    //
-    //     gl.uniform3iv(this._tiInfoLoc, tiInfo);
-    //     this._uploadedPackInfoVersion = version;
-    // }
+    _uploadTiledImageInfo() {
+        const renderer = this.context.renderer;
+        const packInfo = renderer.__flexPackInfo || {};
+        const layout = packInfo.layout || {};
+        const baseLayer = layout.baseLayer || [];
+        const packCount = layout.packCount || [];
+        const channelCount = packInfo.channelCount || [];
+
+        const maxTI = this._tiledImageCount;
+        const tiInfo = new Int32Array(maxTI * 3);
+
+        for (let i = 0; i < maxTI; i++) {
+            const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i;
+            const pc = (typeof packCount[i] === "number") ? packCount[i] : 1;
+
+            tiInfo[i * 3 + 0] = base;
+            tiInfo[i * 3 + 1] = pc;
+            tiInfo[i * 3 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
+        }
+
+        this.gl.uniform3iv(this._tiInfoLoc, tiInfo);
+    }
 
     /**
      * Destroy program. No arguments.
@@ -718,6 +936,160 @@ ${getStencilPassCode(shaderLayer)}
         this._tiledImageCount = tiledImageCount;
     }
 };
+
+$.FlexRenderer.WebGL20.InspectorCompositorProgram = class extends $.FlexRenderer.WGLProgram {
+    constructor(context, gl, atlas) {
+        super(context, gl, atlas);
+        this._width = 1;
+        this._height = 1;
+    }
+
+    _getVertexShaderSource() {
+        return `#version 300 es
+precision mediump float;
+
+out vec2 v_texture_coords;
+
+const vec2 viewport[4] = vec2[4](
+    vec2(-1.0,  1.0),
+    vec2(-1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2( 1.0, -1.0)
+);
+
+void main() {
+    vec2 clip = viewport[gl_VertexID];
+    v_texture_coords = clip * 0.5 + 0.5;
+    gl_Position = vec4(clip, 0.0, 1.0);
+}
+`;
+    }
+
+    _getFragmentShaderSource() {
+        return `#version 300 es
+precision mediump float;
+precision mediump int;
+precision mediump sampler2D;
+
+uniform sampler2D u_fullTexture;
+uniform vec2 u_viewportSize;
+uniform vec2 u_lensCenterPx;
+uniform float u_radiusPx;
+uniform float u_featherPx;
+uniform float u_lensZoom;
+uniform int u_mode;
+uniform int u_enabled;
+
+in vec2 v_texture_coords;
+layout(location=0) out vec4 final_color;
+
+float inspector_mask(vec2 fragPx) {
+  float feather = max(u_featherPx, 0.0001);
+  float distPx = distance(fragPx, u_lensCenterPx);
+  float inner = max(u_radiusPx - feather, 0.0);
+  float outer = max(u_radiusPx + feather, feather);
+  return 1.0 - smoothstep(inner, outer, distPx);
+}
+
+vec2 inspector_lens_uv(vec2 uv) {
+  vec2 viewportSize = max(u_viewportSize, vec2(1.0));
+  vec2 centerUv = u_lensCenterPx / viewportSize;
+  float zoom = max(u_lensZoom, 1.0);
+  return clamp(centerUv + (uv - centerUv) / zoom, vec2(0.0), vec2(1.0));
+}
+
+void main() {
+  vec4 fullColor = texture(u_fullTexture, v_texture_coords);
+  vec4 result = fullColor;
+
+  if (u_enabled == 1 && u_mode == 3) {
+      float mask = inspector_mask(gl_FragCoord.xy);
+      vec4 lensColor = texture(u_fullTexture, inspector_lens_uv(v_texture_coords));
+      result = mix(fullColor, lensColor, mask);
+  }
+
+  final_color = result;
+}
+`;
+    }
+
+    build() {
+        this.vertexShader = this._getVertexShaderSource();
+        this.fragmentShader = this._getFragmentShaderSource();
+    }
+
+    created(width, height) {
+        const gl = this.gl;
+        const program = this.webGLProgram;
+        this._width = width;
+        this._height = height;
+        this._fullTextureLoc = gl.getUniformLocation(program, 'u_fullTexture');
+        this._viewportSizeLoc = gl.getUniformLocation(program, 'u_viewportSize');
+        this._lensCenterLoc = gl.getUniformLocation(program, 'u_lensCenterPx');
+        this._radiusLoc = gl.getUniformLocation(program, 'u_radiusPx');
+        this._featherLoc = gl.getUniformLocation(program, 'u_featherPx');
+        this._lensZoomLoc = gl.getUniformLocation(program, 'u_lensZoom');
+        this._modeLoc = gl.getUniformLocation(program, 'u_mode');
+        this._enabledLoc = gl.getUniformLocation(program, 'u_enabled');
+        this.vao = gl.createVertexArray();
+    }
+
+    load() {
+    }
+
+    _modeToInt(mode) {
+        return {
+            'reveal-inside': 1,
+            'reveal-outside': 2,
+            'lens-zoom': 3,
+        }[mode] || 0;
+    }
+
+    use(renderOutput, renderArray, options = {}) {
+        const gl = this.gl;
+        const fullTarget = options.fullTarget;
+        const inspectorState = options.inspectorState || {};
+
+        if (!fullTarget || !fullTarget.texture) {
+            throw new Error('Inspector compositor requires a full color target.');
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, options.framebuffer === undefined ? null : options.framebuffer);
+        gl.bindVertexArray(this.vao);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, fullTarget.texture);
+        gl.uniform1i(this._fullTextureLoc, 0);
+
+        gl.uniform2f(this._viewportSizeLoc, this._width, this._height);
+        gl.uniform2f(this._lensCenterLoc, inspectorState.centerPx ? inspectorState.centerPx.x || 0 : 0, inspectorState.centerPx ? inspectorState.centerPx.y || 0 : 0);
+        gl.uniform1f(this._radiusLoc, inspectorState.radiusPx || 0);
+        gl.uniform1f(this._featherLoc, inspectorState.featherPx || 0);
+        gl.uniform1f(this._lensZoomLoc, inspectorState.lensZoom || 1);
+        gl.uniform1i(this._modeLoc, this._modeToInt(inspectorState.mode));
+        gl.uniform1i(this._enabledLoc, inspectorState.enabled ? 1 : 0);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.bindVertexArray(null);
+
+        return {
+            texture: fullTarget.texture,
+        };
+    }
+
+    destroy() {
+        this.gl.deleteVertexArray(this.vao);
+    }
+
+    setDimensions(x, y, width, height) {
+        this._width = width;
+        this._height = height;
+    }
+};
+
 
 $.FlexRenderer.WebGL20.FirstPassProgram = class extends $.FlexRenderer.WGLProgram {
 
@@ -1221,6 +1593,11 @@ void main() {
     }
 
     setDimensions(x, y, width, height, dataLayerCount, tiledImageCount) {
+        if (!width || !height || !dataLayerCount || !tiledImageCount) {
+            // Defer — GL resources will be reallocated when real dimensions arrive.
+            return;
+        }
+
         // Double swapping required else collisions
         this._createOffscreenTexture("colorTextureA", width, height, dataLayerCount, this.gl.LINEAR);
         // this._createOffscreenTexture("colorTextureB", width, height, dataLayerCount, this.gl.LINEAR);
@@ -1286,8 +1663,9 @@ void main() {
 
     _createOffscreenTexture(name, width, height, layerCount, filter) {
         const gl = this.gl;
+        const previousActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
 
-            layerCount = Math.max(layerCount, 1);
+        layerCount = Math.max(layerCount, 1);
 
         let texRef = this[name];
         if (texRef) {
@@ -1301,400 +1679,8 @@ void main() {
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    }
-};
-
-// todo: support no-atlas mode (dont bind anything if not used at all)
-$.FlexRenderer.WebGL20.TextureAtlas2DArray = class extends $.FlexRenderer.TextureAtlas {
-
-    constructor(gl, opts) {
-        super(gl, opts);
-
-        this.version = 1;
-        this._atlasUploadedVersion = -1;
-
-        /** @type {{ id:number, source:any, w:number, h:number, layer:number, x:number, y:number }[]} */
-        this._entries = [];
-        this._pendingUploads = [];
-
-        /** @type {{ shelves: { y:number, h:number, x:number }[], nextY:number }[]} */
-        this._layerState = [];
-
-        // Per-id uniforms for the shader
-        this._scale = new Float32Array(this.maxIds * 2);   // sx, sy
-        this._offset = new Float32Array(this.maxIds * 2);  // ox, oy
-        this._layer = new Int32Array(this.maxIds);         // layer index
-        this._createTexture(this.layerWidth, this.layerHeight, this.layers);
-    }
-
-
-    /**
-     * Add an image. Returns a stable textureId.
-     * @param {ImageBitmap|HTMLImageElement|HTMLCanvasElement|ImageData|Uint8Array} source
-     * @param {{
-     *   width?: number,
-     *   height?: number,
-     * }} [opts]
-     * @returns {number}
-     */
-    addImage(source, opts) {
-        const width = (opts && opts.width && typeof opts.width === 'number') ? opts.width :
-            (source && (source.width || source.naturalWidth || (source.canvas && source.canvas.width) || source.w));
-        const height = (opts && opts.height && typeof opts.height === 'number') ? opts.height :
-            (source && (source.height || source.naturalHeight || (source.canvas && source.canvas.height) || source.h));
-
-        if (!width || !height) {
-            throw new Error('TextureAtlas2DArray.addImage: width or height missing');
-        }
-
-        const place = this._ensureCapacityFor(width, height);
-
-        const id = this._entries.length;
-
-        // uniforms for shader (can be uploaded later; we just fill CPU buffers now)
-        this._layer[id] = place.layer;
-        this._scale[id * 2 + 0] = width / this.layerWidth;
-        this._scale[id * 2 + 1] = height / this.layerHeight;
-        this._offset[id * 2 + 0] = (place.x + this.padding) / this.layerWidth;
-        this._offset[id * 2 + 1] = (place.y + this.padding) / this.layerHeight;
-
-        // remember for re-pack / re-upload
-        this._entries.push({
-            id: id,
-            source: source,
-            w: width,
-            h: height,
-            layer: place.layer,
-            x: place.x,
-            y: place.y
-        });
-
-        // enqueue GPU upload (performed later in load()/commitUploads())
-        this._pendingUploads.push({
-            source: source,
-            w: width,
-            h: height,
-            layer: place.layer,
-            x: place.x,
-            y: place.y
-        });
-
-        if (id + 1 > this.maxIds) {
-            throw new Error('TextureAtlas2DArray: exceeded maxIds capacity');
-        }
-
-        this.version++;
-        return id;
-    }
-
-    /**
-     * Texture atlas works as a single texture unit. Bind the atlas before using it at desired texture unit.
-     * @param textureUnit
-     */
-    bind(textureUnit, textureUnitIndex) {
-        const gl = this.gl;
-
-        // textureUnit is the numeric unit index (0..N-1)
-        gl.activeTexture(textureUnit);
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
-
-        // only push uniform arrays when changed (fast and harmless during draw)
-
-        if (this._atlasUploadedVersion !== this.version) {
-            gl.uniform1i(this._atlasTexLoc, textureUnitIndex);
-            gl.uniform2fv(this._atlasScaleLoc, this._scale);
-            gl.uniform2fv(this._atlasOffsetLoc, this._offset);
-            gl.uniform1iv(this._atlasLayerLoc, this._layer);
-            this._atlasUploadedVersion = this.version;
-        }
-    }
-
-    /**
-     * Get WebGL Atlas shader code. This code must define the following function:
-     * vec4 osd_atlas_texture(int, vec2)
-     * which selects texture ID (1st arg) and returns the color at the uv position (2nd arg)
-     *
-     * @return {string}
-     */
-    getFragmentShaderDefinition() {
-        return `
-uniform sampler2DArray u_atlasTex;
-uniform vec2  u_atlasScale[${this.maxIds}];
-uniform vec2  u_atlasOffset[${this.maxIds}];
-uniform int   u_atlasLayer[${this.maxIds}];
-
-vec4 osd_atlas_texture(int textureId, vec2 uv) {
-    if (textureId < 0) {
-        // return purple for non-existent texture
-        return vec4(1.0, 0.0, 1.0, 1.0);
-    }
-
-    // enable mirroring
-    uv = mod(uv, 2.0);
-    uv = uv - 1.0;
-    uv = sign(uv) * uv;
-    uv = 1.0 - uv;
-
-    vec2 st = u_atlasOffset[textureId] + uv * u_atlasScale[textureId];
-    float layer = float(u_atlasLayer[textureId]);
-
-    return texture(u_atlasTex, vec3(st, layer));
-}
-`;
-    }
-
-    /**
-     * Load the current atlas uniform locations.
-     * @param {WebGLProgram} program
-     */
-    load(program) {
-        const gl = this.gl;
-
-        // fetch uniform locations (existing behavior)
-        this._atlasTexLoc    = gl.getUniformLocation(program, "u_atlasTex");
-        this._atlasScaleLoc  = gl.getUniformLocation(program, "u_atlasScale[0]");
-        this._atlasOffsetLoc = gl.getUniformLocation(program, "u_atlasOffset[0]");
-        this._atlasLayerLoc  = gl.getUniformLocation(program, "u_atlasLayer[0]");
-
-        // commit all staged texSubImage3D uploads in a single pass
-        this._commitUploads();
-
-        // (optional) you can also pre-upload the uniform arrays here once right after commit
-        // if (this._atlasUploadedVersion !== this.version) {
-        //     gl.uniform2fv(this._atlasScaleLoc, this._scale);
-        //     gl.uniform2fv(this._atlasOffsetLoc, this._offset);
-        //     gl.uniform1iv(this._atlasLayerLoc, this._layer);
-        //     this._atlasUploadedVersion = this.version;
-        // }
-    }
-
-    /**
-     * Destroy the atlas.
-     */
-    destroy() {
-        const gl = this.gl;
-
-        if (this.texture) {
-            gl.deleteTexture(this.texture);
-            this.texture = null;
-        }
-
-        this._entries.length = 0;
-        this._layerState.length = 0;
-    }
-
-    _commitUploads() {
-        if (!this.texture) {
-            // allocate storage if not created yet
-            this._createTexture(this.layerWidth, this.layerHeight, this.layers);
-        }
-
-        if (!this._pendingUploads.length) {
-            return;
-        }
-
-        const gl = this.gl;
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
-
-        for (const u of this._pendingUploads) {
-            const x = u.x + this.padding;
-            const y = u.y + this.padding;
-
-            if (u.source instanceof ImageBitmap ||
-                (typeof HTMLImageElement !== 'undefined' && u.source instanceof HTMLImageElement) ||
-                (typeof HTMLCanvasElement !== 'undefined' && u.source instanceof HTMLCanvasElement)) {
-                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, u.layer, u.w, u.h, 1, this.format, this.type, u.source);
-            } else if (u.source && u.source.data && typeof u.source.width === 'number' && typeof u.source.height === 'number') {
-                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, u.layer, u.w, u.h, 1, this.format, this.type, u.source.data);
-            } else if (u.source && (u.source instanceof Uint8Array || u.source instanceof Uint8ClampedArray)) {
-                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, u.layer, u.w, u.h, 1, this.format, this.type, u.source);
-            } else {
-                gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
-                throw new Error('Unsupported image source for atlas');
-            }
-        }
-
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
-
-        // all uploads done; clear queue
-        this._pendingUploads.length = 0;
-    }
-
-    _createTexture(w, h, depth) {
-        const gl = this.gl;
-
-        if (this.texture) {
-            gl.deleteTexture(this.texture);
-            this.texture = null;
-        }
-
-        this.texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
-        gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, this.internalFormat, w, h, Math.max(depth, 1));
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
-
-        this.layerWidth = w;
-        this.layerHeight = h;
-        this.layers = depth;
-
-        // reset packer state sized to current depth
-        this._layerState = [];
-        for (let i = 0; i < depth; i++) {
-            this._layerState.push({ shelves: [], nextY: 0 });
-        }
-    }
-
-    _ensureCapacityFor(width, height) {
-        const paddedWidth = width + 2 * this.padding;
-        const paddedHeight = height + 2 * this.padding;
-
-        // try current layers first
-        for (let li = 0; li < this.layers; li++) {
-            const pos = this._tryPlaceRect(li, paddedWidth, paddedHeight);
-            if (pos) {
-                return { layer: li, x: pos.x, y: pos.y, willRealloc: false };
-            }
-        }
-
-        // if rectangle is bigger than layer extent, grow extent (power of 2)
-        let newW = this.layerWidth;
-        let newH = this.layerHeight;
-        if (paddedWidth > newW || paddedHeight > newH) {
-            while (newW < paddedWidth) {
-                newW *= 2;
-            }
-            while (newH < paddedHeight) {
-                newH *= 2;
-            }
-            // reallocate texture with same layer count but bigger extent
-            this._resizeAndReupload(newW, newH, this.layers);
-        }
-
-        // try again after extent growth
-        for (let li = 0; li < this.layers; li++) {
-            const pos2 = this._tryPlaceRect(li, paddedWidth, paddedHeight);
-            if (pos2) {
-                return { layer: li, x: pos2.x, y: pos2.y, willRealloc: false };
-            }
-        }
-
-        // still not fitting due to fragmentation / filled layers: add one or more layers
-        let newLayers = Math.max(this.layers * 2, this.layers + 1);
-        this._resizeAndReupload(this.layerWidth, this.layerHeight, newLayers);
-
-        // after adding layers there will be empty layers to place into
-        const li = this._firstEmptyLayer();
-        const pos3 = this._tryPlaceRect(li, paddedWidth, paddedHeight);
-        return { layer: li, x: pos3.x, y: pos3.y, willRealloc: false };
-    }
-
-    _firstEmptyLayer() {
-        for (let i = 0; i < this.layers; i++) {
-            const st = this._layerState[i];
-            if ((st.nextY === 0) && st.shelves.length === 0) {
-                return i;
-            }
-        }
-        return 0;
-    }
-
-    _resizeAndReupload(newW, newH, newLayers) {
-        // keep old entries and repack from scratch
-        const oldEntries = this._entries.slice();
-
-        this._createTexture(newW, newH, newLayers);
-
-        // clear packing and pending upload queues
-        this._entries.length = 0;
-        this._pendingUploads.length = 0;
-
-        // re-place each entry; update uniforms; enqueue for upload
-        for (const ent of oldEntries) {
-            const pos = this._ensureCapacityFor(ent.w, ent.h);
-            ent.layer = pos.layer;
-            ent.x = pos.x;
-            ent.y = pos.y;
-
-            const id = ent.id;
-
-            this._layer[id] = ent.layer;
-            this._scale[id * 2 + 0] = ent.w / this.layerWidth;
-            this._scale[id * 2 + 1] = ent.h / this.layerHeight;
-            this._offset[id * 2 + 0] = (ent.x + this.padding) / this.layerWidth;
-            this._offset[id * 2 + 1] = (ent.y + this.padding) / this.layerHeight;
-
-            this._entries.push(ent);
-            this._pendingUploads.push({
-                source: ent.source,
-                w: ent.w,
-                h: ent.h,
-                layer: ent.layer,
-                x: ent.x,
-                y: ent.y
-            });
-        }
-
-        // mark uniforms changed; actual GPU uploads will occur in load()/commitUploads()
-        this.version++;
-    }
-
-    _tryPlaceRect(layerIndex, w, h) {
-        const W = this.layerWidth;
-        const H = this.layerHeight;
-        let st = this._layerState[layerIndex];
-
-        if (!st) {
-            // todo it happens that the _layerState is empty but plaing called! this is a bug
-            $.console.error('TextureAtlas2DArray._tryPlaceRect: invalid layerIndex');
-            this._createTexture(W, H, this.layers);
-            st = this._layerState[layerIndex];
-        }
-
-        // try existing shelves
-        for (const shelf of st.shelves) {
-            if (h <= shelf.h && shelf.x + w <= W) {
-                const x = shelf.x;
-                const y = shelf.y;
-                shelf.x += w;
-                return { x: x, y: y };
-            }
-        }
-
-        // start a new shelf
-        if (st.nextY + h <= H) {
-            const y = st.nextY;
-            st.shelves.push({ y: y, h: h, x: w });
-            st.nextY += h;
-            return { x: 0, y: y };
-        }
-
-        return null;
-    }
-
-    _uploadSource(source, w, h, layer, x, y) {
-        const gl = this.gl;
-
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
-
-        if (source instanceof ImageBitmap ||
-            (typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement) ||
-            (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement)) {
-            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, layer, w, h, 1, this.format, this.type, source);
-        } else if (source && source.data && typeof source.width === 'number' && typeof source.height === 'number') {
-            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, layer, w, h, 1, this.format, this.type, source.data);
-        } else if (source && (source instanceof Uint8Array || source instanceof Uint8ClampedArray)) {
-            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, layer, w, h, 1, this.format, this.type, source);
-        } else {
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
-            throw new Error('Unsupported image source for atlas');
-        }
-
-        // optional: no mipmaps for now (icon UI)
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+        gl.activeTexture(previousActiveTexture);
     }
 };
 

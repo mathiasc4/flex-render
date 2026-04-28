@@ -28,6 +28,18 @@
             return "Render one selected TIFF channel with a custom color.";
         }
 
+        static intent() {
+            return "Extract one channel from a multi-channel raster and tint it. Pick when the source has multiple channels and you want exactly one of them rendered.";
+        }
+
+        static expects() {
+            return { dataKind: "multi-channel", channels: "any" };
+        }
+
+        static exampleParams() {
+            return { use_channel_base0: 0, color: "#ffffff" };  // eslint-disable-line camelcase
+        }
+
         static docs() {
             return {
                 summary: "Single-channel shader that colors one logical scalar channel.",

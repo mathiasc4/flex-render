@@ -24,6 +24,18 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         return "shows the data AS-IS";
     }
 
+    static intent() {
+        return "Pass the source through with optional channel swizzle. Pick to render the raw image.";
+    }
+
+    static expects() {
+        return { dataKind: "rgb", channels: "any" };
+    }
+
+    static exampleParams() {
+        return {};
+    }
+
     static docs() {
         return {
             summary: "Identity shader for four-channel input.",

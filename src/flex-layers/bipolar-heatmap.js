@@ -28,6 +28,18 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         return "values are of two categories, smallest considered in the middle";
     }
 
+    static intent() {
+        return "Render diverging scalar data with separate colors above and below the midpoint (0.5). Pick for signed/centered values.";
+    }
+
+    static expects() {
+        return { dataKind: "scalar", channels: 1, requiresThreshold: true };
+    }
+
+    static exampleParams() {
+        return { colorHigh: "#ff1000", colorLow: "#01ff00", threshold: 1 };
+    }
+
     static docs() {
         return {
             summary: "Diverging heatmap shader for a single scalar input channel.",

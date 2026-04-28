@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shader Configurator Interactive Demo</title>
+    <link rel="stylesheet" href="../../style.css">
+    <link rel="stylesheet" href="../../assets/fontawesome/css/v6-all.css">
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.css">
+    <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+    <script type="text/javascript" src="../../src/flex-renderer.js"></script>
+    <script type="text/javascript" src="../../src/colormaps.js"></script>
+    <script type="text/javascript" src="../../src/flex-shader-layer.js"></script>
+    <script type="text/javascript" src="../../src/flex-controls/basic-controls.js"></script>
+    <script type="text/javascript" src="../../src/flex-controls/advanced-controls.js"></script>
+    <script type="text/javascript" src="../../src/flex-webgl-context.js"></script>
+    <script type="text/javascript" src="../../src/flex-webgl2.js"></script>
+    <script type="text/javascript" src="../../src/flex-webgl2-atlas.js"></script>
+    <script type="text/javascript" src="../../src/flex-drawer.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/adaptive-threshold.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/bipolar-heatmap.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/colormap.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/default.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/edge-isoline.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/edge.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/group.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/heatmap.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/iconmap.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/sobel.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/texture.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/threshold.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/time-series.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/channel.js"></script>
+    <script type="text/javascript" src="../../src/flex-layers/channel-series.js"></script>
+    <script type="text/javascript" src="../../src/configurator.js"></script>
+    <script type="text/javascript" src="./configurator-live-output.js" defer></script>
+    <style type="text/css">
+        :root {
+            color-scheme: light;
+            --bg: #eef4ef;
+            --panel: #fbfdf9;
+            --panel-strong: #dbe9dc;
+            --text: #122018;
+            --muted: #526458;
+            --line: #bdd0c0;
+            --accent: #2f6b43;
+            --shadow: 0 18px 36px rgba(18, 32, 24, 0.09);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Trebuchet MS", Verdana, sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(47, 107, 67, 0.17), transparent 28%),
+                linear-gradient(180deg, #f7fbf7 0%, var(--bg) 100%);
+        }
+
+        .page {
+            max-width: 1480px;
+            margin: 0 auto;
+            padding: 32px 20px 48px;
+        }
+
+        .hero {
+            display: grid;
+            gap: 14px;
+            margin-bottom: 24px;
+            padding: 24px;
+            border-radius: 18px;
+            border: 1px solid var(--line);
+            background: linear-gradient(135deg, rgba(251, 253, 249, 0.96), rgba(219, 233, 220, 0.9));
+            box-shadow: var(--shadow);
+        }
+
+        .eyebrow {
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            font-size: 12px;
+            color: var(--accent);
+        }
+
+        h1, h2, h3 {
+            margin: 0;
+        }
+
+        p {
+            margin: 0;
+            line-height: 1.5;
+            color: var(--muted);
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(340px, 1fr);
+            gap: 20px;
+            align-items: start;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .panel-body {
+            padding: 20px;
+        }
+
+        .panel-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: end;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .stack {
+            display: grid;
+            gap: 20px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: var(--panel-strong);
+            color: var(--accent);
+            font-size: 13px;
+        }
+
+        .source-preview {
+            display: block;
+            width: 100%;
+            border-radius: 14px;
+            border: 1px solid var(--line);
+            background: #ffffff;
+        }
+
+        pre {
+            margin: 0;
+            padding: 16px;
+            overflow: auto;
+            border-radius: 14px;
+            border: 1px solid var(--line);
+            background: #14211a;
+            color: #eef7f0;
+            font: 13px/1.5 Consolas, "Courier New", monospace;
+            min-height: 180px;
+        }
+
+        #shader-config-ui {
+            min-height: 400px;
+        }
+
+        .toolbar {
+            display: grid;
+            gap: 8px;
+            min-width: min(100%, 360px);
+        }
+
+        .toolbar label,
+        .form-control {
+            display: grid;
+            gap: 6px;
+        }
+
+        .toolbar span,
+        .label-text {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--muted);
+        }
+
+        .toolbar select,
+        .toolbar button,
+        .input,
+        .select,
+        .textarea {
+            width: 100%;
+            min-height: 40px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            font: inherit;
+            color: var(--text);
+            background: #ffffff;
+        }
+
+        .toolbar button,
+        .btn {
+            cursor: pointer;
+            background: linear-gradient(180deg, #356f49 0%, #2f6b43 100%);
+            color: #f5fbf6;
+            border-color: #2b603d;
+            box-shadow: 0 10px 18px rgba(47, 107, 67, 0.18);
+        }
+
+        .toolbar button:hover,
+        .btn:hover {
+            filter: brightness(0.98);
+        }
+
+        .toolbar button:disabled,
+        .btn:disabled {
+            cursor: default;
+            opacity: 0.55;
+            box-shadow: none;
+        }
+
+        .toolbar-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 10px;
+            align-items: end;
+        }
+
+        .hint {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .status-chip {
+            display: inline-flex;
+            align-items: center;
+            min-height: 32px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: rgba(219, 233, 220, 0.65);
+            color: var(--accent);
+            font-size: 13px;
+        }
+
+        .flex,
+        .card-body,
+        .collapse-title,
+        .collapse-content {
+            box-sizing: border-box;
+        }
+
+        .flex { display: flex; }
+        .flex-col { flex-direction: column; }
+        .flex-wrap { flex-wrap: wrap; }
+        .items-center { align-items: center; }
+        .items-start { align-items: flex-start; }
+        .justify-between { justify-content: space-between; }
+        .justify-center { justify-content: center; }
+        .gap-2 { gap: 8px; }
+        .gap-3 { gap: 12px; }
+        .gap-4 { gap: 16px; }
+        .p-2 { padding: 8px; }
+        .p-3 { padding: 12px; }
+        .p-4 { padding: 16px; }
+        .min-h-\[180px\] { min-height: 180px; }
+        .max-h-\[180px\] { max-height: 180px; }
+        .w-auto { width: auto; }
+        .w-full { width: 100%; }
+        .rounded-box,
+        .rounded-2,
+        .rounded-lg { border-radius: 14px; }
+        .border { border: 1px solid var(--line); }
+        .border-base-300 { border-color: var(--line); }
+        .bg-base-100 { background: var(--panel); }
+        .bg-base-200 { background: #f2f7f2; }
+        .text-sm { font-size: 14px; }
+        .text-xs { font-size: 12px; }
+        .font-semibold,
+        .font-medium { font-weight: 600; }
+        .font-mono { font-family: Consolas, "Courier New", monospace; }
+        .opacity-70 { opacity: 0.78; }
+        .shadow-sm { box-shadow: 0 10px 22px rgba(18, 32, 24, 0.08); }
+        .inline-block { display: inline-block; }
+        .grid { display: grid; }
+        .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .col-span-2 { grid-column: span 2; }
+        code {
+            padding: 2px 6px;
+            border-radius: 8px;
+            background: rgba(18, 32, 24, 0.07);
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            background: var(--panel);
+        }
+
+        .card-body {
+            display: grid;
+            gap: 12px;
+            padding: 16px;
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .collapse {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.72);
+            overflow: hidden;
+        }
+
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+        }
+
+        .collapse-title {
+            padding: 12px 14px;
+        }
+
+        .collapse-content {
+            padding: 0 14px 14px;
+        }
+
+        .alert {
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: #f5faf5;
+        }
+
+        .alert-warning {
+            background: #fff8e8;
+            border-color: #e9d8a6;
+            color: #7c5d12;
+        }
+
+        .alert-info {
+            background: #eef6ff;
+            border-color: #bfd4ef;
+            color: #244b74;
+        }
+
+        .label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .label.cursor-pointer { cursor: pointer; }
+
+        .toggle {
+            appearance: none;
+            width: 42px;
+            height: 24px;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: #dce6de;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .toggle::after {
+            content: "";
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #ffffff;
+            box-shadow: 0 2px 5px rgba(18, 32, 24, 0.2);
+            transition: transform 0.15s ease;
+        }
+
+        .toggle:checked {
+            background: #2f6b43;
+            border-color: #2f6b43;
+        }
+
+        .toggle:checked::after {
+            transform: translateX(18px);
+        }
+
+        .icon-search-result {
+            display: grid;
+            gap: 4px;
+            justify-items: center;
+            min-height: 72px;
+            padding: 10px 8px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: #ffffff;
+            color: var(--text);
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .icon-search-result:hover {
+            border-color: var(--accent);
+            background: #f4faf5;
+        }
+
+        .osd-preview {
+            width: min(100%, 520px);
+            aspect-ratio: 1 / 1;
+            min-height: 220px;
+            overflow: hidden;
+        }
+
+        @media (max-width: 1040px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            .toolbar-row,
+            .grid-cols-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <section class="hero">
+            <p class="eyebrow">Shader Configurator Demo</p>
+            <h1>Interactive configurator with live JSON output</h1>
+            <p>
+                The configurator runs against a local test image and mirrors the current shader
+                configuration on every refresh. The final snapshot is also captured when the user
+                clicks <code>Done</code>.
+            </p>
+        </section>
+
+        <section class="layout">
+            <article class="panel">
+                <div class="panel-body">
+                    <div class="panel-head">
+                        <div class="stack" style="gap: 8px;">
+                            <h2>Configurator</h2>
+                            <p>Pick any registered shader and inspect or edit its generated control configuration.</p>
+                        </div>
+
+                        <div class="toolbar">
+                            <label for="shader-selector">
+                                <span>Shader to configure</span>
+                                <div class="toolbar-row">
+                                    <select id="shader-selector"></select>
+                                    <button id="reload-shader" type="button">Load Shader</button>
+                                </div>
+                            </label>
+                            <div id="shader-status" class="status-chip">Preparing demo…</div>
+                        </div>
+                    </div>
+                    <div id="shader-config-ui" style="margin-top: 18px;"></div>
+                </div>
+            </article>
+
+            <aside class="stack">
+                <section class="panel">
+                    <div class="panel-body">
+                        <div class="badge">Loaded source image</div>
+                        <h3 style="margin-top: 12px;">Preview data</h3>
+                        <p id="data-meta" style="margin-top: 8px;">Loading local image…</p>
+                        <img id="source-image" class="source-preview" alt="Loaded test image" style="margin-top: 16px;">
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-body">
+                        <div class="badge">Live output</div>
+                        <h3 style="margin-top: 12px;">Current shader config</h3>
+                        <pre id="live-config-output" style="margin-top: 16px;"></pre>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-body">
+                        <div class="badge">Committed output</div>
+                        <h3 style="margin-top: 12px;">Last config returned by Done</h3>
+                        <pre id="final-config-output" style="margin-top: 16px;">Click Done to capture the final config.</pre>
+                    </div>
+                </section>
+            </aside>
+        </section>
+    </main>
+</body>
+</html>

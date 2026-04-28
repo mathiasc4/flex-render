@@ -1,9 +1,16 @@
 # OpenSeadragon - Flex Render
 
-Versatile GPU-accelerated drawer implementation for OpenSeadragon. The design originates from [xOpat viewer](https://github.com/RationAI/xopat), 
+Versatile GPU-accelerated drawer implementation for OpenSeadragon. The design originates from [xOpat viewer](https://github.com/RationAI/xopat),
 where the basis for this rendering engine was developed.
 
 See it in action and get started using it at [https://openseadragon.github.io/][openseadragon].
+
+Additional implementation notes:
+
+- [OFFSCREEN.md](./OFFSCREEN.md) documents offscreen rendering helpers
+- [src/EVENTS.md](./src/EVENTS.md) documents semantic and lifecycle events
+- [INSPECTOR.md](./INSPECTOR.md) defines the backend-agnostic inspector contract used by WebGL2 and future backends
+- [STYLING.md](./STYLING.md) explains how to mount and theme renderer-generated control UI
 
 ## Usage
 
@@ -25,33 +32,159 @@ let viewer = OpenSeadragon({
 
 Then, you can use one of built-in (or implement custom) visualization styles by
 configuring ``TiledImages`` via JSON `shader layers`. The configuration can happen in two ways:
- - handled internally: each Tiled Image will be automatically assigned ``identity`` rendering style,
-   which you can customize by calling
+- handled internally: each Tiled Image will be automatically assigned ``identity`` rendering style,
+  which you can customize by calling
+  ````js
+   viewer.drawer.configureTiledImage(tiledImage, {
+       type: 'identity'
+   });
+  ````
+- handled externally: completely override the renderer output by custom rendering configuration
    ````js
-    viewer.drawer.configureTiledImage(tiledImage, {
-        type: 'identity'
-    });
+   viewer.drawer.overrideConfigureAll({
+       'key1': {
+           type: 'identity',
+           tiledImages: [0],
+       },
+       'key2': {
+           type: 'identity',
+           tiledImages: [1],
+       },
+       'key3': {
+           type: 'identity',
+           tiledImages: [2],
+       }
+   }, ['key1', 'key3', 'key2']); // we can define custom layer order for rendering
    ````
- - handled externally: completely override the renderer output by custom rendering configuration
-    ````js
-    viewer.drawer.overrideConfigureAll({
-        'key1': {
-            type: 'identity',
-            tiledImages: [0],
-        },
-        'key2': {
-            type: 'identity',
-            tiledImages: [1],
-        },
-        'key3': {
-            type: 'identity',
-            tiledImages: [2],
-        }
-    }, ['key1', 'key3', 'key2']); // we can define custom layer order for rendering
-    ````
 In the first case, TiledImage configurations (like blending mode) are respected. In the second case,
 the TiledImage settings are **completely overridden** by the provided configuration. That means properties
 like `opacity` or `blendMode` are ignored on the TiledImage level, and read only from the provided JSON.
+
+### Renderer Lifecycle
+
+The renderer has two related but distinct lifecycles:
+
+- configuration lifecycle: shader configs are registered, `ShaderLayer` instances are created, and the second-pass WebGL program is compiled
+- data lifecycle: tile payloads arrive later, and only then does the drawer know source-dependent runtime metadata such as pack count and channel count for `gpuTextureSet` inputs
+
+The important consequence is that shader instances are usually created before all source metadata is known.
+This is intentional. The renderer does not wait for all data before creating shaders.
+
+The current lifecycle is:
+
+1. `configureTiledImage(...)` or `overrideConfigureAll(...)` registers shader configs and creates `ShaderLayer` instances.
+2. `viewer.drawer.rebuild()` or the internal rebuild path recompiles the second-pass program from the currently registered shaders.
+3. Tiles start loading. During tile normalization, the drawer extracts runtime metadata from the loaded payload.
+4. If that runtime metadata changes the effective source shape, the affected shader instances are refreshed and the program is rebuilt again.
+5. Rendering continues normally with the updated shader instances and metadata uniforms.
+
+This means a shader can safely exist before all data is loaded, but source-dependent control topology should be derived from source metadata helpers rather than from constructor-time assumptions.
+
+At the moment, the following source information is available from `ShaderLayer` on the JS side:
+
+- `getSourceInfo(sourceIndex)` returns a consolidated object with `metadataReady`, `channelCount`, `packCount`, `dimensions`, `minLevel`, `maxLevel`, `levelCount`, `metadata`, and the bound `tiledImage`
+- `getSourceChannelCount(sourceIndex)` and `getSourcePackCount(sourceIndex)` expose the runtime sampling shape
+- `getSourceDimensions(sourceIndex)`, `getSourceLevels(sourceIndex)`, and `getSourceMetadata(sourceIndex)` expose tile-source metadata
+
+For GLSL, the second-pass shader already receives per-source runtime sampling metadata:
+
+- `osd_channel_count(sourceIndex)`
+- `osd_pack_count(sourceIndex)`
+- `osd_texture(sourceIndex, packIndex, uv)`
+- `osd_channel(sourceIndex, channelIndex, uv)`
+
+`overrideConfigureAll(...)` is therefore not required to "consume data first". The more precise rule is:
+ensure shaders can refresh when source metadata becomes known, and rebuild the program when metadata changes shader structure.
+
+### Lazy Shader Sources
+
+Some wrapper shaders need to switch between sources that are not already open as `TiledImage`s.
+Typical example: a time series where only the currently selected frame should exist in the viewer world,
+while the series configuration contains many possible entries.
+
+The drawer now supports this directly through source-binding requests.
+
+- `ShaderLayer.requestSourceBinding(sourceIndex, entry, options)` asks the drawer to rebind one logical shader source slot.
+- If `entry` is an integer, it is treated as an existing world `TiledImage` index.
+- If `entry` is a descriptor object with `tileSource` or `source`, the drawer can lazily realize it into a stable hidden world slot.
+- If `entry` is an opaque ID or custom object, `drawerOptions["flex-renderer"].shaderSourceResolver` can resolve it.
+
+Built-in managed descriptors use one stable world index per logical shader source slot and replace the underlying `TiledImage`
+when the selected entry changes. This avoids index churn in `shaderConfig.tiledImages`.
+
+Supported managed descriptor shape:
+
+```js
+{
+    tileSource: "/data/frame-05.dzi",
+    openOptions: {
+        x: 0,
+        y: 0,
+        width: 1,
+        opacity: 0
+    }
+}
+```
+
+You can also provide `source` instead of `tileSource`, and `open` instead of `openOptions`.
+
+When you need application-specific lookup, provide a resolver:
+
+```js
+const viewer = OpenSeadragon({
+    drawer: "flex-renderer",
+    drawerOptions: {
+        "flex-renderer": {
+            shaderSourceResolver: async ({ request, drawer }) => {
+                // request.entry can be an external ID, DB record, frame descriptor, ...
+                const descriptor = await loadFrameDescriptor(request.entry);
+
+                // Reuse the built-in managed slot implementation.
+                return drawer.realizeShaderSourceDescriptor(request, {
+                    tileSource: descriptor.url,
+                    openOptions: {
+                        x: descriptor.x,
+                        y: descriptor.y,
+                        width: descriptor.width,
+                        opacity: 0
+                    }
+                });
+            }
+        }
+    }
+});
+```
+
+This mechanism is used by `time-series`: its `series` parameter can now contain either world indexes
+or lazy source descriptors resolved later by the drawer.
+
+### Inspector API
+
+The inspector is a renderer-owned second-pass feature with a backend-agnostic state shape.
+
+Application entry points:
+
+```js
+viewer.drawer.setInspectorState({
+    enabled: true,
+    mode: "reveal-inside",
+    centerPx: { x: 320, y: 180 },
+    radiusPx: 96,
+    featherPx: 16,
+    shaderSplitIndex: 1
+});
+```
+
+```js
+const state = viewer.drawer.renderer.getInspectorState();
+viewer.drawer.clearInspectorState();
+```
+
+Behavior contract:
+
+- `reveal-inside` and `reveal-outside` are executed inline in the normal second pass
+- `lens-zoom` may use a backend compositor path
+- the canonical state shape and backend responsibilities are defined in [INSPECTOR.md](./INSPECTOR.md)
 
 ### Shader Layers
 
@@ -74,7 +207,7 @@ Except for the ``type`` property the golden rule is: don't specify what you don'
 ````
 With ``use_mode=show`` the blending is ignored. With `blend`, blending is respected, with `clip` applied only against the previous layer.
 
-Updates to the configuration are generally reflected immediately, if you re-build the program. 
+Updates to the configuration are generally reflected immediately, if you re-build the program.
 
 ### UI Components
 When you want to let users to control shader inputs through UI, you need to provide
@@ -154,7 +287,7 @@ Config values can be changed anytime. It is a good idea to not to force the rend
 this way you can share the configuration object active state all the time and modify it as needed.
 For changes to take effect, you need to call ``viewer.drawer.rebuild()``, same
 for navigator if used. Moreover, ``use_*`` properties must call `reset*()` method. For filters, call `resetFilters(...)`.
-For change in mode or blending, call `resetMode()`. For changes in raster channel mapping, call `resetChannels()`.
+For change in mode or blending, call `resetMode()`. For changes in raster channel mapping, call `resetChannel()`.
 ````js
 const shaderLayer = viewer.drawer.renderer.getShaderLayer('my-layer');
 const config = shaderLayer.getConfig();
@@ -162,13 +295,15 @@ config.params.use_gamma = 1.0; // change gamma to 1.0
 shaderLayer.resetFilters(config.params); // reset the use_gamma property to apply the change
 viewer.drawer.rebuild();
 ````
+If your shader's control topology depends on source metadata, prefer reading it from `shaderLayer.getSourceInfo(...)`.
+When tile payload metadata arrives later, the drawer refreshes the affected shader instances and rebuilds automatically.
 We might work on this more to simplify it.
 
 ### Dealing With missing TileSources
-When you override configuration to a custom shader set, you usually rely on tiled images to be present - 
-but what some fails to load?! 
+When you override configuration to a custom shader set, you usually rely on tiled images to be present -
+but what some fails to load?!
 
-You can use 
+You can use
 ````js
 VIEWER.addTiledImage({
     tileSource: {type: "_blank", error: "Here goes your error detail."},
@@ -182,7 +317,7 @@ index using ``addTiledImage`` to know it in advance. E.g., call this snipplet in
 of a parent ``addTiledImage`` call. You can access the error message later as `viewer.world.getItemAt(toOpenIndex).source.error`.
 
 ### Processing OffScreen
-This drawer supports off-screen processing. You can either use the renderer directly, which is a bit harder, 
+This drawer supports off-screen processing. You can either use the renderer directly, which is a bit harder,
 or if you want to process current viewport in a different way, you can use ``$.makeStandaloneFlexDrawer(originalViewer)``
 and then call ``offscreeDrawer.draw(originalViewer.world._items)``. The new viewer can have different shader configuration,
 rendering the same viewport in a desired manner. It's synchronized with the originalViewer data.
@@ -198,26 +333,27 @@ Additional configurator debug pages are available under `test/demo/`:
 - `configurator-static-docs.html` renders the static shader/control documentation view.
 - `configurator-live-output.html` runs the interactive configurator and prints live config JSON.
 - `configurator-scheme.html` dumps the machine-readable configuration schema focused on usable JSON input: `ShaderConfig`, shader `params`, built-in `use_*` options, top-level and group `order` overrides, group `shaders`, typed UI-control config shapes, and reusable `controlTypedefs`.
+- `standalone-renderer.html` is a preset-driven standalone runtime test bench for switching synthetic inputs and trying multiple visualization configs without a viewer.
 
 ## Roadmap
- - Bugfixing & getting ready for the first release
-   - Fixing tests: inherited from OpenSeadragon, they expect incompatible behavior
-   - Fixing coverage tests
- - Adding support for WebGL 1.0 (fallback)
- - Modularize ShaderLayers
-   - Implement modules (sample color, apply gaussian...) to connect together to create a ShaderLayer. 
- - Add support for concave clipping polygons.
- - Adding support for better debugging & cropping
-   - For now, only convex polygons are supported
- - Dynamic documentation and configuration schema output that parse available shaders and controls and show what JSON can be used where. 
+- Bugfixing & getting ready for the first release
+    - Fixing tests: inherited from OpenSeadragon, they expect incompatible behavior
+    - Fixing coverage tests
+- Adding support for WebGL 1.0 (fallback)
+- Modularize ShaderLayers
+    - Implement modules (sample color, apply gaussian...) to connect together to create a ShaderLayer.
+- Add support for concave clipping polygons.
+- Adding support for better debugging & cropping
+    - For now, only convex polygons are supported
+- Dynamic documentation and configuration schema output that parse available shaders and controls and show what JSON can be used where.
 
 #### What might be supported
- - Canvas2D proxy. People tend to use Canvas2D api to access the rendered data, which
+- Canvas2D proxy. People tend to use Canvas2D api to access the rendered data, which
   is currently not possible as the output canvas is native WebGL (or other rendering engine) element.
 
 #### What will not be supported
- - Tainted Data. The purpose of this renderer is to draw advanced visualizations on GPU: if your
-data is not GPU-accessible, fix your data.
+- Tainted Data. The purpose of this renderer is to draw advanced visualizations on GPU: if your
+  data is not GPU-accessible, fix your data.
 
 ## Development
 

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shader Configurator Scheme Demo</title>
+    <script type="text/javascript">
+        (function() {
+            function loadScript(src) {
+                return new Promise((resolve, reject) => {
+                    const script = document.createElement("script");
+                    script.src = src;
+                    script.async = false;
+                    script.onload = () => resolve(src);
+                    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+                    document.head.appendChild(script);
+                });
+            }
+
+            async function loadFirst(candidates) {
+                for (const src of candidates) {
+                    try {
+                        await loadScript(src);
+                        return src;
+                    } catch (_) {
+                        // try next candidate
+                    }
+                }
+                throw new Error(`Unable to load any candidate: ${candidates.join(", ")}`);
+            }
+
+            window.__configuratorSchemeBoot = (async() => {
+                await loadFirst([
+                    "../../openseadragon/openseadragon.js",
+                    "/openseadragon/openseadragon.js",
+                    "../openseadragon/openseadragon.js"
+                ]);
+
+                await loadFirst([
+                    "../../build/openseadragon/flex-renderer.js",
+                    "../../build/openseadragon/flex-renderer.min.js",
+                    "/build/openseadragon/flex-renderer.js",
+                    "/build/openseadragon/flex-renderer.min.js"
+                ]);
+
+                await loadFirst([
+                    "../../src/configurator.js",
+                    "/src/configurator.js"
+                ]);
+
+                await loadFirst([
+                    "./configurator-scheme.js",
+                    "/test/demo/configurator-scheme.js",
+                    "/demo/configurator-scheme.js"
+                ]);
+            })().catch(error => {
+                window.__configuratorSchemeBootError = error;
+                console.error(error);
+                window.addEventListener("DOMContentLoaded", () => {
+                    const host = document.getElementById("scheme-output");
+                    if (host) {
+                        host.textContent = String(error && error.message ? error.message : error);
+                    }
+                });
+            });
+        })();
+    </script>
+    <style type="text/css">
+        :root {
+            color-scheme: light;
+            --bg: #f3f5f8;
+            --panel: #ffffff;
+            --line: #d8dee8;
+            --text: #1c2430;
+            --muted: #5e6b7d;
+            --accent: #2357a5;
+            --shadow: 0 20px 40px rgba(28, 36, 48, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Consolas, "Courier New", monospace;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top right, rgba(35, 87, 165, 0.14), transparent 25%),
+                linear-gradient(180deg, #f8fafc 0%, var(--bg) 100%);
+        }
+
+        .page {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 28px 18px 40px;
+        }
+
+        .hero,
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+        }
+
+        .hero {
+            padding: 22px 24px;
+            margin-bottom: 18px;
+        }
+
+        .eyebrow {
+            margin: 0 0 10px;
+            font-size: 12px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent);
+        }
+
+        h1, h2 {
+            margin: 0;
+            font-family: "Trebuchet MS", Verdana, sans-serif;
+        }
+
+        p {
+            margin: 10px 0 0;
+            color: var(--muted);
+            font-family: "Trebuchet MS", Verdana, sans-serif;
+            line-height: 1.5;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 1fr);
+            gap: 18px;
+            align-items: start;
+        }
+
+        .panel-body {
+            padding: 18px;
+        }
+
+        .stats {
+            display: grid;
+            gap: 10px;
+        }
+
+        .stat {
+            padding: 12px 14px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: #f8fafc;
+        }
+
+        .stat-label {
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .stat-value {
+            font-size: 18px;
+            color: var(--text);
+        }
+
+        button {
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 14px;
+            background: var(--accent);
+            color: #fff;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        button:hover {
+            filter: brightness(0.95);
+        }
+
+        pre {
+            margin: 0;
+            overflow: auto;
+            min-height: 70vh;
+            padding: 18px;
+            border-radius: 14px;
+            border: 1px solid var(--line);
+            background: #0f1720;
+            color: #e7eef8;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        @media (max-width: 980px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <section class="hero">
+            <p class="eyebrow">Shader Configurator Demo</p>
+            <h1>Machine-readable scheme</h1>
+            <p>
+                This page dumps the current machine-readable configuration schema as JSON so you can
+                inspect `ShaderConfig`, shader `params`, built-in `use_*` options, and control config shapes.
+            </p>
+        </section>
+
+        <section class="layout">
+            <aside class="panel">
+                <div class="panel-body">
+                    <h2>Summary</h2>
+                    <div class="stats" style="margin-top: 16px;">
+                        <div class="stat">
+                            <span class="stat-label">Model version</span>
+                            <span class="stat-value" id="model-version">-</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Shaders</span>
+                            <span class="stat-value" id="shader-count">-</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">UI control schemas</span>
+                            <span class="stat-value" id="control-count">-</span>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 18px;">
+                        <button id="refresh-btn" type="button">Rebuild JSON</button>
+                    </div>
+                </div>
+            </aside>
+
+            <section class="panel">
+                <div class="panel-body">
+                    <h2>JSON output</h2>
+                    <pre id="scheme-output" style="margin-top: 16px;"></pre>
+                </div>
+            </section>
+        </section>
+    </main>
+</body>
+</html>

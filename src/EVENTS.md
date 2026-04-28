@@ -93,6 +93,44 @@ Canonical semantic event for persistence, sync, autosave, undo/redo, and history
 
 ## Lifecycle events
 
+### `inspector-change`
+
+Semantic event fired when the canonical inspector state changes.
+
+### Payload
+
+```js
+{
+    reason: "set-inspector-state" | "clear-inspector-state" | "drawer-set-inspector-state" | string,
+    previous: {
+        enabled: false,
+        mode: "reveal-inside",
+        centerPx: { x: 0, y: 0 },
+        radiusPx: 96,
+        featherPx: 16,
+        lensZoom: 2,
+        shaderSplitIndex: 0
+    },
+    current: {
+        enabled: true,
+        mode: "lens-zoom",
+        centerPx: { x: 320, y: 180 },
+        radiusPx: 96,
+        featherPx: 16,
+        lensZoom: 2,
+        shaderSplitIndex: 1
+    }
+}
+```
+
+### Notes
+
+- `previous` and `current` are normalized copies of the canonical inspector state.
+- Use this event for inspector UI sync, persistence, or instrumentation.
+- Backend implementations should read inspector state from `renderer.getInspectorState()`, not from event payload caching.
+
+---
+
 ### `program-used`
 
 Fired after a WebGL program is switched to and before shader-layer JS initialization runs.

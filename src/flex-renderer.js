@@ -51,6 +51,34 @@
      */
 
     /**
+     * @typedef {Object} InspectorState
+     * @property {boolean} enabled master switch for inspector logic
+     * @property {"reveal-inside"|"reveal-outside"|"lens-zoom"} mode interaction mode
+     * @property {{x: number, y: number}} centerPx inspector center in canvas pixel space
+     * @property {number} radiusPx inspector radius in canvas pixels
+     * @property {number} featherPx soft edge width in canvas pixels
+     * @property {number} lensZoom magnification used by lens mode, clamped to >= 1
+     * @property {number} shaderSplitIndex first shader slot affected by reveal modes
+     */
+
+    /**
+     * @typedef {Object} InspectorStateUpdateOptions
+     * @property {boolean} [notify=true] emit the `inspector-change` event
+     * @property {boolean} [redraw=true] request a redraw after the state change
+     * @property {string} [reason="set-inspector-state"] semantic reason included in the emitted event
+     */
+
+    /**
+     * @typedef {Object} SecondPassTextureOptions
+     * @property {GLint|null} [framebuffer] optional framebuffer override for the final draw call
+     * @property {Object|string} [target] backend-owned render target object or stable target key
+     * @property {string} [targetKey] stable target key used when `target` is omitted
+     * @property {number} [width] target width in physical pixels
+     * @property {number} [height] target height in physical pixels
+     * @property {number[]} [clearColor=[0, 0, 0, 0]] RGBA color used when rendering an empty second pass
+     */
+
+    /**
      * WebGL Renderer for OpenSeadragon.
      *
      * Renders in two passes:
@@ -123,6 +151,7 @@
             this._shadersOrder = null;
             this._programImplementations = {};
             this.__firstPassResult = null;
+            this._inspectorState = this.constructor.normalizeInspectorState();
 
             this.canvasContextOptions = incomingOptions.canvasOptions;
             const canvas = document.createElement("canvas");
@@ -160,6 +189,59 @@
             }
 
             throw new Error("$.FlexRenderer::determineContext: Could not find WebGLImplementation with version " + version);
+        }
+
+        /**
+         * Pre-compilation shader configuration cleanup
+         * @param {ShaderConfig} config
+         * @param {NormalizationContext} context
+         * @return {ShaderConfig}
+         */
+        static normalizeShaderConfig(config, context = {}) {
+            if (!config || typeof config !== "object") {
+                return config;
+            }
+
+            let normalized = config;
+            const Shader = normalized.type ? $.FlexRenderer.ShaderMediator.getClass(normalized.type) : null;
+
+            if (Shader && typeof Shader.normalizeConfig === "function") {
+                const next = Shader.normalizeConfig(normalized, context);
+                if (next && typeof next === "object") {
+                    normalized = next;
+                }
+            }
+
+            if (normalized.shaders && typeof normalized.shaders === "object" && !Array.isArray(normalized.shaders)) {
+                normalized.shaders = $.FlexRenderer.normalizeShaderMap(normalized.shaders, {
+                    ...context,
+                    parentConfig: normalized
+                });
+            }
+
+            return normalized;
+        }
+
+        /**
+         * Normalize shader configuration map - all shaders at once.
+         * @param {Record<string, ShaderConfig>} shaderMap
+         * @param {NormalizationContext} context
+         * @return {Record<string, ShaderConfig>}
+         */
+        static normalizeShaderMap(shaderMap, context = {}) {
+            if (!shaderMap || typeof shaderMap !== "object" || Array.isArray(shaderMap)) {
+                return shaderMap;
+            }
+
+            for (const shaderId of Object.keys(shaderMap)) {
+                shaderMap[shaderId] = $.FlexRenderer.normalizeShaderConfig(shaderMap[shaderId], {
+                    ...context,
+                    shaderId,
+                    path: Array.isArray(context.path) ? context.path.concat([shaderId]) : [shaderId]
+                });
+            }
+
+            return shaderMap;
         }
 
         /**
@@ -234,12 +316,26 @@
         }
 
         /**
-         * Call to second-pass draw
+         * Execute the second pass for the already prepared first-pass result.
+         *
+         * Responsibility split:
+         * - the renderer owns inspector state and decides whether the active inspector mode
+         *   can be executed inline in the normal second pass
+         * - reveal modes stay in the normal second-pass program
+         * - lens mode may delegate to the backend-specific inspector compositor path
+         *
          * @param {SPRenderPackage[]} renderArray
          * @param {RenderOptions|undefined} options
          * @return {RenderOutput}
          */
         secondPassProcessData(renderArray, options = undefined) {
+            if (this.webglContext && typeof this.webglContext.processSecondPassWithInspector === "function") {
+                const inspectorState = this.getInspectorState();
+                if (inspectorState && inspectorState.enabled && inspectorState.mode === "lens-zoom") {
+                    return this.webglContext.processSecondPassWithInspector(renderArray, options);
+                }
+            }
+
             const program = this._programImplementations[this.webglContext.secondPassProgramKey];
 
             if (this.useProgram(program, "second-pass")) {
@@ -413,6 +509,9 @@
             if (!implementation) {
                 return;
             }
+            if (this._program === implementation) {
+                this._program = null;
+            }
             implementation.unload();
             implementation.destroy();
             this.gl.deleteProgram(implementation._webGLProgram);
@@ -477,13 +576,23 @@
                 rebuild: () => {
                     this.registerProgram(null, this.webglContext.secondPassProgramKey);
                 },
+                // callback to recreate the shader when control topology changes
+                refresh: () => {
+                    this.refreshShaderLayer(id, { rebuildProgram: true });
+                },
                 // callback to reinitialize the drawer; NOT USED
                 refetch: this.refetchCallback
             });
 
-            shader.construct();
-            this._shaders[id] = shader;
-            return shader;
+            try {
+                this._shaders[id] = shader;
+                shader.construct();
+                return shader;
+            } catch (e) {
+                delete this._shaders[id];
+                console.error(`Failed to construct shader '${id}' (${shaderConfig.type}).`, e, shaderConfig);
+                return undefined;
+            }
         }
 
         getAllShaders() {
@@ -629,6 +738,32 @@
         }
 
         /**
+         * Recreate an existing shader layer while preserving its bound config object
+         * and current order. This is needed when the set of owned controls changes.
+         * @param {string} id
+         * @param {object} options
+         * @param {boolean} [options.rebuildProgram=true]
+         * @returns {ShaderLayer|null}
+         */
+        refreshShaderLayer(id, options = {}) {
+            id = $.FlexRenderer.sanitizeKey(id);
+            const shader = this._shaders[id];
+            if (!shader) {
+                return null;
+            }
+
+            const config = shader.getConfig();
+            const rebuiltShader = this.createShaderLayer(id, config, false);
+            const shouldRebuild = options.rebuildProgram !== false;
+
+            if (shouldRebuild) {
+                this.registerProgram(null, this.webglContext.secondPassProgramKey);
+            }
+
+            return rebuiltShader;
+        }
+
+        /**
          * Clear all shaders
          */
         deleteShaders() {
@@ -699,11 +834,138 @@
             }, payload));
         }
 
+        /**
+         * Normalize inspector state to the canonical backend-agnostic shape.
+         *
+         * Backends must consume this logical state, not an implementation-specific variant.
+         * The values are defined in canvas pixel space so WebGL, WebGPU, or CPU implementations
+         * can produce the same visual result.
+         *
+         * @param {Partial<InspectorState>|undefined} state
+         * @return {InspectorState}
+         */
+        static normalizeInspectorState(state = undefined) {
+            const defaults = {
+                enabled: false,
+                mode: "reveal-inside",
+                centerPx: { x: 0, y: 0 },
+                radiusPx: 96,
+                featherPx: 16,
+                lensZoom: 2,
+                shaderSplitIndex: 0,
+            };
+
+            if (!state || typeof state !== "object") {
+                return $.extend(true, {}, defaults);
+            }
+
+            const normalized = $.extend(true, {}, defaults, state);
+            const allowedModes = ["reveal-inside", "reveal-outside", "lens-zoom"];
+
+            if (!allowedModes.includes(normalized.mode)) {
+                normalized.mode = defaults.mode;
+            }
+            normalized.enabled = !!normalized.enabled;
+            normalized.radiusPx = Math.max(0, Number(normalized.radiusPx) || 0);
+            normalized.featherPx = Math.max(0, Number(normalized.featherPx) || 0);
+            normalized.lensZoom = Math.max(1, Number(normalized.lensZoom) || 1);
+            normalized.shaderSplitIndex = Math.max(0, Math.floor(Number(normalized.shaderSplitIndex) || 0));
+
+            const center = normalized.centerPx || {};
+            normalized.centerPx = {
+                x: Number(center.x) || 0,
+                y: Number(center.y) || 0,
+            };
+
+            return normalized;
+        }
+
+        /**
+         * Update the canonical inspector state stored by the renderer.
+         *
+         * This method is the public write API for all backends. It does not perform rendering
+         * itself; it stores normalized state, emits `inspector-change`, and optionally triggers
+         * a redraw so the active backend can consume the new state during the next second pass.
+         *
+         * @param {Partial<InspectorState>|undefined} state
+         * @param {InspectorStateUpdateOptions} [options={}]
+         * @return {InspectorState}
+         */
+        setInspectorState(state = undefined, options = {}) {
+            const previous = this.getInspectorState();
+            this._inspectorState = this.constructor.normalizeInspectorState(state);
+
+            if (options.notify !== false) {
+                this.raiseEvent('inspector-change', {
+                    previous: previous,
+                    current: this.getInspectorState(),
+                    reason: options.reason || 'set-inspector-state'
+                });
+            }
+
+            if (options.redraw !== false && typeof this.redrawCallback === 'function') {
+                this.redrawCallback();
+            }
+
+            return this.getInspectorState();
+        }
+
+        /**
+         * Return a defensive copy of the current canonical inspector state.
+         * Backends should read inspector state through this method instead of caching mutable references.
+         *
+         * @return {InspectorState}
+         */
+        getInspectorState() {
+            return $.extend(true, {}, this._inspectorState || this.constructor.normalizeInspectorState());
+        }
+
+        /**
+         * Reset the inspector to the normalized disabled state.
+         *
+         * @param {InspectorStateUpdateOptions} [options={}]
+         * @return {InspectorState}
+         */
+        clearInspectorState(options = {}) {
+            return this.setInspectorState(undefined, $.extend(true, {
+                reason: 'clear-inspector-state'
+            }, options));
+        }
+
+        /**
+         * Reuse the current first-pass result and render the second pass into an offscreen target.
+         *
+         * This is the public contract used by features that need a texture copy of the composed
+         * second pass. The renderer delegates the target management details to the active backend.
+         *
+         * @param {SPRenderPackage[]} renderArray
+         * @param {SecondPassTextureOptions} [options={}]
+         * @return {Object}
+         */
+        renderSecondPassToTexture(renderArray, options = {}) {
+            if (!this.webglContext || typeof this.webglContext.renderSecondPassToTexture !== 'function') {
+                throw new Error('Active WebGL implementation does not support second-pass texture targets.');
+            }
+            return this.webglContext.renderSecondPassToTexture(renderArray, options);
+        }
+
         destroy() {
             this.htmlReset();
             this.deleteShaders();
             for (let pId in this._programImplementations) {
                 this.deleteProgram(pId);
+            }
+            if (this._extractionFB) {
+                this.gl.deleteFramebuffer(this._extractionFB);
+                this._extractionFB = null;
+            }
+            if (this._debugPreviewFB) {
+                this.gl.deleteFramebuffer(this._debugPreviewFB);
+                this._debugPreviewFB = null;
+            }
+            if (this._debugPreviewColorRB) {
+                this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
+                this._debugPreviewColorRB = null;
             }
             this.webglContext.destroy();
             this._programImplementations = {};
@@ -1144,7 +1406,8 @@
             scale = 1,
             pad = 8,
             drawLabels = true,
-            background = '#111'
+            background = '#111',
+            maxCellSize = 160
         } = {}) {
             const colorLayers = renderOutput.textureDepth || 0;
             const stencilLayers = renderOutput.stencilDepth || 0;
@@ -1159,8 +1422,11 @@
 
             const width = Math.max(1, Math.floor(this.canvas.width));
             const height = Math.max(1, Math.floor(this.canvas.height));
-            const cellW = Math.max(1, Math.floor(width * scale));
-            const cellH = Math.max(1, Math.floor(height * scale));
+            const scaledCellW = Math.max(1, Math.floor(width * scale));
+            const scaledCellH = Math.max(1, Math.floor(height * scale));
+            const cellScale = Math.min(1, maxCellSize / Math.max(scaledCellW, scaledCellH));
+            const cellW = Math.max(1, Math.floor(scaledCellW * cellScale));
+            const cellH = Math.max(1, Math.floor(scaledCellH * cellScale));
 
             const sectionGap = 28;
             const headerH = drawLabels ? 18 : 0;
@@ -1194,8 +1460,8 @@
                 this._debugStage = document.createElement('canvas');
             }
             const stage = this._debugStage;
-            stage.width = width;
-            stage.height = height;
+            stage.width = cellW;
+            stage.height = cellH;
             const stageCtx = stage.getContext('2d', { willReadFrequently: true });
 
             const outputCanvas = ctx.canvas;
@@ -1209,12 +1475,12 @@
             ctx.imageSmoothingEnabled = false;
 
             let pixels = this._readbackBuffer;
-            if (!pixels || pixels.length !== width * height * 4) {
-                pixels = this._readbackBuffer = new Uint8ClampedArray(width * height * 4);
+            if (!pixels || pixels.length !== cellW * cellH * 4) {
+                pixels = this._readbackBuffer = new Uint8ClampedArray(cellW * cellH * 4);
             }
 
-            if (!this._imageData || this._imageData.width !== width || this._imageData.height !== height) {
-                this._imageData = new ImageData(width, height);
+            if (!this._imageData || this._imageData.width !== cellW || this._imageData.height !== cellH) {
+                this._imageData = new ImageData(cellW, cellH);
             }
             const imageData = this._imageData;
 
@@ -1222,12 +1488,30 @@
             if (!this._extractionFB) {
                 this._extractionFB = gl.createFramebuffer();
             }
-            gl.bindFramebuffer(gl.FRAMEBUFFER, this._extractionFB);
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this._extractionFB);
+
+            if (!this._debugPreviewFB) {
+                this._debugPreviewFB = gl.createFramebuffer();
+            }
+            if (!this._debugPreviewColorRB) {
+                this._debugPreviewColorRB = gl.createRenderbuffer();
+            }
+
+            gl.bindRenderbuffer(gl.RENDERBUFFER, this._debugPreviewColorRB);
+            if (this._debugPreviewSizeW !== cellW || this._debugPreviewSizeH !== cellH) {
+                gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, cellW, cellH);
+                this._debugPreviewSizeW = cellW;
+                this._debugPreviewSizeH = cellH;
+            }
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this._debugPreviewFB);
+            gl.framebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, this._debugPreviewColorRB);
+            gl.bindRenderbuffer(gl.RENDERBUFFER, null);
 
             // Small helpers to attach a layer/texture
             const attachLayer = (texArray, layerIndex) => {
                 // WebGL2 texture array
-                gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texArray, 0, layerIndex);
+                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this._extractionFB);
+                gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texArray, 0, layerIndex);
             };
 
             const drawEmptyCell = (x, y, text = '—') => {
@@ -1252,16 +1536,31 @@
 
                 attachLayer(texArray, layerIndex);
 
-                if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+                if (gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
                     console.error(`Framebuffer incomplete for ${kind} layer`, layerIndex);
                     drawEmptyCell(x, y, 'fb err');
                     return;
                 }
 
-                gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+                gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this._debugPreviewFB);
+                if (gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+                    console.error(`Preview framebuffer incomplete for ${kind} layer`, layerIndex);
+                    drawEmptyCell(x, y, 'fb err');
+                    return;
+                }
+
+                gl.blitFramebuffer(
+                    0, 0, width, height,
+                    0, 0, cellW, cellH,
+                    gl.COLOR_BUFFER_BIT,
+                    gl.NEAREST
+                );
+
+                gl.bindFramebuffer(gl.FRAMEBUFFER, this._debugPreviewFB);
+                gl.readPixels(0, 0, cellW, cellH, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
                 imageData.data.set(pixels);
                 stageCtx.putImageData(imageData, 0, 0);
-                ctx.drawImage(stage, 0, 0, width, height, x, y, cellW, cellH);
+                ctx.drawImage(stage, x, y, cellW, cellH);
             };
 
             const rawHeaderY = pad;
@@ -1341,6 +1640,8 @@
                 }
             }
 
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         }
 

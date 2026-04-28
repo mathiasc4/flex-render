@@ -255,10 +255,6 @@
         "operator-assignment": [
             "error"
         ],
-        "operator-linebreak": [
-            "error",
-            "after"
-        ],
         "quote-props": [
             "error",
             "as-needed"

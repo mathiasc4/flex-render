@@ -16,6 +16,18 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         return "encode data values in opacity";
     }
 
+    static intent() {
+        return "Tint a single scalar channel and gate it with a threshold. Pick to highlight \"above/below value\" regions.";
+    }
+
+    static expects() {
+        return { dataKind: "scalar", channels: 1, requiresThreshold: true };
+    }
+
+    static exampleParams() {
+        return { color: "#fff700", threshold: 50, inverse: false };
+    }
+
     static docs() {
         return {
             summary: "Heatmap shader for one scalar channel.",

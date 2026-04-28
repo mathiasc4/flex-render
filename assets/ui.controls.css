@@ -1,0 +1,82 @@
+.er-control {
+    display: grid;
+    width: 100%;
+    gap: .5rem;
+    align-items: center;
+}
+
+.er-control > * {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.er-control[data-columns="1"] {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.er-control[data-columns="2"] {
+    grid-template-columns: minmax(0, var(--side, 30%)) minmax(0, 1fr);
+}
+
+.er-control[data-columns="3"] {
+    grid-template-columns: minmax(0, var(--side, 30%)) minmax(0, 1fr) minmax(0, var(--side, 30%));
+}
+
+.er-control__title {
+    grid-column: 1;
+}
+
+.er-control[data-columns="1"] > .er-control__body {
+    grid-column: 1;
+}
+
+.er-control[data-columns="2"] > .er-control__body {
+    grid-column: 2;
+}
+
+.er-control[data-columns="3"] > .er-control__body {
+    grid-column: 2;
+}
+
+.er-control[data-columns="3"] > .er-control__aux {
+    grid-column: 3;
+}
+
+.er-control__body,
+.er-control__aux {
+    min-width: 0;
+    width: 100%;
+}
+
+.er-control__body > :is(input, select, textarea, .form-control, .er-control__input, .er-control__display, .er-control__widget),
+.er-control__aux > :is(input, select, textarea, .form-control, .er-control__input, .er-control__display, .er-control__widget) {
+    width: 100%;
+    max-width: 100%;
+}
+
+.er-control--slider-with-input > .er-control__body,
+.er-control--slider-with-input > .er-control__aux {
+    min-width: 0;
+    width: 100%;
+}
+
+.er-control__body--slider-with-input > .er-control,
+.er-control__aux--slider-with-input > .er-control {
+    display: block;
+}
+
+.er-control__body--slider-with-input > .er-control > .er-control__body,
+.er-control__aux--slider-with-input > .er-control > .er-control__body {
+    display: block;
+}
+@media (max-width: 560px) {
+    .er-control {
+        grid-template-columns: 1fr !important;
+    }
+
+    .er-control__title,
+    .er-control__body,
+    .er-control__aux {
+        grid-column: 1 !important;
+    }
+}

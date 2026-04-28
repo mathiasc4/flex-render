@@ -28,7 +28,53 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     }
 
     static description() {
-        return "data values encoded in color scale";
+        return "data values encoded in color scale. The color control's `steps` (and `custom_colormap` array length) is coerced to `threshold.breaks.length + 1`. When both are set, `custom_colormap.default.length` wins for the `custom_colormap` type, otherwise `color.steps` wins. The `connect` flag (default true) additionally synchronizes step boundaries with break positions.";
+    }
+
+    static intent() {
+        return "Map a scalar value through a discrete color palette. Pick for class maps with explicit thresholds.";
+    }
+
+    static expects() {
+        return { dataKind: "scalar", channels: 1, requiresThreshold: true };
+    }
+
+    static exampleParams() {
+        return {
+            color: { type: "colormap", default: "Viridis", steps: 3, mode: "sequential" },
+            threshold: { breaks: [0.33, 0.66] },
+            connect: true
+        };
+    }
+
+    static controlCouplings() {
+        return [{
+            name: "colormap_class_count",
+            summary: "Color class count must equal threshold.breaks.length + 1. Resize palette and breaks together.",
+            controls: ["color", "threshold"],
+            validate: (layer) => {
+                const params = (layer && layer.params) || {};
+                const breaks = params.threshold && (
+                    Array.isArray(params.threshold.breaks) ? params.threshold.breaks
+                        : Array.isArray(params.threshold.default) ? params.threshold.default
+                            : null
+                );
+                const breaksCount = breaks ? breaks.length : 0;
+                const colorSteps = $.FlexRenderer.ShaderConfigurator
+                    .resolveEffectiveColorSteps(params.color);
+                const expectedSteps = breaksCount + 1;
+                return colorSteps === expectedSteps
+                    ? { ok: true }
+                    : {
+                        ok: false,
+                        expected: { "color.steps": expectedSteps },
+                        actual: {
+                            "color.steps": colorSteps,
+                            "threshold.breaks.length": breaksCount
+                        }
+                    };
+            }
+        }];
     }
 
     static docs() {
@@ -66,7 +112,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
                         inverted: false
                     }
                 },
-                { name: "connect", ui: "bool", valueType: "bool", default: false }
+                { name: "connect", ui: "bool", valueType: "bool", default: true }
             ]
         };
     }
@@ -115,7 +161,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
                 required: {type: "advanced_slider", inverted: false}
             },
             connect: {
-                default: {type: "bool", interactive: true, title: "Connect breaks: ", default: false},
+                default: {type: "bool", interactive: true, title: "Connect breaks: ", default: true},
                 accepts: (type, instance) => type === "bool"
             }
         };
@@ -128,51 +174,60 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
 `;
     }
 
-    defaultColSteps(length) {
-        return [...Array(length).keys()].forEach(x => x + 1);
-    }
-
     init() {
-        const _this = this;
-
         this.opacity.init();
 
-        if (this.connect) {
-            this.connect.on('default', function(raw, encoded, ctx) {
-                _this.color.setSteps(_this.connect.raw ? [0, ..._this.threshold.raw, 1] :
-                    _this.defaultColSteps(_this.color.maxSteps)
+        const isColormap = typeof this.color.setSteps === "function";
+        const breaksOf = () => Array.isArray(this.threshold.raw) ? this.threshold.raw : [];
+        const currentColorSteps = () =>
+            $.FlexRenderer.ShaderConfigurator.resolveEffectiveColorSteps(this.color.params);
+
+        const warnIfMismatched = (expected) => {
+            if (this._coercionWarned) {
+                return;
+            }
+            const current = currentColorSteps();
+            if (current !== expected) {
+                this._coercionWarned = true;
+                console.warn(
+                    `[colormap] color step count ${current} coerced to ${expected} ` +
+                    `to satisfy threshold.breaks.length + 1`
                 );
-                _this.color.updateColormapUI();
+            }
+        };
+
+        const syncColor = () => {
+            if (!isColormap) {
+                return;
+            }
+            const breaks = breaksOf();
+            const expected = breaks.length + 1;
+            warnIfMismatched(expected);
+            if (this.connect && this.connect.raw) {
+                this.color.setSteps([0, ...breaks, 1]);
+            } else {
+                this.color.setSteps(expected);
+            }
+            if (typeof this.color.updateColormapUI === "function") {
+                this.color.updateColormapUI();
+            }
+        };
+
+        if (this.connect) {
+            this.connect.on('default', function() {
+                syncColor();
             }, true);
             this.connect.init();
 
-
-            this.threshold.on('breaks', function(raw, encoded, ctx) {
-                if (_this.connect.raw) { //if YES
-                    _this.color.setSteps([0, ...raw, 1]);
-                    _this.color.updateColormapUI();
-                }
+            this.threshold.on('breaks', function() {
+                syncColor();
             }, true);
         }
         this.threshold.init();
 
-        //todo fix this scenario
-        // if (this.threshold.raw.length != this.color.params.steps - 1) {
-        // }
-
-        if (this.connect) {
-            if (this.connect.raw) {
-                this.color.setSteps([0, ...this.threshold.raw, 1]);
-            } else {
-                //default breaks mapping for colormap if connect not enabled
-                this.color.setSteps(this.defaultColSteps(this.color.maxSteps));
-            }
-        }
+        syncColor();
 
         this.color.init();
-        // let steps = this.color.steps.filter(x => x >= 0);
-        // steps.splice(steps.length-1, 1); //last element is 1 not a break
-        // this.storeProperty('threshold_values', steps);
     }
 });
 })(OpenSeadragon);

@@ -121,13 +121,16 @@
                         width = 256,
                         height = 256,
                         backgroundColor = "#00000000",
-                        controlMountResolver
+                        controlMountResolver,
+                        onVisualizationChanged
                     }) {
             this.uniqueId = $.FlexRenderer.sanitizeKey(uniqueId);
             this.width = width;
             this.height = height;
             this.controlMountResolver = controlMountResolver;
+            this.onVisualizationChanged = onVisualizationChanged;
             this._currentShaderId = null;
+            this._suspendVisualizationSync = false;
 
             this.renderer = new $.FlexRenderer({
                 uniqueId: this.uniqueId,
@@ -157,6 +160,9 @@
                     const controls = document.createElement("div");
                     controls.id = controlsId;
                     controls.className = "flex flex-col gap-2";
+                    controls.innerHTML = shaderLayer.htmlControls(
+                        html => `<div class="flex flex-col gap-2">${html}</div>`
+                    );
 
                     body.appendChild(title);
                     body.appendChild(controls);
@@ -179,6 +185,15 @@
             this.renderer.setDataBlendingEnabled(true);
             this.renderer.setDimensions(0, 0, width, height, 1, 1);
             this.renderer.canvas.classList.add("rounded-box", "border", "border-base-300", "bg-base-100");
+            this.renderer.addHandler("visualization-change", () => {
+                if (this._suspendVisualizationSync || typeof this.onVisualizationChanged !== "function") {
+                    return;
+                }
+                const shader = this.getShader();
+                if (shader) {
+                    this.onVisualizationChanged(deepClone(shader.getConfig()), this);
+                }
+            });
         }
 
         setSize(width, height) {
@@ -189,16 +204,21 @@
 
         setShader(shaderConfig) {
             const config = deepClone(shaderConfig);
-            const shaderId = $.FlexRenderer.sanitizeKey(config.id || "preview_layer");
+            const shaderId = $.FlexRenderer.sanitizeKey(config.id || "prl");
             this._currentShaderId = shaderId;
+            this._suspendVisualizationSync = true;
 
-            this.renderer.deleteShaders();
-            this.renderer.createShaderLayer(shaderId, config, true);
-            this.renderer.setShaderLayerOrder([shaderId]);
+            try {
+                this.renderer.deleteShaders();
+                this.renderer.createShaderLayer(shaderId, config, true);
+                this.renderer.setShaderLayerOrder([shaderId]);
 
-            // Rebuild second-pass to regenerate controls and shader JS/GL state.
-            this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
-            this.renderer.useProgram(this.renderer.getProgram(this.renderer.webglContext.secondPassProgramKey), "second-pass");
+                // Rebuild second-pass to regenerate controls and shader JS/GL state.
+                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+                this.renderer.useProgram(this.renderer.getProgram(this.renderer.webglContext.secondPassProgramKey), "second-pass");
+            } finally {
+                this._suspendVisualizationSync = false;
+            }
         }
 
         getShader() {
@@ -241,7 +261,7 @@
 
         setup: {
             shader: {
-                id: "preview_layer",
+                id: "prl",
                 name: "Shader controls and configuration",
                 type: undefined,
                 visible: 1,
@@ -331,6 +351,10 @@
                     type: Shader.type(),
                     name: typeof Shader.name === "function" ? Shader.name() : Shader.type(),
                     description: typeof Shader.description === "function" ? Shader.description() : "",
+                    intent: typeof Shader.intent === "function" ? Shader.intent() : undefined,
+                    expects: typeof Shader.expects === "function" ? Shader.expects() : undefined,
+                    exampleParams: typeof Shader.exampleParams === "function" ? Shader.exampleParams() : undefined,
+                    controlCouplings: this._serializeControlCouplings(Shader),
                     preview: this._resolveShaderPreview(Shader),
                     sources: sources.map((src, index) => ({
                         index,
@@ -338,10 +362,9 @@
                         acceptedChannelCounts: this._probeAcceptedChannelCounts(src)
                     })),
                     controls,
-                    customParams: Object.entries(customParams).map(([name, meta]) => ({
-                        name,
-                        usage: (meta && meta.usage) || ""
-                    })),
+                    customParams: Object.entries(customParams).map(([name, meta]) =>
+                        this._compileCustomParamDescriptor(name, meta)
+                    ),
                     configNotes,
                     classDocs
                 };
@@ -368,6 +391,10 @@
                     type: Shader.type(),
                     name: typeof Shader.name === "function" ? Shader.name() : Shader.type(),
                     description: typeof Shader.description === "function" ? Shader.description() : "",
+                    intent: typeof Shader.intent === "function" ? Shader.intent() : undefined,
+                    expects: typeof Shader.expects === "function" ? Shader.expects() : undefined,
+                    exampleParams: typeof Shader.exampleParams === "function" ? Shader.exampleParams() : undefined,
+                    controlCouplings: this._serializeControlCouplings(Shader),
                     rootConfig: this._compileShaderRootConfigSchema(Shader),
                     params: this._compileShaderParamsSchema(Shader, sources),
                     sources: sources.map((src, index) => ({
@@ -411,6 +438,72 @@
 
         async compileConfigSchemaModelAsync() {
             return this.compileConfigSchemaModel();
+        },
+
+        /**
+         * Serialization-friendly view of a shader's `controlCouplings()`.
+         * Returns `undefined` when the shader has none (so JSON output stays clean),
+         * or an array of `{name, summary, controls}` (no functions).
+         */
+        _serializeControlCouplings(Shader) {
+            if (!Shader || typeof Shader.controlCouplings !== "function") {
+                return undefined;
+            }
+            const raw = Shader.controlCouplings();
+            if (!Array.isArray(raw) || raw.length === 0) {
+                return undefined;
+            }
+            return raw.map(c => ({
+                name: c.name,
+                summary: c.summary,
+                controls: c.controls
+            }));
+        },
+
+        /**
+         * Canonical "how many color classes does this `color` control value carry?".
+         * Single source of truth for couplings and renderer-side coercion.
+         * Precedence: a `custom_colormap` with a `default` array wins over `steps`,
+         * otherwise `steps` wins; primitives count as one class.
+         */
+        resolveEffectiveColorSteps(colorValue) {
+            if (!colorValue || typeof colorValue !== "object") {
+                return 1;
+            }
+            if (colorValue.type === "custom_colormap" && Array.isArray(colorValue.default)) {
+                return colorValue.default.length;
+            }
+            if (typeof colorValue.steps === "number") {
+                return colorValue.steps;
+            }
+            return 1;
+        },
+
+        /**
+         * Returns runtime coupling validators (with the `validate` function attached) for
+         * a given shader type. Hosts call this to validate layers before submission.
+         * The schema model only ships serialization-friendly entries (no functions).
+         */
+        getShaderCouplingValidators(shaderType) {
+            const Mediator = $.FlexRenderer.ShaderMediator;
+            const Shader = Mediator && (typeof Mediator.getShaderByType === "function"
+                ? Mediator.getShaderByType(shaderType)
+                : typeof Mediator.getClass === "function"
+                    ? Mediator.getClass(shaderType)
+                    : null);
+            if (!Shader || typeof Shader.controlCouplings !== "function") {
+                return [];
+            }
+            const raw = Shader.controlCouplings();
+            if (!Array.isArray(raw)) {
+                return [];
+            }
+            return raw.map(c => ({
+                name: c.name,
+                summary: c.summary,
+                controls: c.controls,
+                validate: typeof c.validate === "function" ? c.validate : undefined
+            }));
         },
 
         async compileDocsModelAsync() {
@@ -555,6 +648,11 @@
             this._onControlSelectFinish = onFinish;
             this._rootNode = resolveNode(nodeId);
 
+            if (this._previewSession && this.setup.shader.type && this.setup.shader.type !== shaderId) {
+                this._previewSession.destroy();
+                this._previewSession = null;
+            }
+
             const Shader = $.FlexRenderer.ShaderMediator.getClass(shaderId);
             if (!Shader) {
                 throw new Error(`Invalid shader: ${shaderId}. Not present.`);
@@ -562,7 +660,7 @@
 
             const srcDecl = typeof Shader.sources === "function" ? (Shader.sources() || []) : [];
             this.setup.shader = {
-                id: "preview_layer",
+                id: "prl",
                 name: `Configuration: ${shaderId}`,
                 type: shaderId,
                 visible: 1,
@@ -599,6 +697,10 @@
                 this.setup.shader.params[controlId] = {};
             }
             this.setup.shader.params[controlId].type = type;
+            if (this._previewSession) {
+                this._previewSession.destroy();
+                this._previewSession = null;
+            }
             this.refresh();
         },
 
@@ -642,9 +744,9 @@
 
         getAvailableControlsForShader(shader) {
             const uiControls = this._buildControls();
-            const controls = { ...(shader.defaultControls || {}) };
+            const controls = this._resolveShaderControlDefinitions(shader);
 
-            if (controls.opacity === undefined || (typeof controls.opacity === "object" && !controls.opacity.accepts("float"))) {
+            if (controls.opacity === undefined || (typeof controls.opacity === "object" && typeof controls.opacity.accepts === "function" && !controls.opacity.accepts("float"))) {
                 controls.opacity = {
                     default: {type: "range", default: 1, min: 0, max: 1, step: 0.1, title: "Opacity"},
                     accepts: (type) => type === "float"
@@ -664,6 +766,10 @@
                 if (controls[control].required && controls[control].required.type) {
                     supported.push(controls[control].required.type);
                 } else {
+                    if (typeof controls[control].accepts !== "function") {
+                        result[control] = supported;
+                        continue;
+                    }
                     for (let glType in uiControls) {
                         for (let existing of uiControls[glType]) {
                             if (!controls[control].accepts(glType, existing)) {
@@ -680,7 +786,7 @@
 
         _compileControlDescriptors(Shader) {
             const supports = this.getAvailableControlsForShader(Shader);
-            const defs = Shader.defaultControls || {};
+            const defs = this._resolveShaderControlDefinitions(Shader);
 
             return Object.keys(supports).map(name => ({
                 name,
@@ -688,6 +794,32 @@
                 default: (defs[name] && defs[name].default) || null,
                 required: (defs[name] && defs[name].required) || null
             }));
+        },
+
+        _resolveShaderControlDefinitions(Shader) {
+            const probe = this._createShaderDefinitionProbe(Shader);
+            const baseControls = typeof probe.getControlDefinitions === "function" ?
+                probe.getControlDefinitions() :
+                $.extend(true, {}, Shader.defaultControls || {});
+
+            if (typeof probe._expandControlDefinitions === "function") {
+                return probe._expandControlDefinitions(baseControls);
+            }
+            return baseControls;
+        },
+
+        _createShaderDefinitionProbe(Shader) {
+            const probe = Object.create(Shader.prototype);
+            probe.constructor = Shader;
+            probe._customControls = {};
+            probe._controls = {};
+            probe.loadProperty = (_name, defaultValue) => defaultValue;
+            probe.storeProperty = () => {};
+            probe.invalidate = () => {};
+            probe._rebuild = () => {};
+            probe._refresh = () => {};
+            probe._refetch = () => {};
+            return probe;
         },
 
         _compileAvailableControls() {
@@ -851,12 +983,13 @@
                 supportedUiTypes: control.supportedUiTypes,
                 defaultControlConfig: control.default !== null ? deepClone(control.default) : null,
                 requiredControlConfig: control.required !== null ? deepClone(control.required) : null,
-                supportedControlSchemas: this._expandSupportedUiSchemas(control.supportedUiTypes)
+                supportedTypes: control.supportedUiTypes
             }));
 
             const customParams = Object.entries(Shader.customParams || {}).map(([name, meta]) => ({
                 key: name,
                 kind: "custom-param",
+                type: this._resolveCustomParamType(meta),
                 usage: (meta && meta.usage) || "",
                 default: meta && meta.default !== undefined ? deepClone(meta.default) : null,
                 required: meta && meta.required !== undefined ? deepClone(meta.required) : null
@@ -1030,6 +1163,14 @@
                 schema.usage = docParam.usage;
             }
 
+            if (docParam && Array.isArray(docParam.allowedValues)) {
+                schema.allowedValues = deepClone(docParam.allowedValues);
+            }
+
+            if (docParam && docParam.examples !== undefined) {
+                schema.examples = deepClone(Array.isArray(docParam.examples) ? docParam.examples : [docParam.examples]);
+            }
+
             return schema;
         },
 
@@ -1122,6 +1263,21 @@
                 if (shader.description) {
                     out.push(`Description: ${shader.description}`);
                 }
+                if (shader.intent) {
+                    out.push(`Intent: ${shader.intent}`);
+                }
+                if (shader.expects) {
+                    out.push(`Expects: ${JSON.stringify(shader.expects)}`);
+                }
+                if (shader.exampleParams !== undefined) {
+                    out.push(`Example params: ${JSON.stringify(shader.exampleParams)}`);
+                }
+                if (Array.isArray(shader.controlCouplings) && shader.controlCouplings.length) {
+                    out.push(`Control couplings:`);
+                    for (const c of shader.controlCouplings) {
+                        out.push(`- ${c.name} [${(c.controls || []).join(", ")}]: ${c.summary}`);
+                    }
+                }
 
                 if (shader.sources.length) {
                     out.push(`Sources:`);
@@ -1141,7 +1297,12 @@
                 if (shader.customParams.length) {
                     out.push(`Custom parameters:`);
                     for (const param of shader.customParams) {
-                        out.push(`- ${param.name}: ${param.usage}`);
+                        const detail = [
+                            param.type ? `type = ${param.type}` : "",
+                            param.default !== undefined ? `default = ${JSON.stringify(param.default)}` : "",
+                            param.required !== undefined ? `required = ${JSON.stringify(param.required)}` : ""
+                        ].filter(Boolean).join(" | ");
+                        out.push(`- ${param.name}: ${param.usage}${detail ? ` | ${detail}` : ""}`);
                     }
                 }
 
@@ -1160,6 +1321,46 @@
             }
 
             return out.join("\n");
+        },
+
+        _inferCustomParamTypeFromValue(value) {
+            if (Array.isArray(value) || value === null) {
+                return "json";
+            }
+            if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+                return typeof value;
+            }
+            if (typeof value === "object") {
+                return "json";
+            }
+            return null;
+        },
+
+        _resolveCustomParamType(meta = {}) {
+            if (meta && typeof meta.type === "string" && meta.type.trim()) {
+                return meta.type.trim();
+            }
+            if (meta && meta.required && typeof meta.required === "object" &&
+                typeof meta.required.type === "string" && meta.required.type.trim()) {
+                return meta.required.type.trim();
+            }
+            if (meta && meta.default !== undefined) {
+                return this._inferCustomParamTypeFromValue(meta.default) || "json";
+            }
+            if (meta && meta.required !== undefined) {
+                return this._inferCustomParamTypeFromValue(meta.required) || "json";
+            }
+            return "json";
+        },
+
+        _compileCustomParamDescriptor(name, meta = {}) {
+            return {
+                name,
+                type: this._resolveCustomParamType(meta),
+                usage: (meta && meta.usage) || "",
+                default: meta && meta.default !== undefined ? deepClone(meta.default) : undefined,
+                required: meta && meta.required !== undefined ? deepClone(meta.required) : undefined
+            };
         },
 
         _normalizeClassDocs(rawDocs, fallback = {}) {
@@ -1306,6 +1507,42 @@
         ${this._renderShaderPreviewMarkup(preview, "rounded-box border border-base-300 max-w-[150px] max-h-[150px] shrink-0")}
   </summary>
   <div class="border-t border-base-300 p-4 text-sm">
+    ${shader.intent ? `
+    <div class="mb-3">
+        <div class="font-semibold">Intent</div>
+        <div>${escapeHtml(shader.intent)}</div>
+    </div>` : ""}
+
+    ${shader.expects ? `
+    <div class="mb-3">
+        <div class="font-semibold">Expects</div>
+        <pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(shader.expects, null, 2))}</pre>
+    </div>` : ""}
+
+    ${shader.exampleParams !== undefined ? `
+    <div class="mb-3">
+        <div class="font-semibold">Example params</div>
+        <pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(shader.exampleParams, null, 2))}</pre>
+    </div>` : ""}
+
+    ${Array.isArray(shader.controlCouplings) && shader.controlCouplings.length ? `
+    <div class="mb-3">
+        <div class="font-semibold">Control couplings</div>
+        <div class="overflow-x-auto">
+            <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Controls</th><th>Rule</th></tr></thead>
+                <tbody>
+                    ${shader.controlCouplings.map(c => `
+                    <tr>
+                        <td><code>${escapeHtml(c.name)}</code></td>
+                        <td>${escapeHtml((c.controls || []).join(", "))}</td>
+                        <td>${escapeHtml(c.summary || "")}</td>
+                    </tr>`).join("")}
+                </tbody>
+            </table>
+        </div>
+    </div>` : ""}
+
      ${shader.sources.length ? `
     <div>
         <div class="mb-2 font-semibold">Sources</div>
@@ -1336,6 +1573,26 @@
                         <td><code>${escapeHtml(ctrl.name)}</code></td>
                         <td>${escapeHtml(ctrl.supportedUiTypes.join(", "))}</td>
                         <td><pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(ctrl.default || ctrl.required || {}, null, 2))}</pre></td>
+                    </tr>`).join("")}
+                </tbody>
+            </table>
+        </div>
+    </div>` : ""}
+
+    ${shader.customParams && shader.customParams.length ? `
+    <div class="mt-4">
+        <div class="mb-2 font-semibold">Custom Parameters</div>
+        <div class="overflow-x-auto">
+            <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Type</th><th>Usage</th><th>Default</th><th>Required</th></tr></thead>
+                <tbody>
+                    ${shader.customParams.map(param => `
+                    <tr>
+                        <td><code>${escapeHtml(param.name)}</code></td>
+                        <td><code>${escapeHtml(param.type || "json")}</code></td>
+                        <td>${escapeHtml(param.usage || "")}</td>
+                        <td><pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(param.default, null, 2))}</pre></td>
+                        <td><pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(param.required, null, 2))}</pre></td>
                     </tr>`).join("")}
                 </tbody>
             </table>
@@ -1414,41 +1671,73 @@
                 return;
             }
 
-            await this._ensurePreviewSession();
-            const previewSize = getRenderableDimensions(this._renderData);
-            this._previewSession.setSize(previewSize.width, previewSize.height);
-            this._previewSession.setShader(this.setup.shader);
-
             const previewHost = document.getElementById(`${this._uniqueId}_preview_host`);
-            if (previewHost && this._previewSession.renderer.canvas.parentNode !== previewHost) {
-                previewHost.innerHTML = "";
-                previewHost.appendChild(this._previewSession.renderer.canvas);
-            }
+            await this._ensurePreviewSession(previewHost);
+            const previewSize = getRenderableDimensions(this._renderData);
+            await this._previewSession.setSize(previewSize.width, previewSize.height);
+            await this._previewSession.setShader(this.setup.shader);
 
             this._renderMetaEditors(Shader);
-
-            if (this._previewAdapter && typeof this._previewAdapter.render === "function") {
-                await this._previewAdapter.render({
-                    configurator: this,
-                    session: this._previewSession,
-                    shaderConfig: this.getCurrentShaderConfig(),
-                    data: this._renderData
-                });
-            }
+            await this._renderInteractivePreview(previewHost, previewSize);
         },
 
-        async _ensurePreviewSession() {
+        async _ensurePreviewSession(previewHost = undefined) {
             if (this._previewSession) {
                 return;
             }
 
             const previewSize = getRenderableDimensions(this._renderData);
-            this._previewSession = new PreviewSession({
+            const sessionOptions = {
                 uniqueId: `${this._uniqueId}_preview`,
                 width: previewSize.width,
                 height: previewSize.height,
-                controlMountResolver: () => document.getElementById(`${this._uniqueId}_native_controls`)
-            });
+                controlMountResolver: () => document.getElementById(`${this._uniqueId}_native_controls`),
+                previewHost,
+                data: this._renderData,
+                onVisualizationChanged: (shaderConfig, session) => {
+                    this.setup.shader = deepClone(shaderConfig);
+                    if (this._previewAdapter && typeof this._previewAdapter.onSessionVisualizationChanged === "function") {
+                        this._previewAdapter.onSessionVisualizationChanged({
+                            configurator: this,
+                            session,
+                            shaderConfig: this.getCurrentShaderConfig(),
+                            data: this._renderData,
+                            previewHost: document.getElementById(`${this._uniqueId}_preview_host`),
+                            previewSize: getRenderableDimensions(this._renderData)
+                        });
+                    }
+                }
+            };
+
+            if (this._previewAdapter && typeof this._previewAdapter.createSession === "function") {
+                this._previewSession = await this._previewAdapter.createSession(sessionOptions);
+            } else {
+                this._previewSession = new PreviewSession(sessionOptions);
+            }
+        },
+
+        async _renderInteractivePreview(previewHost, previewSize) {
+            if (this._previewAdapter && typeof this._previewAdapter.render === "function") {
+                const renderedPreview = await this._previewAdapter.render({
+                    configurator: this,
+                    session: this._previewSession,
+                    shaderConfig: this.getCurrentShaderConfig(),
+                    data: this._renderData,
+                    previewHost,
+                    previewSize
+                });
+
+                if (previewHost && isNode(renderedPreview) && renderedPreview.parentNode !== previewHost) {
+                    previewHost.innerHTML = "";
+                    previewHost.appendChild(renderedPreview);
+                }
+            } else if (previewHost) {
+                if (this._previewSession.renderer.canvas.parentNode !== previewHost) {
+                    previewHost.innerHTML = "";
+                    previewHost.appendChild(this._previewSession.renderer.canvas);
+                }
+                this._previewSession.setSize(previewSize.width, previewSize.height);
+            }
         },
 
         _resolvePreviewSrc(fileOrSrc) {
@@ -1573,6 +1862,7 @@
 
             const supports = this.getAvailableControlsForShader(Shader);
             const defs = Shader.defaultControls || {};
+            const customParams = Shader.customParams || {};
 
             for (const [controlName, supported] of Object.entries(supports)) {
                 const current = this.setup.shader.params[controlName] || {};
@@ -1671,6 +1961,88 @@
 <div class="alert alert-warning text-sm">
     No simple editor registered for <code>${escapeHtml(activeType)}</code>.
     Use JSON editor.
+</div>`;
+                }
+
+                mount.appendChild(card);
+            }
+
+            for (const [paramName, meta] of Object.entries(customParams)) {
+                const currentValue = this.setup.shader.params[paramName] !== undefined ?
+                    this.setup.shader.params[paramName] :
+                    (meta && meta.default);
+                const inferredType = this._resolveCustomParamType({
+                    ...(meta || {}),
+                    default: currentValue
+                });
+
+                const card = document.createElement("div");
+                card.className = "card bg-base-200 border border-base-300 shadow-sm";
+                card.innerHTML = `
+<div class="card-body p-4 gap-3">
+    <div>
+        <div class="font-semibold">Parameter <code>${escapeHtml(paramName)}</code></div>
+        <div class="text-xs opacity-70">${escapeHtml((meta && meta.usage) || "")}</div>
+        <div class="text-xs opacity-60">Type: <code>${escapeHtml(inferredType)}</code></div>
+    </div>
+    <div data-role="simple-editor"></div>
+    <details class="collapse collapse-arrow bg-base-100 border border-base-300">
+        <summary class="collapse-title text-sm font-medium">JSON</summary>
+        <div class="collapse-content">
+            <textarea class="textarea textarea-bordered w-full h-40 font-mono text-xs" data-role="json-editor"></textarea>
+        </div>
+    </details>
+</div>`;
+
+                const simpleEditor = card.querySelector(`[data-role="simple-editor"]`);
+                const jsonEditor = card.querySelector(`[data-role="json-editor"]`);
+                jsonEditor.value = JSON.stringify(currentValue, null, 2);
+                jsonEditor.addEventListener("change", () => {
+                    try {
+                        this.setup.shader.params[paramName] = JSON.parse(jsonEditor.value);
+                        jsonEditor.classList.remove("textarea-error");
+                        this.refresh();
+                    } catch (_) {
+                        jsonEditor.classList.add("textarea-error");
+                    }
+                });
+
+                const setValue = (value) => {
+                    this.setup.shader.params[paramName] = value;
+                    this.refresh();
+                };
+
+                if (inferredType === "string") {
+                    simpleEditor.innerHTML = `
+<label class="form-control">
+    <div class="label"><span class="label-text">Value</span></div>
+    <input class="input input-bordered input-sm" type="text" value="${escapeHtml(currentValue === undefined ? "" : String(currentValue))}">
+</label>`;
+                    simpleEditor.querySelector("input").addEventListener("change", (e) => {
+                        setValue(e.target.value);
+                    });
+                } else if (inferredType === "number") {
+                    simpleEditor.innerHTML = `
+<label class="form-control">
+    <div class="label"><span class="label-text">Value</span></div>
+    <input class="input input-bordered input-sm" type="number" value="${escapeHtml(currentValue === undefined ? "" : String(currentValue))}">
+</label>`;
+                    simpleEditor.querySelector("input").addEventListener("change", (e) => {
+                        setValue(Number(e.target.value));
+                    });
+                } else if (inferredType === "boolean") {
+                    simpleEditor.innerHTML = `
+<label class="label cursor-pointer justify-start gap-3">
+    <input type="checkbox" class="toggle toggle-sm" ${currentValue ? "checked" : ""}>
+    <span class="label-text">Enabled</span>
+</label>`;
+                    simpleEditor.querySelector("input").addEventListener("change", (e) => {
+                        setValue(!!e.target.checked);
+                    });
+                } else {
+                    simpleEditor.innerHTML = `
+<div class="alert alert-warning text-sm">
+    No simple typed editor available. Use JSON editor.
 </div>`;
                 }
 
@@ -1824,6 +2196,44 @@
         });
         optionsArea.addEventListener("change", () => {
             update({ options: JSON.parse(optionsArea.value) });
+        });
+        mount.appendChild(wrap);
+    });
+
+    ShaderConfigurator.registerInteractiveRenderer("icon", ({ mount, controlConfig, update }) => {
+        const iconSets = $.FlexRenderer.UIControls.IconLibrary.getSetNames();
+        const wrap = document.createElement("div");
+        wrap.className = "grid grid-cols-2 gap-2";
+        wrap.innerHTML = `
+<label class="form-control col-span-2">
+    <div class="label"><span class="label-text">Default icon query</span></div>
+    <input class="input input-bordered input-sm" data-k="default" type="text" value="${escapeHtml(controlConfig.default || "")}" placeholder="fa-house, &#xf015;, ★">
+</label>
+<label class="form-control">
+    <div class="label"><span class="label-text">Icon set</span></div>
+    <select class="select select-bordered select-sm" data-k="iconSet">
+        ${iconSets.map(name => `<option value="${escapeHtml(name)}" ${name === (controlConfig.iconSet || "core") ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+    </select>
+</label>
+<label class="form-control">
+    <div class="label"><span class="label-text">Size</span></div>
+    <input class="input input-bordered input-sm" data-k="size" type="number" min="16" value="${escapeHtml(controlConfig.size || 128)}">
+</label>
+<label class="form-control">
+    <div class="label"><span class="label-text">Padding</span></div>
+    <input class="input input-bordered input-sm" data-k="padding" type="number" min="0" value="${escapeHtml(controlConfig.padding || 16)}">
+</label>
+<label class="form-control">
+    <div class="label"><span class="label-text">Color</span></div>
+    <input class="input input-bordered input-sm p-1" data-k="color" type="color" value="${escapeHtml(controlConfig.color || "#111111")}">
+</label>`;
+
+        wrap.querySelectorAll("input, select").forEach(input => {
+            input.addEventListener("change", () => {
+                const key = input.dataset.k;
+                const value = input.type === "number" ? Number(input.value) : input.value;
+                update({ [key]: value });
+            });
         });
         mount.appendChild(wrap);
     });
