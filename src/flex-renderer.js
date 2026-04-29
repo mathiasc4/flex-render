@@ -496,35 +496,6 @@
         }
 
         /**
-         * Call the first-pass renderer.
-         *
-         * @deprecated Use {@link OpenSeadragon.FlexRenderer#renderFirstPass} instead.
-         * @param {Array<FPRenderPackage>} source - First-pass render packages.
-         * @returns {RenderOutput} First-pass render output descriptor.
-         *
-         * @instance
-         * @memberof OpenSeadragon.FlexRenderer#
-         */
-        firstPassProcessData(source) {
-            return this.renderFirstPass(source);
-        }
-
-        /**
-         * Call the second-pass renderer.
-         *
-         * @deprecated Use {@link OpenSeadragon.FlexRenderer#renderSecondPass} instead.
-         * @param {Array<SPRenderPackage>} renderArray - Second-pass render packages.
-         * @param {object|undefined} [options=undefined] - Optional backend-specific render options.
-         * @returns {RenderOutput} Second-pass render output descriptor.
-         *
-         * @instance
-         * @memberof OpenSeadragon.FlexRenderer#
-         */
-        secondPassProcessData(renderArray, options = undefined) {
-            return this.renderSecondPass(renderArray, options);
-        }
-
-        /**
          * Create and load the new WebGLProgram based on ShaderLayers and their controls.
          * @param {OpenSeadragon.FlexRenderer.Program} program
          * @param {String} [key] optional ID for the program to use
