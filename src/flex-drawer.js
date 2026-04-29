@@ -1029,13 +1029,26 @@
 
         // DRAWING METHODS
         /**
-         * Draw using FlexRenderer.
-         * @param {[TiledImage]} tiledImages array of TiledImage objects to draw
-         * @param {Object} [view=undefined] custom view position if desired
-         * @param view.bounds {OpenSeadragon.Rect} bounds of the viewport
-         * @param view.center {OpenSeadragon.Point} center of the viewport
-         * @param view.rotation {Number} rotation of the viewport
-         * @param view.zoom {Number} zoom of the viewport
+         * Draw using `FlexRenderer`.
+         *
+         * This method is the OpenSeadragon `DrawerBase` draw entry point. It remains
+         * responsible for OpenSeadragon-specific adaptation: resolving the current
+         * viewport, building the viewport matrix, collecting tile data, and collecting
+         * ShaderLayer render uniforms that depend on TiledImage state.
+         *
+         * The actual two-pass render orchestration is delegated to
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @override
+         * @param {Array<OpenSeadragon.TiledImage>} tiledImages - TiledImage objects to draw.
+         * @param {object} [view=undefined] - Optional custom view state.
+         * @param {OpenSeadragon.Rect} view.bounds - Viewport bounds.
+         * @param {OpenSeadragon.Point} view.center - Viewport center.
+         * @param {number} view.rotation - Viewport rotation in radians.
+         * @param {number} view.zoom - Viewport zoom.
+         * @returns {void}
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
          */
         draw(tiledImages, view = undefined) {
             if (!this._drawReady && !this._refreshDrawReadyState()) {
@@ -1043,37 +1056,56 @@
                 return;
             }
 
-            const bounds = this.viewport.getBoundsNoRotateWithMargins(true);
-            view = view || {
-                bounds: bounds,
-                center: new OpenSeadragon.Point(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
-                rotation: this.viewport.getRotation(true) * Math.PI / 180,
-                zoom: this.viewport.getZoom(true)
-            };
+            view = this._resolveRenderView(view);
 
-            // TODO consider sending data and computing on GPU
+            // TODO consider sending data and computing on GPU.
             // calculate view matrix for viewer
-            let flipMultiplier = this.viewport.flipped ? -1 : 1;
-            let posMatrix = $.Mat3.makeTranslation(-view.center.x, -view.center.y);
-            let scaleMatrix = $.Mat3.makeScaling(2 / view.bounds.width * flipMultiplier, -2 / view.bounds.height);
-            let rotMatrix = $.Mat3.makeRotation(-view.rotation);
-            let viewMatrix = scaleMatrix.multiply(rotMatrix).multiply(posMatrix);
+            const flipMultiplier = this.viewport.flipped ? -1 : 1;
+            const posMatrix = $.Mat3.makeTranslation(-view.center.x, -view.center.y);
+            const scaleMatrix = $.Mat3.makeScaling(2 / view.bounds.width * flipMultiplier, -2 / view.bounds.height);
+            const rotMatrix = $.Mat3.makeRotation(-view.rotation);
+            const viewMatrix = scaleMatrix.multiply(rotMatrix).multiply(posMatrix);
 
             this._ensurePackLayout();
 
-            if (this._drawTwoPassFirst(tiledImages, view, viewMatrix)) {
-                this._drawTwoPassSecond(view);
+            const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
+            const secondPass = this._collectSecondPassPayload(view);
+
+            if (!secondPass.length) {
+                this.viewer.forceRedraw();
             }
+
+            this.renderer.render({
+                firstPass: firstPass,
+                secondPass: secondPass
+            });
         } // end of function
 
         /**
-         * During the first-pass draw all tiles' data sources into the corresponding off-screen textures using identity rendering,
-         * excluding any image-processing operations or any rendering customizations.
-         * @param {OpenSeadragon.TiledImage[]} tiledImages array of TiledImage objects to draw
-         * @param {Object} viewport has bounds, center, rotation, zoom
-         * @param {OpenSeadragon.Mat3} viewMatrix
+         * Build first-pass render packages from OpenSeadragon TiledImage state.
+         *
+         * This method is the OpenSeadragon-to-renderer adaptation step for the first
+         * pass. It collects drawable tiles, extracts renderer-ready cache payloads,
+         * computes tile transform matrices, and converts crop/clip polygons into
+         * viewport-coordinate polygons consumed by the active backend.
+         *
+         * It intentionally does not clear WebGL state and does not execute the first
+         * pass. The normal draw path passes the returned packages to
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @private
+         * @param {Array<OpenSeadragon.TiledImage>} tiledImages - TiledImage objects to draw.
+         * @param {object} viewport - Resolved viewport state.
+         * @param {OpenSeadragon.Rect} viewport.bounds - Viewport bounds.
+         * @param {OpenSeadragon.Point} viewport.center - Viewport center.
+         * @param {number} viewport.rotation - Viewport rotation in radians.
+         * @param {number} viewport.zoom - Viewport zoom.
+         * @param {OpenSeadragon.Mat3} viewMatrix - Matrix mapping viewport coordinates into renderer clip space.
+         * @returns {Array<FPRenderPackage>} First-pass render packages.
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
          */
-        _drawTwoPassFirst(tiledImages, viewport, viewMatrix) {
+        _collectFirstPassPayload(tiledImages, viewport, viewMatrix) {
             // FIRST PASS (render things as they are into the corresponding off-screen textures)
             const TI_PAYLOAD = [];
 
@@ -1209,10 +1241,32 @@
 
             // todo flatten render data
 
-            this.renderer.gl.clearColor(1.0, 1.0, 1.0, 1.0);
-            this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT); // This ensures that areas that are not drawn into do not show old data
+            return TI_PAYLOAD;
+        }
 
-            this.renderer.renderFirstPass(TI_PAYLOAD);
+        /**
+         * Execute only the first pass from OpenSeadragon TiledImage state.
+         *
+         * This method is kept as a compatibility helper for code paths that still
+         * intentionally drive passes separately. New normal draw code should use
+         * `_collectFirstPassPayload(...)` plus `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @protected
+         * @deprecated Use `_collectFirstPassPayload(...)` and `this.renderer.render(...)` for normal drawing.
+         * @param {Array<OpenSeadragon.TiledImage>} tiledImages - TiledImage objects to draw.
+         * @param {object} viewport - Resolved viewport state.
+         * @param {OpenSeadragon.Mat3} viewMatrix - Matrix mapping viewport coordinates into renderer clip space.
+         * @returns {boolean} True after the first pass has been submitted.
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
+         */
+        _drawTwoPassFirst(tiledImages, viewport, viewMatrix) {
+            const firstPass = this._collectFirstPassPayload(tiledImages, viewport, viewMatrix);
+
+            this.renderer.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT);
+
+            this.renderer.renderFirstPass(firstPass);
             return true;
         }
 
@@ -1246,12 +1300,45 @@
         }
 
         /**
-         * During the second-pass draw from the off-screen textures into the rendering canvas,
-         * applying the image-processing operations and rendering customizations.
-         * @param {Object} viewport has bounds, center, rotation, zoom
+         * Build the second-pass render package array from the renderer's current
+         * ShaderLayer graph and the resolved OpenSeadragon viewport state.
+         *
+         * This remains drawer-owned because pixel size and opacity are currently
+         * derived from OpenSeadragon `TiledImage` instances.
+         *
+         * @private
+         * @param {object} viewport - Resolved viewport state.
+         * @param {number} viewport.zoom - Viewport zoom.
+         * @returns {Array<SPRenderPackage>} Second-pass render packages.
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
+         */
+        _collectSecondPassPayload(viewport) {
+            return this._collectShaderUniforms(
+                this.renderer.getAllShaders(),
+                this.renderer.getShaderLayerOrder(),
+                viewport
+            );
+        }
+
+        /**
+         * During the second-pass draw from the off-screen textures into the rendering
+         * canvas, applying the image-processing operations and rendering customizations.
+         *
+         * This method is kept as a compatibility helper for standalone/offscreen paths
+         * that reuse an existing first-pass output and intentionally execute only the
+         * second pass. The normal `draw(...)` path should use
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @protected
+         * @param {object} viewport - Resolved viewport state.
+         * @param {number} viewport.zoom - Viewport zoom.
+         * @returns {boolean} True when the second pass ran.
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
          */
         _drawTwoPassSecond(viewport) {
-            const sources = this._collectShaderUniforms(this.renderer.getAllShaders(), this.renderer.getShaderLayerOrder(), viewport);
+            const sources = this._collectSecondPassPayload(viewport);
 
             if (!sources.length) {
                 this.viewer.forceRedraw();
