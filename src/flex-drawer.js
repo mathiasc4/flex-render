@@ -1245,32 +1245,6 @@
         }
 
         /**
-         * Execute only the first pass from OpenSeadragon TiledImage state.
-         *
-         * This method is kept as a compatibility helper for code paths that still
-         * intentionally drive passes separately. New normal draw code should use
-         * `_collectFirstPassPayload(...)` plus `OpenSeadragon.FlexRenderer#render`.
-         *
-         * @protected
-         * @deprecated Use `_collectFirstPassPayload(...)` and `this.renderer.render(...)` for normal drawing.
-         * @param {Array<OpenSeadragon.TiledImage>} tiledImages - TiledImage objects to draw.
-         * @param {object} viewport - Resolved viewport state.
-         * @param {OpenSeadragon.Mat3} viewMatrix - Matrix mapping viewport coordinates into renderer clip space.
-         * @returns {boolean} True after the first pass has been submitted.
-         *
-         * @memberof OpenSeadragon.FlexDrawer#
-         */
-        _drawTwoPassFirst(tiledImages, viewport, viewMatrix) {
-            const firstPass = this._collectFirstPassPayload(tiledImages, viewport, viewMatrix);
-
-            this.renderer.gl.clearColor(1.0, 1.0, 1.0, 1.0);
-            this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT);
-
-            this.renderer.renderFirstPass(firstPass);
-            return true;
-        }
-
-        /**
          * Collects shader layer variables (opacity, pixelSize, zoom) into one flat array,
          * group shader layers are followed by their child layers in the order specified by the group
          * @param shaders
@@ -1319,35 +1293,6 @@
                 this.renderer.getShaderLayerOrder(),
                 viewport
             );
-        }
-
-        /**
-         * During the second-pass draw from the off-screen textures into the rendering
-         * canvas, applying the image-processing operations and rendering customizations.
-         *
-         * This method is kept as a compatibility helper for standalone/offscreen paths
-         * that reuse an existing first-pass output and intentionally execute only the
-         * second pass. The normal `draw(...)` path should use
-         * `OpenSeadragon.FlexRenderer#render`.
-         *
-         * @protected
-         * @param {object} viewport - Resolved viewport state.
-         * @param {number} viewport.zoom - Viewport zoom.
-         * @returns {boolean} True when the second pass ran.
-         *
-         * @memberof OpenSeadragon.FlexDrawer#
-         */
-        _drawTwoPassSecond(viewport) {
-            const sources = this._collectSecondPassPayload(viewport);
-
-            if (!sources.length) {
-                this.viewer.forceRedraw();
-                return false;
-            }
-
-            this.renderer.renderSecondPass(sources);
-            this.renderer.gl.finish();
-            return true;
         }
 
         _getTileRenderMeta(tile, tiledImage) {
