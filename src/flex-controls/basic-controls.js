@@ -76,8 +76,17 @@ $.FlexRenderer.UIControls = class {
 
         let originalType = defaultParams.type;
 
-        // merge dP < cP < rP recursively with rP having the biggest overwriting priority, without modifying the original objects
-        const params = $.extend(true, {}, defaultParams, customParams, requiredParams);
+        // merge dP < cP < rP recursively with rP having the biggest overwriting priority, without modifying the original objects.
+        // When the user picks a different `type`, defaultParams is type-specific config from the layer that
+        // describes the original control type — its keys (e.g. a string `default` palette name, mode-specific
+        // hints, titles) are not transferable to a different control type and would corrupt the new control's
+        // expected param shape. Drop defaultParams in that case and let the chosen control's own `supports`
+        // fill in defaults via getParams(). requiredParams is layer-enforced and stays.
+        const userType = customParams && customParams.type;
+        const typeOverridden = userType && originalType && userType !== originalType;
+        const params = typeOverridden
+            ? $.extend(true, {}, customParams, requiredParams)
+            : $.extend(true, {}, defaultParams, customParams, requiredParams);
 
         if (!this._items[params.type]) {
             const controlType = params.type;
