@@ -527,9 +527,16 @@
                     this.renderer._showOffscreenMatrix(fp, {scale: 0.5, pad: 8});
                 }
 
-                this._drawTwoPassSecond({
+                const sources = this._collectSecondPassPayload({
                     zoom: this.viewport.getZoom(true)
                 });
+
+                if (!sources.length) {
+                    this.viewer.forceRedraw();
+                }
+
+                this.renderer.renderSecondPass(sources);
+                this.renderer.gl.finish();
 
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
