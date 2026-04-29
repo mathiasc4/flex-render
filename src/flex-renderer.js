@@ -157,6 +157,7 @@
             const canvas = document.createElement("canvas");
             const WebGLImplementation = this.constructor.determineContext(this.webGLPreferredVersion);
             const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
+
             if (webGLRenderingContext) {
                 this.gl = webGLRenderingContext;                                            // WebGLRenderingContext|WebGL2RenderingContext
                 this.webglContext = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
@@ -292,13 +293,25 @@
         }
 
         /**
-         * Call to first-pass draw using WebGLProgram.
-         * @param {FPRenderPackage[]} source
-         * @return {RenderOutput}
+         * Render the first pass into renderer-owned intermediate output.
+         *
+         * The first pass consumes renderer-ready source packages, selects the
+         * backend first-pass program, loads it when required, renders source/tile
+         * data into intermediate color and stencil outputs, stores the result as
+         * renderer-owned first-pass state, and returns the render output descriptor.
+         *
+         * This method does not collect OpenSeadragon tiles. `FlexDrawer` is
+         * responsible for adapting OpenSeadragon tile/cache state into
+         * `FPRenderPackage` objects before calling this method directly or through
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @param {Array<FPRenderPackage>} source - First-pass render packages.
+         * @returns {RenderOutput} Renderer-owned first-pass output descriptor.
+         *
          * @instance
-         * @memberof FlexRenderer
+         * @memberof OpenSeadragon.FlexRenderer#
          */
-        firstPassProcessData(source) {
+        renderFirstPass(source) {
             const program = this._programImplementations[this.webglContext.firstPassProgramKey];
 
             if (this.useProgram(program, "first-pass")) {
@@ -316,19 +329,40 @@
         }
 
         /**
-         * Execute the second pass for the already prepared first-pass result.
+         * Call the first-pass renderer.
+         *
+         * @deprecated Use {@link OpenSeadragon.FlexRenderer#renderFirstPass} instead.
+         * @param {Array<FPRenderPackage>} source - First-pass render packages.
+         * @returns {RenderOutput} Renderer-owned first-pass output descriptor.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
+         */
+        firstPassProcessData(source) {
+            return this.renderFirstPass(source);
+        }
+
+        /**
+         * Render the second pass from the current first-pass output.
+         *
+         * The second pass consumes renderer-ready ShaderLayer packages, selects the
+         * backend second-pass program, loads it when required, and renders the final
+         * composed output from the renderer-owned first-pass result.
          *
          * Responsibility split:
-         * - the renderer owns inspector state and decides whether the active inspector mode
-         *   can be executed inline in the normal second pass
-         * - reveal modes stay in the normal second-pass program
-         * - lens mode may delegate to the backend-specific inspector compositor path
+         * - the renderer owns inspector state and decides whether the active
+         *   inspector mode can be executed inline in the normal second pass;
+         * - reveal modes stay in the normal second-pass program;
+         * - lens mode may delegate to the backend-specific inspector compositor path.
          *
-         * @param {SPRenderPackage[]} renderArray
-         * @param {RenderOptions|undefined} options
-         * @return {RenderOutput}
+         * @param {Array<SPRenderPackage>} renderArray - Second-pass render packages.
+         * @param {object|undefined} [options=undefined] - Optional backend-specific render options.
+         * @returns {RenderOutput} Second-pass render output descriptor.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
          */
-        secondPassProcessData(renderArray, options = undefined) {
+        renderSecondPass(renderArray, options = undefined) {
             if (this.webglContext && typeof this.webglContext.processSecondPassWithInspector === "function") {
                 const inspectorState = this.getInspectorState();
                 if (inspectorState && inspectorState.enabled && inspectorState.mode === "lens-zoom") {
@@ -343,6 +377,21 @@
             }
 
             return program.use(this.__firstPassResult, renderArray, options);
+        }
+
+        /**
+         * Call the second-pass renderer.
+         *
+         * @deprecated Use {@link OpenSeadragon.FlexRenderer#renderSecondPass} instead.
+         * @param {Array<SPRenderPackage>} renderArray - Second-pass render packages.
+         * @param {object|undefined} [options=undefined] - Optional backend-specific render options.
+         * @returns {RenderOutput} Second-pass render output descriptor.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
+         */
+        secondPassProcessData(renderArray, options = undefined) {
+            return this.renderSecondPass(renderArray, options);
         }
 
         /**
@@ -1085,7 +1134,7 @@
                     stencilDepth: 1,
                 };
 
-                renderer.secondPassProcessData([{
+                renderer.renderSecondPass([{
                     zoom: 1,
                     pixelSize: 1,
                     opacity: 1,

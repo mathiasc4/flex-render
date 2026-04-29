@@ -763,7 +763,7 @@
             );
 
             const source = this._buildSyntheticFirstPassSource();
-            this.renderer.firstPassProcessData(source);
+            this.renderer.renderFirstPass(source);
             return this.renderer.__firstPassResult;
         };
 
@@ -891,7 +891,7 @@
                     throw new Error("Standalone renderer has no configured shader layers.");
                 }
 
-                this.renderer.secondPassProcessData(renderArray);
+                this.renderer.renderSecondPass(renderArray);
                 this.renderer.gl.finish();
 
                 const canvas = document.createElement('canvas');

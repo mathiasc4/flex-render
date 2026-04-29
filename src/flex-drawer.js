@@ -970,7 +970,7 @@
 
         /**
          * Build the current second-pass uniform payload for a set of shaders.
-         * The returned array is backend-neutral input for `renderer.secondPassProcessData(...)`
+         * The returned array is backend-neutral input for `renderer.renderSecondPass(...)`
          * and `renderer.renderSecondPassToTexture(...)`.
          * @param {Object} [view=undefined]
          * @param {Object.<string, ShaderLayer>} [shaderMap=this.renderer.getAllShaders()]
@@ -1212,7 +1212,7 @@
             this.renderer.gl.clearColor(1.0, 1.0, 1.0, 1.0);
             this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT); // This ensures that areas that are not drawn into do not show old data
 
-            this.renderer.firstPassProcessData(TI_PAYLOAD);
+            this.renderer.renderFirstPass(TI_PAYLOAD);
             return true;
         }
 
@@ -1258,7 +1258,7 @@
                 return false;
             }
 
-            this.renderer.secondPassProcessData(sources);
+            this.renderer.renderSecondPass(sources);
             this.renderer.gl.finish();
             return true;
         }
