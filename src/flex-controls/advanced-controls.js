@@ -25,7 +25,40 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
     constructor(owner, name, webGLVariableName, params) {
         super(owner, name, webGLVariableName);
         this._params = this.getParams(params);
+        this._normalizeParams();
         this.prepare();
+    }
+
+    /**
+     * Coerce caller-supplied params into the shape `init()` and `prepare()` expect.
+     * If the user passed an array `default` they likely meant `type: "custom_colormap"` —
+     * we warn rather than mutate the type, and fall back to a safe palette name so
+     * `init()`'s `schemeGroups[mode].includes(...)` cannot blow up.
+     */
+    _normalizeParams() {
+        const params = this._params || {};
+        const groups = ($.FlexRenderer.ColorMaps && $.FlexRenderer.ColorMaps.schemeGroups) || {};
+        const defaults = ($.FlexRenderer.ColorMaps && $.FlexRenderer.ColorMaps.defaults) || {};
+
+        if (typeof params.mode !== "string" || !groups[params.mode]) {
+            console.warn(
+                `[FlexRenderer.UIControls.ColorMap] params.mode "${params.mode}" is not a known scheme group ` +
+                `(${Object.keys(groups).join(", ")}); falling back to "sequential".`
+            );
+            params.mode = "sequential";
+        }
+
+        if (Array.isArray(params.default)) {
+            console.warn(
+                `[FlexRenderer.UIControls.ColorMap] params.default is an array — ` +
+                `did you mean type: "custom_colormap"? Falling back to the default palette for mode "${params.mode}".`
+            );
+            params.default = defaults[params.mode];
+        }
+
+        if (typeof params.default !== "string" || !params.default) {
+            params.default = defaults[params.mode];
+        }
     }
 
     prepare() {
@@ -159,7 +192,13 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
             let min = this.steps[0];
             this.steps = this.steps.slice(0, maximum + 1);
             this.maxSteps = this.steps.length - 1;
-            this.steps.forEach(x => (x - min) / (max - min));
+            // Normalize to 0..1 if the caller passed an unnormalized range. The previous
+            // `forEach` here computed the rescaled values and discarded them — a no-op
+            // disguised as normalization. `map` actually applies it.
+            const span = max - min;
+            if (span > 0 && (min !== 0 || max !== 1)) {
+                this.steps = this.steps.map(x => (x - min) / span);
+            }
             for (let i = this.maxSteps + 1; i < maximum + 1; i++) {
                 this.steps.push(-1);
             }
@@ -167,6 +206,9 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
     }
 
     _continuousCssFromPallete(pallete) {
+        if (!pallete || !pallete.length) {
+            return "";
+        }
         let css = [`linear-gradient(90deg`];
         for (let i = 0; i < this.maxSteps; i++) {
             css.push(`, ${pallete[i]} ${Math.round((this.steps[i] + this.steps[i + 1]) * 50)}%`);
@@ -176,6 +218,9 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
     }
 
     _discreteCssFromPallete(pallete) {
+        if (!pallete || !pallete.length) {
+            return "";
+        }
         let css = [`linear-gradient(90deg, ${pallete[0]} 0%`];
         for (let i = 1; i < this.maxSteps; i++) {
             css.push(`, ${pallete[i - 1]} ${Math.round(this.steps[i] * 100)}%, ${pallete[i]} ${Math.round(this.steps[i] * 100)}%`);
@@ -184,15 +229,20 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
         return css.join("");
     }
 
-    _setPallete(newPallete) {
-        if (typeof newPallete[0] === "string") {
-            let temp = newPallete; //if this.pallete passed
-            this.pallete = [];
-            for (let color of temp) {
-                this.pallete.push(...this.parser(color));
-            }
+    /**
+     * Rebuild `this.pallete` (flat float uniform buffer) from a canonical hex-string palette.
+     * Contract: `hexColors` MUST be an array of `"#rrggbb"` strings. Input normalization
+     * belongs at the boundary (init / updater / cache round-trip), not here. The previous
+     * implementation tried to be polymorphic (parse strings on one call, re-pad on another)
+     * and crashed when given any other shape because `this.pallete` was never initialized
+     * along the alternate branch.
+     */
+    _setPallete(hexColors) {
+        this.pallete = [];
+        for (const color of hexColors) {
+            this.pallete.push(...this.parser(color));
         }
-        for (let i = this.pallete.length; i < 3 * (this.MAX_SAMPLES); i++) {
+        while (this.pallete.length < 3 * this.MAX_SAMPLES) {
             this.pallete.push(0);
         }
     }
@@ -282,6 +332,52 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         };
     }
 
+    _normalizeParams() {
+        // Hook overridden because the parent ColorMap's normalization encodes invariants specific to
+        // its own semantics (params.default must be a named palette string in some scheme group).
+        // custom_colormap has different semantics — params.default is the palette itself, as an array.
+        // Inheriting the parent's normalization would clobber legitimate user input.
+        // General rule: parent-class invariants that don't hold for a subclass belong behind an
+        // overridable hook, not in a constructor-driven mutation path.
+    }
+
+    /**
+     * Coerce an arbitrary palette value (user input or stale cache) into the canonical shape:
+     * an array of `"#rrggbb"` hex strings. Called once at the init boundary so every internal
+     * consumer (`_setPallete`, `cssGradient`, the color-input UI, the cache round-trip) can
+     * assume the canonical shape and skip its own defensive branching.
+     *
+     * Tolerated inputs:
+     *   - array of hex strings (canonical)              → returned as-is
+     *   - array of [r, g, b] or [r, g, b, a] in 0..1   → converted to hex (alpha dropped — GLSL is vec3)
+     *   - anything else                                  → warn, fall back to supports().default
+     */
+    _normalizePalette(value) {
+        if (Array.isArray(value) && value.length > 0) {
+            if (value.every(item => typeof item === "string")) {
+                return value;
+            }
+            if (value.every(item => Array.isArray(item) && item.length >= 3)) {
+                return value.map(rgb => this._rgbTupleToHex(rgb));
+            }
+        }
+        console.warn(
+            `[FlexRenderer.UIControls.custom_colormap] palette has unsupported shape; ` +
+            `expected an array of "#rrggbb" hex strings (or [r,g,b] tuples in 0..1). ` +
+            `Falling back to default.`,
+            value
+        );
+        return this.supports.default;
+    }
+
+    _rgbTupleToHex(tuple) {
+        const channel = (n) => {
+            const v = Math.max(0, Math.min(255, Math.round(Number(n) * 255)));
+            return v.toString(16).padStart(2, "0");
+        };
+        return `#${channel(tuple[0])}${channel(tuple[1])}${channel(tuple[2])}`;
+    }
+
     prepare() {
         this.MAX_SAMPLES = 32;
         this.GLOBAL_GLSL_KEY = 'custom_colormap';
@@ -296,7 +392,11 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
     }
 
     init() {
-        this.value = this.load(this.params.default);
+        // Pin the shape contract at the boundary: `this.value` / `this.colorPallete` are always
+        // an array of `"#rrggbb"` hex strings from this point on. The loaded value may be the
+        // user-supplied default in any tolerated input shape, or a stale cache entry from an
+        // earlier (possibly buggy) run — normalize once here so internal methods can trust it.
+        this.value = this._normalizePalette(this.load(this.params.default));
 
         if (!Array.isArray(this.steps)) {
             this.setSteps();
@@ -439,8 +539,20 @@ return masked * bigger / actualLength;
     init() {
         this._updatePending = false;
         //encoded values hold breaks values between min and max,
-        this.encodedValues = this.load(this.params.breaks, "breaks");
-        this.mask = this.load(this.params.mask, "mask");
+        // Pin the shape contract at the boundary: `encodedValues` and `mask` are always arrays of
+        // finite numbers from this point on. Loaders may return user-supplied input or stale cache
+        // entries in any shape; normalize once here so the rest of init() and every later method
+        // (slider setup, mask toggling, glDrawing) can skip its own defensive branching.
+        this.encodedValues = this._normalizeNumberArray(
+            this.load(this.params.breaks, "breaks"),
+            this.supports.breaks,
+            "breaks"
+        );
+        this.mask = this._normalizeNumberArray(
+            this.load(this.params.mask, "mask"),
+            this.supports.mask,
+            "mask"
+        );
 
         this.value = this.encodedValues.map(this._normalize.bind(this));
         this.value = this.value.slice(0, this.MAX_SLIDERS);
@@ -589,6 +701,35 @@ return masked * bigger / actualLength;
 
     _normalize(value) {
         return (value - this.params.min) / (this.params.max - this.params.min);
+    }
+
+    /**
+     * Coerce an arbitrary `breaks` / `mask` value (user input or stale cache) into the canonical
+     * shape: an array of finite numbers. Tolerates a single-number input (treated as a one-element
+     * array, since `breaks: 0.5` is a reasonable user shorthand). Anything else — non-array,
+     * empty, full of NaN — warns and returns the supports() default. The single-number branch is
+     * the only "convenience" coercion; everything else fails loudly so silent corruption can't
+     * propagate into uniforms.
+     */
+    _normalizeNumberArray(value, fallback, paramName) {
+        let candidate = value;
+        if (typeof candidate === "number" && Number.isFinite(candidate)) {
+            candidate = [candidate];
+        }
+        if (Array.isArray(candidate)) {
+            const cleaned = candidate
+                .map(v => Number.parseFloat(v))
+                .filter(v => Number.isFinite(v));
+            if (cleaned.length > 0) {
+                return cleaned;
+            }
+        }
+        console.warn(
+            `[FlexRenderer.UIControls.AdvancedSlider] params.${paramName} has unsupported shape; ` +
+            `expected an array of finite numbers. Falling back to default.`,
+            value
+        );
+        return fallback.slice();
     }
 
     _updateConnectStyles(container) {

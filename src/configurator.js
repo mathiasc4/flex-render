@@ -384,55 +384,52 @@
         },
 
         compileConfigSchemaModel() {
-            const controlTypedefs = this._compileControlTypedefs();
-            const shaders = $.FlexRenderer.ShaderMediator.availableShaders().map(Shader => {
+            const availableShaders = $.FlexRenderer.ShaderMediator.availableShaders();
+            const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
+            const shaderLayerRefs = availableShaders.map(Shader => ({
+                $ref: `#/$defs/shaderLayers/${Shader.type()}`
+            }));
+            const shaderLayers = {};
+
+            for (const Shader of availableShaders) {
                 const sources = typeof Shader.sources === "function" ? (Shader.sources() || []) : [];
-                return {
-                    type: Shader.type(),
-                    name: typeof Shader.name === "function" ? Shader.name() : Shader.type(),
-                    description: typeof Shader.description === "function" ? Shader.description() : "",
-                    intent: typeof Shader.intent === "function" ? Shader.intent() : undefined,
-                    expects: typeof Shader.expects === "function" ? Shader.expects() : undefined,
-                    exampleParams: typeof Shader.exampleParams === "function" ? Shader.exampleParams() : undefined,
-                    controlCouplings: this._serializeControlCouplings(Shader),
-                    rootConfig: this._compileShaderRootConfigSchema(Shader),
-                    params: this._compileShaderParamsSchema(Shader, sources),
-                    sources: sources.map((src, index) => ({
-                        index,
-                        description: src.description || "",
-                        acceptedChannelCounts: this._probeAcceptedChannelCounts(src)
-                    }))
-                };
-            });
+                shaderLayers[Shader.type()] = this._compileShaderLayerJsonSchema(
+                    Shader,
+                    sources,
+                    uiControlEnvelopes,
+                    shaderLayerRefs
+                );
+            }
 
             return {
-                version: 1,
-                generatedAt: new Date().toISOString(),
-                rendererConfig: {
-                    type: "object",
-                    usage: "Renderer configuration snapshot with explicit shader order and shader definitions.",
-                    properties: [
-                        {
-                            key: "order",
-                            type: "string[]",
-                            required: false,
-                            usage: "Optional top-level render order override. When omitted, the renderer falls back to Object.keys(shaders).",
-                            overridesDefaultOrder: true,
-                            targets: "top-level",
-                            defaultBehavior: "Object.keys(shaders)"
+                $schema: "https://json-schema.org/draft/2020-12/schema",
+                $id: "https://flex-renderer/schemas/visualization-config/v2.json",
+                title: "FlexRenderer visualization config",
+                description: "Published JSON Schema for renderer visualization configuration.",
+                type: "object",
+                additionalProperties: false,
+                required: ["shaders"],
+                properties: {
+                    order: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional top-level render order override. Defaults to Object.keys(shaders)."
+                    },
+                    shaders: {
+                        type: "object",
+                        additionalProperties: {
+                            oneOf: deepClone(shaderLayerRefs)
                         },
-                        {
-                            key: "shaders",
-                            type: "Object<string, ShaderConfig>",
-                            required: true,
-                            usage: "Map of shader id -> shader configuration object."
-                        }
-                    ]
+                        description: "Map of shader id -> shader configuration object."
+                    }
                 },
-                shaderConfigBase: this._compileBaseShaderConfigSchema(),
-                controlTypedefs,
-                uiControls: this._compileControlSchemas(),
-                shaders
+                $defs: {
+                    uiControlEnvelopes,
+                    shaderLayers
+                },
+                "x-schemaVersion": 2,
+                "x-generatedAt": new Date().toISOString(),
+                "x-legacyControlTypeKey": "type"
             };
         },
 
@@ -461,6 +458,26 @@
         },
 
         /**
+         * Canonical "what are the break positions on this `threshold` control value?".
+         * Single source of truth for couplings and renderer-side syncing — the validator
+         * and the shader's runtime sync logic must read through this so they cannot
+         * disagree on what counts as a break.
+         * Precedence: `value.breaks` first, then `value.default`, otherwise `[]`.
+         */
+        resolveEffectiveBreaks(thresholdValue) {
+            if (!thresholdValue || typeof thresholdValue !== "object") {
+                return [];
+            }
+            if (Array.isArray(thresholdValue.breaks)) {
+                return thresholdValue.breaks;
+            }
+            if (Array.isArray(thresholdValue.default)) {
+                return thresholdValue.default;
+            }
+            return [];
+        },
+
+        /**
          * Canonical "how many color classes does this `color` control value carry?".
          * Single source of truth for couplings and renderer-side coercion.
          * Precedence: a `custom_colormap` with a `default` array wins over `steps`,
@@ -477,6 +494,48 @@
                 return colorValue.steps;
             }
             return 1;
+        },
+
+        /**
+         * Walks each compiled shader entry and flags every key in `exampleParams`
+         * that is not declared in `params.builtIns ∪ params.controls ∪ params.customParams`.
+         * Returns a (possibly empty) list of `{ shaderType, key, allowed }` issues.
+         * The published example must be a valid layer per its own schema; otherwise
+         * a host that uses `exampleParams` as a template will produce layers that
+         * fail their own coupling/key validation.
+         */
+        checkExampleParamsConsistency(shaders) {
+            const issues = [];
+            for (const shader of shaders || []) {
+                const example = shader && shader.exampleParams;
+                if (!example || typeof example !== "object") {
+                    continue;
+                }
+                const params = shader.params || {};
+                const allowed = new Set([
+                    ...((params.builtIns || []).map(c => c.key)),
+                    ...((params.controls || []).map(c => c.key)),
+                    ...((params.customParams || []).map(c => c.key))
+                ]);
+                for (const key of Object.keys(example)) {
+                    if (!allowed.has(key)) {
+                        issues.push({ shaderType: shader.type, key, allowed: [...allowed] });
+                    }
+                }
+            }
+            return issues;
+        },
+
+        _warnIfExampleParamsInconsistent(shaders) {
+            const issues = this.checkExampleParamsConsistency(shaders);
+            if (!issues.length) {
+                return;
+            }
+            const summary = issues.map(i => `${i.shaderType}.exampleParams.${i.key}`).join(", ");
+            console.warn(
+                `[FlexRenderer.ShaderConfigurator] exampleParams keys not present in published params schema: ${summary}. ` +
+                `Hosts using exampleParams as a template will fail their own validation.`
+            );
         },
 
         /**
@@ -954,6 +1013,597 @@
             };
         },
 
+        _compileJsonSchemaUiControlEnvelopes() {
+            const built = this._buildControls();
+            const envelopes = {};
+
+            for (const controls of Object.values(built)) {
+                for (const control of controls) {
+                    const uiType = control && control.uiControlType;
+                    if (!uiType || envelopes[uiType]) {
+                        continue;
+                    }
+                    envelopes[uiType] = this._compileJsonSchemaUiControlEnvelope(control);
+                }
+            }
+
+            return envelopes;
+        },
+
+        _compileJsonSchemaUiControlEnvelope(control) {
+            const docs = this._getControlClassDocs(control) || {};
+            const shape = this._compileControlConfigShape(control);
+            const properties = {
+                uiType: { const: control.uiControlType }
+            };
+            const required = ["uiType"];
+
+            for (const [key, value] of Object.entries(shape || {})) {
+                if (key === "type" || key === "uiType") {
+                    continue;
+                }
+                properties[key] = this._compileJsonSchemaFromDescriptor(value);
+            }
+
+            return {
+                type: "object",
+                additionalProperties: false,
+                required,
+                properties,
+                description: docs.description || docs.summary || `${control.uiControlType} control envelope.`,
+                "x-glType": control.type,
+                "x-legacyControlTypeKey": "type"
+            };
+        },
+
+        _compileShaderLayerJsonSchema(Shader, sources, uiControlEnvelopes, shaderLayerRefs) {
+            const shaderType = Shader.type();
+            const name = typeof Shader.name === "function" ? Shader.name() : shaderType;
+            const description = typeof Shader.description === "function" ? Shader.description() : "";
+            const properties = {
+                id: { type: "string" },
+                name: { type: "string" },
+                type: { const: shaderType },
+                visible: {
+                    type: ["number", "boolean"]
+                },
+                fixed: { type: "boolean" },
+                tiledImages: {
+                    type: "array",
+                    items: {
+                        type: "integer",
+                        minimum: 0
+                    }
+                }
+            };
+
+            if (Shader.type() === "group") {
+                properties.order = {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional child render order override inside the group. Defaults to Object.keys(shaders)."
+                };
+                properties.shaders = {
+                    type: "object",
+                    additionalProperties: {
+                        oneOf: deepClone(shaderLayerRefs)
+                    }
+                };
+            }
+
+            const paramsSchema = this._compileShaderParamsJsonSchema(
+                Shader,
+                sources,
+                uiControlEnvelopes
+            );
+            if (Object.keys(paramsSchema.properties || {}).length > 0) {
+                properties.params = paramsSchema;
+            }
+
+            const schema = {
+                type: "object",
+                additionalProperties: false,
+                required: ["type"],
+                properties,
+                title: name,
+                description: this._buildShaderSchemaDescription(Shader, description),
+                "x-sources": (sources || []).map((src, index) => ({
+                    index,
+                    description: src.description || "",
+                    acceptedChannelCounts: this._probeAcceptedChannelCounts(src)
+                })),
+                "x-controlCouplings": this._compileJsonSchemaControlCouplings(Shader)
+            };
+
+            const intent = typeof Shader.intent === "function" ? Shader.intent() : undefined;
+            if (intent) {
+                schema["x-intent"] = intent;
+            }
+            const expects = this._resolveShaderSchemaExpects(Shader, sources);
+            if (expects) {
+                schema["x-expects"] = expects;
+            }
+
+            const examples = this._buildShaderLayerExamples(Shader, sources);
+            if (examples.length) {
+                schema.examples = examples;
+            }
+
+            return schema;
+        },
+
+        _compileShaderParamsJsonSchema(Shader, sources, uiControlEnvelopes) {
+            const compiled = this._compileShaderParamsSchema(Shader, sources);
+            const properties = {};
+
+            for (const item of compiled.builtIns || []) {
+                properties[item.key] = this._compileBuiltInParamJsonSchema(item);
+            }
+
+            for (const control of compiled.controls || []) {
+                properties[control.key] = this._compileControlParamJsonSchema(control, uiControlEnvelopes);
+            }
+
+            for (const item of compiled.customParams || []) {
+                properties[item.key] = this._compileCustomParamJsonSchema(Shader, item);
+            }
+
+            return {
+                type: "object",
+                additionalProperties: false,
+                properties
+            };
+        },
+
+        _compileControlParamJsonSchema(control, uiControlEnvelopes) {
+            const normalizedUiTypes = (control.supportedUiTypes || [])
+                .map(uiType => this._normalizePublishedUiType(uiType))
+                .filter(uiType => !!uiControlEnvelopes[uiType]);
+            const primitiveSchemas = this._compileControlPrimitiveSchemasFromEnvelopes(normalizedUiTypes, uiControlEnvelopes);
+            const refs = normalizedUiTypes.map(uiType => ({ $ref: `#/$defs/uiControlEnvelopes/${uiType}` }));
+            const variants = primitiveSchemas.concat(refs);
+
+            if (!variants.length) {
+                return {};
+            }
+            if (variants.length === 1) {
+                return variants[0];
+            }
+            return { anyOf: variants };
+        },
+
+        _normalizePublishedUiType(uiType) {
+            if (!uiType) {
+                return uiType;
+            }
+            if ($.FlexRenderer.UIControls && $.FlexRenderer.UIControls._items && $.FlexRenderer.UIControls._items[uiType]) {
+                const item = $.FlexRenderer.UIControls._items[uiType];
+                return item.uiType || uiType;
+            }
+            return uiType;
+        },
+
+        _compileControlPrimitiveSchemasFromEnvelopes(uiTypes, uiControlEnvelopes) {
+            const seen = new Set();
+            const schemas = [];
+
+            for (const uiType of uiTypes || []) {
+                const envelope = uiControlEnvelopes[uiType];
+                const defaultSchema = envelope && envelope.properties && envelope.properties.default;
+                const primitiveSchema = this._compilePrimitiveSchemaFromEnvelopeDefault(uiType, defaultSchema);
+                if (!primitiveSchema) {
+                    continue;
+                }
+                const key = JSON.stringify(primitiveSchema);
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                schemas.push(primitiveSchema);
+            }
+
+            return schemas;
+        },
+
+        _compilePrimitiveSchemaFromEnvelopeDefault(uiType, defaultSchema) {
+            if (!defaultSchema || !defaultSchema.type) {
+                return null;
+            }
+
+            const normalizedType = Array.isArray(defaultSchema.type)
+                ? defaultSchema.type[0]
+                : defaultSchema.type;
+
+            if (uiType === "color") {
+                return {
+                    type: "string",
+                    pattern: "^#[0-9a-fA-F]{6,8}$"
+                };
+            }
+
+            switch (normalizedType) {
+                case "string":
+                    return { type: "string" };
+                case "integer":
+                case "number":
+                    return { type: "number" };
+                case "boolean":
+                    return { type: "boolean" };
+                case "array":
+                    return { type: "array" };
+                default:
+                    return null;
+            }
+        },
+
+        _compileSchemaFromSampleValue(value) {
+            if (value === null) {
+                return { type: "null" };
+            }
+            if (Array.isArray(value)) {
+                const itemSchemas = value
+                    .map(item => this._compileSchemaFromSampleValue(item))
+                    .filter(Boolean);
+                const samePrimitiveType = itemSchemas.length > 0 &&
+                    itemSchemas.every(schema => schema.type && schema.type === itemSchemas[0].type);
+
+                return samePrimitiveType
+                    ? { type: "array", items: { type: itemSchemas[0].type } }
+                    : { type: "array" };
+            }
+            if (typeof value === "string") {
+                return { type: "string" };
+            }
+            if (typeof value === "number") {
+                return Number.isInteger(value) ? { type: "integer" } : { type: "number" };
+            }
+            if (typeof value === "boolean") {
+                return { type: "boolean" };
+            }
+            if (typeof value === "object") {
+                return { type: "object" };
+            }
+            return null;
+        },
+
+        _compileBuiltInParamJsonSchema(item) {
+            let schema;
+            if (item.allowedValues) {
+                schema = { enum: deepClone(item.allowedValues) };
+            } else if (item.key && item.key.startsWith("use_channel_base")) {
+                schema = {
+                    type: "integer",
+                    minimum: 0
+                };
+            } else {
+                schema = this._compileTypeExpressionSchema(item.type, firstDefined(item.required, item.default));
+            }
+
+            if (item.default === null) {
+                schema = this._withNullableSchema(schema);
+            }
+
+            if (item.default !== undefined) {
+                schema.default = deepClone(item.default);
+            }
+            if (item.usage) {
+                schema.description = item.usage;
+            }
+            return schema;
+        },
+
+        _compileCustomParamJsonSchema(Shader, item) {
+            const schema = this._compileSpecialCustomParamJsonSchema(Shader, item) ||
+                this._compileTypeExpressionSchema(item.type, firstDefined(item.required, item.default));
+            if (item.default !== undefined && item.default !== null) {
+                schema.default = deepClone(item.default);
+            }
+            if (item.usage) {
+                schema.description = item.usage;
+            }
+            return schema;
+        },
+
+        _compileSpecialCustomParamJsonSchema(Shader, item) {
+            const shaderType = Shader && typeof Shader.type === "function" ? Shader.type() : "";
+            if (shaderType === "time-series" && item.key === "series") {
+                return {
+                    type: "array",
+                    items: {
+                        oneOf: [
+                            { type: "integer", minimum: 0 },
+                            { type: "string" },
+                            { type: "object" }
+                        ]
+                    }
+                };
+            }
+            if (shaderType === "channel-series" && item.key === "channelRendererConfig") {
+                return {
+                    type: "object"
+                };
+            }
+            if (shaderType === "channel-series" && item.key === "sourceIndex") {
+                return {
+                    type: "integer",
+                    minimum: 0
+                };
+            }
+            return null;
+        },
+
+        _compileJsonSchemaFromDescriptor(descriptor) {
+            const schema = this._compileTypeExpressionSchema(
+                descriptor && descriptor.type,
+                descriptor && descriptor.default
+            );
+
+            if (descriptor && descriptor.default !== undefined) {
+                schema.default = deepClone(descriptor.default);
+            }
+            if (descriptor && descriptor.default === null) {
+                return this._withNullableSchema(schema);
+            }
+            if (descriptor && descriptor.allowedValues) {
+                schema.enum = deepClone(descriptor.allowedValues);
+            }
+            if (descriptor && descriptor.examples) {
+                schema.examples = deepClone(descriptor.examples);
+            }
+            if (descriptor && descriptor.usage) {
+                schema.description = descriptor.usage;
+            }
+            return schema;
+        },
+
+        _compileTypeExpressionSchema(typeExpression, sampleValue = undefined) {
+            if (!typeExpression || typeExpression === "unknown" || typeExpression === "json") {
+                return {};
+            }
+
+            if (typeExpression.endsWith("[]")) {
+                return {
+                    type: "array",
+                    items: this._compileTypeExpressionSchema(typeExpression.slice(0, -2))
+                };
+            }
+
+            const arrayMatch = typeExpression.match(/^array<(.*)>$/);
+            if (arrayMatch) {
+                return {
+                    type: "array",
+                    items: this._compileTypeExpressionSchema(arrayMatch[1])
+                };
+            }
+
+            const parts = typeExpression.split("|").map(part => part.trim()).filter(Boolean);
+            if (parts.length > 1) {
+                const schemas = parts.map(part => this._compileTypeExpressionSchema(part, sampleValue));
+                const simpleTypes = schemas.every(schema =>
+                    schema &&
+                    Object.keys(schema).length === 1 &&
+                    typeof schema.type === "string"
+                );
+                if (simpleTypes) {
+                    return {
+                        type: schemas.map(schema => schema.type)
+                    };
+                }
+                return { oneOf: schemas };
+            }
+
+            switch (typeExpression) {
+                case "string":
+                    return { type: "string" };
+                case "number":
+                    return Number.isInteger(sampleValue) ? { type: "integer" } : { type: "number" };
+                case "boolean":
+                    return { type: "boolean" };
+                case "null":
+                    return { type: "null" };
+                case "array":
+                    return { type: "array" };
+                case "object":
+                    return { type: "object" };
+                case "integer":
+                    return { type: "integer" };
+                default:
+                    return {};
+            }
+        },
+
+        _withNullableSchema(schema = {}) {
+            if (schema.type && typeof schema.type === "string") {
+                return {
+                    ...schema,
+                    type: [schema.type, "null"]
+                };
+            }
+            if (Array.isArray(schema.type) && !schema.type.includes("null")) {
+                return {
+                    ...schema,
+                    type: schema.type.concat(["null"])
+                };
+            }
+            return schema;
+        },
+
+        _normalizeShaderExampleParams(Shader, value) {
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+                return value;
+            }
+
+            const controlTypes = new Map(
+                this._compileControlDescriptors(Shader).map(control => [control.name, control.supportedUiTypes || []])
+            );
+            const out = {};
+            for (const [key, entry] of Object.entries(value)) {
+                const isKnownUiControl = entry &&
+                    typeof entry === "object" &&
+                    !Array.isArray(entry) &&
+                    typeof entry.type === "string" &&
+                    $.FlexRenderer.UIControls &&
+                    typeof $.FlexRenderer.UIControls.getUiClass === "function" &&
+                    $.FlexRenderer.UIControls.getUiClass(entry.type);
+
+                if (isKnownUiControl) {
+                    out[key] = { uiType: entry.type };
+                    for (const [innerKey, innerValue] of Object.entries(entry)) {
+                        if (innerKey === "type") {
+                            continue;
+                        }
+                        out[key][innerKey] = deepClone(innerValue);
+                    }
+                } else if (entry && typeof entry === "object" && !Array.isArray(entry) && !entry.uiType) {
+                    const supportedUiTypes = controlTypes.get(key) || [];
+                    if (supportedUiTypes.length === 1) {
+                        out[key] = {
+                            uiType: supportedUiTypes[0],
+                            ...deepClone(entry)
+                        };
+                    } else {
+                        out[key] = deepClone(entry);
+                    }
+                } else {
+                    out[key] = deepClone(entry);
+                }
+            }
+            return out;
+        },
+
+        _buildShaderLayerExamples(Shader, sources) {
+            let exampleParams;
+            if (Shader && typeof Shader.exampleParams === "function") {
+                exampleParams = Shader.exampleParams();
+            }
+            if (!exampleParams || typeof exampleParams !== "object") {
+                exampleParams = this._synthesizeExampleParamsFromDefaults(Shader, sources);
+            }
+            if (!exampleParams || typeof exampleParams !== "object") {
+                return [];
+            }
+
+            const example = {
+                id: `${Shader.type()}_example`,
+                type: Shader.type()
+            };
+
+            if (sources && sources.length) {
+                example.tiledImages = sources.map((_, index) => index);
+            }
+            if (Shader.type() === "group" && exampleParams.shaders) {
+                Object.assign(example, deepClone(exampleParams));
+            } else {
+                example.params = this._normalizeShaderExampleParams(Shader, exampleParams);
+            }
+
+            return [example];
+        },
+
+        _synthesizeExampleParamsFromDefaults(Shader, sources) {
+            if (!Shader || typeof Shader.type !== "function") {
+                return null;
+            }
+            if (Shader.type() === "group") {
+                return {
+                    shaders: {
+                        child_1: {  // eslint-disable-line camelcase
+                            type: "identity",
+                            params: {
+                                use_channel0: "r" // eslint-disable-line camelcase
+                            }
+                        }
+                    },
+                    order: ["child_1"]
+                };
+            }
+            if (Shader.type() === "time-series") {
+                return {
+                    seriesRenderer: "identity",
+                    series: [0],
+                    timeline: {
+                        type: "range_input",
+                        default: 0,
+                        min: 0,
+                        max: 0,
+                        step: 1
+                    }
+                };
+            }
+
+            const params = {};
+            const compiled = this._compileShaderParamsSchema(Shader, sources);
+            for (const builtIn of compiled.builtIns || []) {
+                if (builtIn.default !== undefined && builtIn.default !== null) {
+                    params[builtIn.key] = deepClone(builtIn.default);
+                }
+            }
+            for (const control of this._compileControlDescriptors(Shader)) {
+                const seed = firstDefined(control.required, control.default);
+                if (seed !== undefined && seed !== null) {
+                    params[control.name] = deepClone(seed);
+                }
+            }
+            for (const [name, meta] of Object.entries(Shader.customParams || {})) {
+                if (meta && meta.default !== undefined) {
+                    params[name] = deepClone(meta.default);
+                }
+            }
+            return Object.keys(params).length ? params : {};
+        },
+
+        _compileJsonSchemaControlCouplings(Shader) {
+            const couplings = this._serializeControlCouplings(Shader);
+            if (!Array.isArray(couplings) || !couplings.length) {
+                return [];
+            }
+            return couplings.map(coupling => ({
+                name: coupling.name,
+                summary: coupling.summary,
+                controls: deepClone(coupling.controls || [])
+            }));
+        },
+
+        _buildShaderSchemaDescription(Shader, description) {
+            const type = Shader && typeof Shader.type === "function" ? Shader.type() : "";
+            if (type === "time-series" || type === "channel-series") {
+                return `${description} Wrapper-specific settings live under params alongside built-ins and UI controls.`;
+            }
+            return description;
+        },
+
+        _resolveShaderSchemaExpects(Shader, sources = []) {
+            if (Shader && typeof Shader.expects === "function") {
+                const explicit = Shader.expects();
+                if (explicit && explicit.dataKind) {
+                    return explicit;
+                }
+            }
+
+            const type = Shader && typeof Shader.type === "function" ? Shader.type() : "";
+            if (type === "group" || type === "time-series" || type === "channel-series") {
+                return { dataKind: "any", channels: "any" };
+            }
+
+            const accepted = (sources || [])
+                .map(src => this._probeAcceptedChannelCounts(src))
+                .filter(values => Array.isArray(values) && values.length);
+            if (!accepted.length) {
+                return null;
+            }
+            const first = accepted[0];
+            if (first.length === 1 && first[0] === 1) {
+                return { dataKind: "scalar", channels: 1 };
+            }
+            if (first.length === 1 && first[0] === 3) {
+                return { dataKind: "rgb", channels: 3 };
+            }
+            if (first.length === 1 && first[0] === 4) {
+                return { dataKind: "rgb", channels: 4 };
+            }
+            return { dataKind: "multi-channel", channels: "any" };
+        },
+
         _compileShaderRootConfigSchema(Shader) {
             const base = this._compileBaseShaderConfigSchema().properties.map(item => deepClone(item));
             const byKey = new Map(base.map(item => [item.key, item]));
@@ -998,7 +1648,7 @@
             return {
                 type: "object",
                 usage: "Configuration object assigned to ShaderConfig.params.",
-                builtIn: [
+                builtIns: [
                     ...this._compileUseChannelSchemas(Shader, sources, defs),
                     this._compileUseModeSchema(defs),
                     this._compileUseBlendSchema(defs),

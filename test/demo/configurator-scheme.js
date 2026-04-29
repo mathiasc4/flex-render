@@ -2,14 +2,14 @@
     const ShaderConfigurator = OpenSeadragon.FlexRenderer.ShaderConfigurator;
 
     function countControlEntries(model) {
-        return Object.values(model.uiControls || {}).reduce((sum, entries) => sum + entries.length, 0);
+        return Object.keys((model.$defs && model.$defs.uiControlEnvelopes) || {}).length;
     }
 
     function render() {
         const model = ShaderConfigurator.compileConfigSchemaModel();
 
-        document.getElementById("model-version").textContent = String(model.version);
-        document.getElementById("shader-count").textContent = String((model.shaders || []).length);
+        document.getElementById("model-version").textContent = String(model["x-schemaVersion"] || "");
+        document.getElementById("shader-count").textContent = String(Object.keys((model.$defs && model.$defs.shaderLayers) || {}).length);
         document.getElementById("control-count").textContent = String(countControlEntries(model));
         document.getElementById("scheme-output").textContent = JSON.stringify(model, null, 2);
     }

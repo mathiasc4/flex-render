@@ -28,7 +28,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     }
 
     static description() {
-        return "data values encoded in color scale. The color control's `steps` (and `custom_colormap` array length) is coerced to `threshold.breaks.length + 1`. When both are set, `custom_colormap.default.length` wins for the `custom_colormap` type, otherwise `color.steps` wins. The `connect` flag (default true) additionally synchronizes step boundaries with break positions.";
+        return "Number of color classes is always threshold.breaks.length + 1. To set classes explicitly, use color = { type: \"custom_colormap\", default: [...colors], steps: N } (palette length N wins) OR color = \" { type: \"colormap\", default: \"PaletteName\", steps: N } (steps wins). The connect flag (default true) syncs step boundaries to break positions.";
     }
 
     static intent() {
@@ -54,14 +54,9 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             controls: ["color", "threshold"],
             validate: (layer) => {
                 const params = (layer && layer.params) || {};
-                const breaks = params.threshold && (
-                    Array.isArray(params.threshold.breaks) ? params.threshold.breaks
-                        : Array.isArray(params.threshold.default) ? params.threshold.default
-                            : null
-                );
-                const breaksCount = breaks ? breaks.length : 0;
-                const colorSteps = $.FlexRenderer.ShaderConfigurator
-                    .resolveEffectiveColorSteps(params.color);
+                const Configurator = $.FlexRenderer.ShaderConfigurator;
+                const breaksCount = Configurator.resolveEffectiveBreaks(params.threshold).length;
+                const colorSteps = Configurator.resolveEffectiveColorSteps(params.color);
                 const expectedSteps = breaksCount + 1;
                 return colorSteps === expectedSteps
                     ? { ok: true }
@@ -177,10 +172,20 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     init() {
         this.opacity.init();
 
+        const Configurator = $.FlexRenderer.ShaderConfigurator;
         const isColormap = typeof this.color.setSteps === "function";
-        const breaksOf = () => Array.isArray(this.threshold.raw) ? this.threshold.raw : [];
+
+        // Read breaks through the same canonical accessor the coupling validator uses,
+        // so validation cannot disagree with runtime coercion. Live drag updates pass
+        // their fresh values into syncColor() directly via the 'breaks' callback.
+        const breaksOf = (override) => {
+            if (Array.isArray(override)) {
+                return override.map(v => Number.parseFloat(v)).filter(v => Number.isFinite(v));
+            }
+            return Configurator.resolveEffectiveBreaks(this.threshold && this.threshold.params);
+        };
         const currentColorSteps = () =>
-            $.FlexRenderer.ShaderConfigurator.resolveEffectiveColorSteps(this.color.params);
+            Configurator.resolveEffectiveColorSteps(this.color.params);
 
         const warnIfMismatched = (expected) => {
             if (this._coercionWarned) {
@@ -196,11 +201,11 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             }
         };
 
-        const syncColor = () => {
+        const syncColor = (liveBreaks) => {
             if (!isColormap) {
                 return;
             }
-            const breaks = breaksOf();
+            const breaks = breaksOf(liveBreaks);
             const expected = breaks.length + 1;
             warnIfMismatched(expected);
             if (this.connect && this.connect.raw) {
@@ -219,8 +224,8 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             }, true);
             this.connect.init();
 
-            this.threshold.on('breaks', function() {
-                syncColor();
+            this.threshold.on('breaks', function(_rawValue, encodedValue) {
+                syncColor(encodedValue);
             }, true);
         }
         this.threshold.init();

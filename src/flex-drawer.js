@@ -869,6 +869,11 @@
                     return;
                 }
 
+                if (this._destroyed) {
+                    this._rebuildHandle = null;
+                    return;
+                }
+
                 if (!this._configuredExternally) {
                     this.renderer.setShaderLayerOrder(this.viewer.world._items.map(item => item.__shaderConfig.id));
                 }

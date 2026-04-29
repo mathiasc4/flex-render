@@ -454,30 +454,38 @@
                 //todo a bit dirty.. consider events / consider doing within webgl context
                 if (name === "second-pass") {
                     // generate HTML elements for ShaderLayer's controls and put them into the DOM
-                    if (this.htmlHandler) {
-                        this.htmlReset();
+                    try {
+                        if (this.htmlHandler) {
+                            this.htmlReset();
 
-                        this.forEachShaderLayerWithContext(
-                            this._shaders,
-                            this.getShaderLayerOrder(),
-                            (shaderLayer, shaderId, shaderConfig, htmlContext) => {
-                                this.htmlHandler(
-                                    shaderLayer,
-                                    shaderConfig,
-                                    htmlContext
-                                );
+                            this.forEachShaderLayerWithContext(
+                                this._shaders,
+                                this.getShaderLayerOrder(),
+                                (shaderLayer, shaderId, shaderConfig, htmlContext) => {
+                                    this.htmlHandler(
+                                        shaderLayer,
+                                        shaderConfig,
+                                        htmlContext
+                                    );
+                                }
+                            );
+
+                            this.raiseEvent('html-controls-created', {
+                                name: name,
+                                program: program,
+                                shaderLayers: this._shaders,
+                            });
+                        }
+
+                        for (const shaderId in this._shaders) {
+                            try {
+                                this._shaders[shaderId].init();
+                            } catch (e) {
+                                $.console.warn(`Shader ${shaderId} init(). The shader control will not work.`, e);
                             }
-                        );
-
-                        this.raiseEvent('html-controls-created', {
-                            name: name,
-                            program: program,
-                            shaderLayers: this._shaders,
-                        });
-                    }
-
-                    for (const shaderId in this._shaders) {
-                        this._shaders[shaderId].init();
+                        }
+                    } catch (e) {
+                        $.console.warn(`Second pass re-initialization error: the visualization might not render.`, e);
                     }
                 }
             }
@@ -619,8 +627,20 @@
         setShaderLayerOrder(order) {
             if (!order) {
                 this._shadersOrder = null;
+                return;
             }
-            this._shadersOrder = order.map($.FlexRenderer.sanitizeKey);
+            const sanitized = order.map($.FlexRenderer.sanitizeKey);
+            const seen = new Set();
+            const deduped = [];
+            for (const key of sanitized) {
+                if (seen.has(key)) {
+                    $.console.warn(`setShaderLayerOrder: duplicate shader key '${key}' ignored (would cause GLSL redefinition).`);
+                    continue;
+                }
+                seen.add(key);
+                deduped.push(key);
+            }
+            this._shadersOrder = deduped;
         }
 
         /**
