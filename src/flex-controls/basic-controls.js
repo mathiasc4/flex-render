@@ -867,7 +867,7 @@ $.FlexRenderer.UIControls.IControl = class IControl {
             return;
         }
 
-        this.owner.webglContext.renderer.notifyVisualizationChanged({
+        this.owner.backend.renderer.notifyVisualizationChanged({
             reason: "control-change",
             shaderId: this.owner.id,
             shaderType: this.owner.constructor.type(),

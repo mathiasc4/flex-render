@@ -38,7 +38,7 @@ const drawerOptions = {
                 return "";
             }
 
-            const renderer = shaderLayer.webglContext && shaderLayer.webglContext.renderer;
+            const renderer = shaderLayer.backend && shaderLayer.backend.renderer;
             const drawer = renderer && renderer.drawer ? renderer.drawer : null;
 
             const depth = Number.isFinite(htmlContext.depth) ? htmlContext.depth : 0;

@@ -352,7 +352,7 @@
             if (refreshShader) {
                 this.renderer.refreshShaderLayer(shaderId, { rebuildProgram });
             } else if (rebuildProgram) {
-                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
             }
 
             this.renderer.notifyVisualizationChanged({
@@ -888,7 +888,7 @@
                     this.viewer.world.getItemCount()
                 );
                 this._updatePackLayout();
-                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
                 this.rebuildCounter++;
                 this._rebuildHandle = null;
                 this._refreshDrawReadyState();

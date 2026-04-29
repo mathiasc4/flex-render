@@ -71,7 +71,7 @@
                     id,
                     {
                         shaderConfig: config,
-                        webglContext: this.webglContext,
+                        backend: this.backend,
                         params: config.params,
                         interactive: this._interactive,
 
@@ -164,7 +164,7 @@ vec4 compute_${shaderLayer.uid}() {
                 return definition;
             }
 
-            // TODO: move the grouping logic into WebGLContext
+            // TODO: move the grouping logic into WebGLImplementation
             getFragmentShaderExecution() {
                 let execution = "vec4 new_color = vec4(0.0);\nvec4 combined_color = vec4(0.0);\nvec4 clip_color = vec4(0.0);";
 

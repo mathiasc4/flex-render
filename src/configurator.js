@@ -214,8 +214,8 @@
                 this.renderer.setShaderLayerOrder([shaderId]);
 
                 // Rebuild second-pass to regenerate controls and shader JS/GL state.
-                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
-                this.renderer.useProgram(this.renderer.getProgram(this.renderer.webglContext.secondPassProgramKey), "second-pass");
+                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+                this.renderer.useProgram(this.renderer.getProgram(this.renderer.backend.secondPassProgramKey), "second-pass");
             } finally {
                 this._suspendVisualizationSync = false;
             }
@@ -2720,7 +2720,7 @@
                     params: {},
                     cache: {}
                 },
-                webglContext: {
+                backend: {
                     supportedUseModes: ["show"],
                     includeGlobalCode: () => {}
                 },

@@ -845,7 +845,7 @@
             }
 
             this.renderer.setShaderLayerOrder(shaderOrder || Object.keys(normalized));
-            this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+            this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
         };
 
         runtime.getOverriddenShaderConfig = function(key) {

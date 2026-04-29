@@ -193,41 +193,43 @@
 
             this.canvasContextOptions = incomingOptions.canvasOptions;
             const canvas = document.createElement("canvas");
-            const WebGLImplementation = this.constructor.determineContext(this.webGLPreferredVersion);
+            const WebGLImplementation = this.constructor.determineBackend(this.webGLPreferredVersion);
             const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
 
             if (webGLRenderingContext) {
                 this.gl = webGLRenderingContext;                                            // WebGLRenderingContext|WebGL2RenderingContext
-                this.webglContext = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
+                this.backend = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
                 this.canvas = canvas;
 
                 // Should be last call of the constructor to make sure everything is initialized
-                this.webglContext.init();
+                this.backend.init();
             } else {
                 throw new Error("$.FlexRenderer::constructor: Could not create WebGLRenderingContext!");
             }
         }
 
         /**
-         * Search through all FlexRenderer properties to find one that extends WebGLImplementation and it's getVersion() method returns <version> input parameter.
+         * Search through all FlexRenderer properties to find one that extends WebGLImplementation and its getVersion() method returns <version> input parameter.
          * @param {String} version WebGL version, "1.0" or "2.0"
          * @returns {WebGLImplementation}
          *
          * @instance
          * @memberof FlexRenderer
          */
-        static determineContext(version) {
+        static determineBackend(version) {
             const namespace = $.FlexRenderer;
+
             for (let property in namespace) {
-                const context = namespace[ property ],
-                    proto = context && context.prototype;
+                const backend = namespace[ property ];
+                const proto = backend && backend.prototype;
+
                 if (proto && proto instanceof namespace.WebGLImplementation &&
-                    $.isFunction( proto.getVersion ) && proto.getVersion.call( context ) === version) {
-                        return context;
+                    $.isFunction( proto.getVersion ) && proto.getVersion.call( backend ) === version) {
+                        return backend;
                 }
             }
 
-            throw new Error("$.FlexRenderer::determineContext: Could not find WebGLImplementation with version " + version);
+            throw new Error("$.FlexRenderer::determineBackend: Could not find WebGLImplementation with version " + version);
         }
 
         /**
@@ -288,7 +290,7 @@
          * @return {String|*}
          */
         get webglVersion() {
-            return this.webglContext.webGLVersion;
+            return this.backend.webGLVersion;
         }
 
         /**
@@ -306,7 +308,7 @@
             this.canvas.width = width;
             this.canvas.height = height;
             this.gl.viewport(x, y, width, height);
-            this.webglContext.setDimensions(x, y, width, height, levels, tiledImageCount);
+            this.backend.setDimensions(x, y, width, height, levels, tiledImageCount);
         }
 
         /**
@@ -355,7 +357,7 @@
                 throw new TypeError("$.FlexRenderer::renderFirstPass: source must be an array.");
             }
 
-            const program = this._programImplementations[this.webglContext.firstPassProgramKey];
+            const program = this._programImplementations[this.backend.firstPassProgramKey];
 
             if (this.useProgram(program, "first-pass")) {
                 program.load();
@@ -413,10 +415,10 @@
                 };
             }
 
-            if (this.webglContext && typeof this.webglContext.processSecondPassWithInspector === "function") {
+            if (this.backend && typeof this.backend.processSecondPassWithInspector === "function") {
                 const inspectorState = this.getInspectorState();
                 if (inspectorState && inspectorState.enabled && inspectorState.mode === "lens-zoom") {
-                    const inspectorResult = this.webglContext.processSecondPassWithInspector(renderArray, options);
+                    const inspectorResult = this.backend.processSecondPassWithInspector(renderArray, options);
 
                     return inspectorResult || {
                         textureDepth: 0,
@@ -430,7 +432,7 @@
                 }
             }
 
-            const program = this._programImplementations[this.webglContext.secondPassProgramKey];
+            const program = this._programImplementations[this.backend.secondPassProgramKey];
 
             if (this.useProgram(program, "second-pass")) {
                 program.load(renderArray);
@@ -531,7 +533,7 @@
             }
             // Needs reference early
             this._programImplementations[key] = program;
-            this.webglContext.setBackground(this._background);
+            this.backend.setBackground(this._background);
 
             program.build(this._shaders, this.getShaderLayerOrder());
             // Used also to re-compile, set requiresLoad to true
@@ -724,7 +726,7 @@
             // TODO a bit dirty approach, make the program key usable from outside
             const shader = new Shader(id, {
                 shaderConfig: shaderConfig,
-                webglContext: this.webglContext,
+                backend: this.backend,
                 params: shaderConfig.params,
                 interactive: this.interactive,
 
@@ -732,7 +734,7 @@
                 invalidate: this.redrawCallback,
                 // callback to rebuild the WebGL program
                 rebuild: () => {
-                    this.registerProgram(null, this.webglContext.secondPassProgramKey);
+                    this.registerProgram(null, this.backend.secondPassProgramKey);
                 },
                 // callback to recreate the shader when control topology changes
                 refresh: () => {
@@ -927,7 +929,7 @@
             const shouldRebuild = options.rebuildProgram !== false;
 
             if (shouldRebuild) {
-                this.registerProgram(null, this.webglContext.secondPassProgramKey);
+                this.registerProgram(null, this.backend.secondPassProgramKey);
             }
 
             return rebuiltShader;
@@ -1113,10 +1115,10 @@
          * @return {Object}
          */
         renderSecondPassToTexture(renderArray, options = {}) {
-            if (!this.webglContext || typeof this.webglContext.renderSecondPassToTexture !== 'function') {
+            if (!this.backend || typeof this.backend.renderSecondPassToTexture !== 'function') {
                 throw new Error('Active WebGL implementation does not support second-pass texture targets.');
             }
-            return this.webglContext.renderSecondPassToTexture(renderArray, options);
+            return this.backend.renderSecondPassToTexture(renderArray, options);
         }
 
         destroy() {
@@ -1137,7 +1139,7 @@
                 this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
                 this._debugPreviewColorRB = null;
             }
-            this.webglContext.destroy();
+            this.backend.destroy();
             this._programImplementations = {};
         }
 
@@ -1220,7 +1222,7 @@
                 }, true);
                 renderer.setShaderLayerOrder([shaderId]);
                 renderer.setDimensions(0, 0, width, height, 1, 1);
-                renderer.registerProgram(null, renderer.webglContext.secondPassProgramKey);
+                renderer.registerProgram(null, renderer.backend.secondPassProgramKey);
 
                 const gl = renderer.gl;
                 const colorPixels = $.FlexRenderer._buildSelfTestColorData(width, height, expected);

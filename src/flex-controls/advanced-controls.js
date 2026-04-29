@@ -1046,7 +1046,7 @@ $.FlexRenderer.UIControls.registerClass("button", $.FlexRenderer.UIControls.Butt
 $.FlexRenderer.IAtlasTextureControl = class IAtlasTextureControl extends $.FlexRenderer.UIControls.IControl {
     constructor(owner, name, webGLVariableName, params) {
         super(owner, name, webGLVariableName);
-        this.atlas = owner.webglContext ? owner.webglContext.secondAtlas : null;
+        this.atlas = owner.backend ? owner.backend.secondAtlas : null;
         this._params = this.getParams(params);
         this.textureId = -1;
         this.encodedValue = this.params.default;

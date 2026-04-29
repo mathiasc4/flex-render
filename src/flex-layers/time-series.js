@@ -203,7 +203,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
 
         this._renderer = new DelegateShader(`${this.id}_delegate`, {
             shaderConfig: delegateConfig,
-            webglContext: this.webglContext,
+            backend: this.backend,
             params: delegateConfig.params,
             interactive: this._interactive,
             invalidate: this.invalidate,

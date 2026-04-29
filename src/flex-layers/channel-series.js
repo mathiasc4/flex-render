@@ -221,7 +221,7 @@
 
                 this._delegateShader = new DelegateShader(`${this.id}_delegate`, {
                     shaderConfig: delegateConfig,
-                    webglContext: this.webglContext,
+                    backend: this.backend,
                     params: delegateConfig.params,
                     interactive: this._interactive,
                     invalidate: this.invalidate,
