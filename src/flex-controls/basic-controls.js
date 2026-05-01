@@ -167,7 +167,7 @@ $.FlexRenderer.UIControls = class {
             if (this._items[type]) {
                 console.warn("Registering an already existing control component: ", type);
             }
-            uiElement["uiType"] = type;
+            uiElement["type"] = type;
             this._items[type] = uiElement;
         }
     }
@@ -186,7 +186,7 @@ $.FlexRenderer.UIControls = class {
         if (this._items[type]) {
             console.warn("Registering an already existing control component: ", type);
         }
-        cls._uiType = type;
+        cls._type = type;
         this._impls[type] = cls;
         // } else {
         //     console.warn(`Skipping UI control '${type}': does not inherit from $.FlexRenderer.UIControls.IControl.`);
@@ -244,7 +244,7 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
             return name;
         },
         glType: "float",
-        uiType: "number",
+        type: "number",
         docs: {
             summary: "Numeric float input control.",
             description: "Renders an HTML number input, decodes to float, normalizes values into the configured min/max range, and exposes a float GLSL uniform.",
@@ -282,7 +282,7 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
             return name;
         },
         glType: "float",
-        uiType: "range",
+        type: "range",
         docs: {
             summary: "Slider control for float uniforms.",
             description: "Renders an HTML range input, decodes to float, normalizes values into the configured min/max range, and exposes a float GLSL uniform.",
@@ -329,7 +329,7 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
             return name;
         },
         glType: "vec3",
-        uiType: "color",
+        type: "color",
         docs: {
             summary: "RGB color picker control.",
             description: "Renders an HTML color input, decodes a hex color string into three normalized float components, and exposes a vec3 GLSL uniform.",
@@ -367,7 +367,7 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
             return name;
         },
         glType: "bool",
-        uiType: "bool",
+        type: "bool",
         docs: {
             summary: "Boolean toggle control.",
             description: "Renders an HTML checkbox, decodes the checked state into 0 or 1, and exposes a bool-compatible GLSL uniform.",
@@ -433,7 +433,7 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
             return name;
         },
         glType: "int",
-        uiType: "select_int",
+        type: "select_int",
         docs: {
             summary: "Integer select control.",
             description: "Renders an HTML select element, decodes the selected option value into an integer, and exposes an int GLSL uniform.",
@@ -772,7 +772,7 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * @return {*}
      */
     get uiControlType() {
-        return this.constructor._uiType;
+        return this.constructor._type;
     }
 
     /**
@@ -1019,7 +1019,7 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
     }
 
     get uiControlType() {
-        return this.component["uiType"];
+        return this.component["type"];
     }
 
     get supports() {

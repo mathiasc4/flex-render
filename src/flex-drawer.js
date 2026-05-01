@@ -137,6 +137,10 @@
             const createdOrder = [];
 
             for (const shaderId of requestedOrder) {
+                const sanitized = $.FlexRenderer.sanitizeKey(shaderId);
+                if (this.renderer._shaders[sanitized]) {
+                    this.renderer.removeShader(sanitized);
+                }
                 const shader = this.renderer.createShaderLayer(shaderId, shaders[shaderId], true);
                 if (shader) {
                     createdOrder.push(shaderId);
