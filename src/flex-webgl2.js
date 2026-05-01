@@ -717,9 +717,20 @@ ${getStencilPassCode(remainingBlendShader)}
         for (const shaderLayerId of keyOrder) {
             const shaderLayer = shaderMap[shaderLayerId];
             const shaderLayerConfig = shaderLayer.getConfig();
-            const slot = shaderLayer.__renderSlot;
-            const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
-            const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
+
+            // Snapshot mutable assembly state so a throw mid-iteration (e.g. an
+            // incompatible control's sample() throws from getFragmentShaderExecution)
+            // can be rolled back cleanly and the offending layer emitted as disabled
+            // instead of corrupting the GLSL source.
+            const definitionSnapshot = definition;
+            const executionSnapshot = execution;
+            const customBlendSnapshot = customBlendFunctions;
+            const remainingBlendSnapshot = remainingBlendShader;
+
+            try {
+                const slot = shaderLayer.__renderSlot;
+                const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
+                const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
 
             execution += `\n    // ${shaderLayer.uid}\n`;
 
@@ -765,6 +776,28 @@ ${getStencilPassCode(shaderLayer)}
     clip_color.a = clip_color.a * ${opacityModifier};
     intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
 `;
+                }
+            } catch (e) {
+                $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig.type}). Hiding layer.`, e);
+                shaderLayerConfig.error = true;
+                definition = definitionSnapshot;
+                execution = executionSnapshot;
+                customBlendFunctions = customBlendSnapshot;
+                remainingBlendShader = remainingBlendSnapshot;
+
+                execution += `\n    // ${shaderLayer.uid}\n`;
+                if (shaderLayer._mode !== "clip") {
+                    execution += `${getRemainingBlending()}
+    // ${shaderLayer.uid} - Disabled (assembly error)
+    intermediate_color = vec4(0.0);
+`;
+                    remainingBlendShader = shaderLayer;
+                } else {
+                    execution += `
+    // ${shaderLayer.uid} - Disabled with Clipmask (assembly error)
+    intermediate_color = vec4(0.0);
+`;
+                }
             }
         }
 
@@ -850,8 +883,15 @@ ${getStencilPassCode(shaderLayer)}
         }
 
         // todo _instanceOffsets and _instanceTextureIndexes are possibly static per program lifetime, so we could do this once at load()
-        gl.uniform1iv(this._instanceOffsets, instanceOffsets);
-        gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
+        // Guard against empty arrays — WebGL2 raises INVALID_VALUE on uniform1iv with a zero-length array.
+        // This happens for shaders with no tiledImages (e.g. the grid shader); leaving the GLSL fixed-size
+        // uniform arrays at their defaults is fine since those shaders don't read these uniforms.
+        if (instanceOffsets.length > 0) {
+            gl.uniform1iv(this._instanceOffsets, instanceOffsets);
+        }
+        if (instanceTextureIndexes.length > 0) {
+            gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
+        }
         // todo changes dynamically, but could be stored per tiled image instead of per-shader layer
         gl.uniform3fv(this._shaderVariables, shaderVariables);
 

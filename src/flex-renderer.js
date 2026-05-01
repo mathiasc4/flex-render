@@ -528,6 +528,13 @@
                 const config = shader.getConfig();
                 // Check explicitly type of the config, if updated, recreate shader
                 if (shader.constructor.type() !== config.type) {
+                    const NewShader = $.FlexRenderer.ShaderMediator.getClass(config.type);
+                    if (NewShader) {
+                        // Drop orphan params from the previous shader type before re-instantiation,
+                        // otherwise stale keys (color, threshold, connect, incompatible use_channelN, ...)
+                        // ride along and trigger parseChannel warnings or sample()-time incompatibilities.
+                        this._sanitizeShaderParams(config, NewShader);
+                    }
                     this.createShaderLayer(shaderId, config, false);
                 }
             }
@@ -770,6 +777,96 @@
                 return shader.getConfig();
             }
             return undefined;
+        }
+
+        /**
+         * Change a layer's shader type and trigger a rebuild.
+         * Use this rather than mutating shaderConfig.type directly: it scrubs orphan
+         * params from the previous type before the rebuild loop re-instantiates the shader.
+         *
+         * @param {String} layerId
+         * @param {String} newType  must be a registered shader type ($.FlexRenderer.ShaderMediator)
+         */
+        changeShaderType(layerId, newType) {
+            const id = $.FlexRenderer.sanitizeKey(layerId);
+            const shader = this._shaders[id];
+            if (!shader) {
+                throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
+            }
+
+            const NewShader = $.FlexRenderer.ShaderMediator.getClass(newType);
+            if (!NewShader) {
+                throw new Error(`$.FlexRenderer::changeShaderType: Unknown shader type '${newType}'.`);
+            }
+
+            const config = shader.getConfig();
+            if (config.type === newType) {
+                return;
+            }
+            config.type = newType;
+            config.error = false;
+            this._sanitizeShaderParams(config, NewShader);
+            this.registerProgram(null, this.webglContext.secondPassProgramKey);
+        }
+
+        /**
+         * Drop keys from shaderConfig.params that are not valid for the target shader class.
+         * Called on shader-type-change paths only — orphan keys from the previous shader
+         * (e.g. heatmap's `color`, `threshold`, `connect`) and incompatible per-source
+         * channel values would otherwise cause parseChannel warnings or sample()-time
+         * GLSL incompatibilities once the new shader is constructed.
+         *
+         * @param {ShaderConfig} shaderConfig    config whose .params object will be mutated
+         * @param {Function}     NewShaderClass  the target shader class
+         * @private
+         */
+        _sanitizeShaderParams(shaderConfig, NewShaderClass) {
+            const params = shaderConfig && shaderConfig.params;
+            if (!params || typeof params !== "object") {
+                return;
+            }
+
+            const controlNames = new Set(Object.keys(NewShaderClass.defaultControls || {}));
+
+            let sources = [];
+            try {
+                sources = NewShaderClass.sources() || [];
+            } catch (e) {
+                sources = [];
+            }
+
+            for (const key of Object.keys(params)) {
+                // Keep any use_* key (filters, mode, blend, per-source channel, future additions).
+                // Keep keys that match a control on the new shader.
+                if (!key.startsWith("use_") && !controlNames.has(key)) {
+                    delete params[key];
+                    continue;
+                }
+                // For per-source channel strings, drop if the new source can't accept the length —
+                // letting the constructor regenerate a default beats parseChannel greedy-padding.
+                const channelMatch = /^use_channel(\d+)$/.exec(key);
+                if (!channelMatch) {
+                    continue;
+                }
+                const source = sources[parseInt(channelMatch[1], 10)];
+                if (!source || typeof source.acceptsChannelCount !== "function") {
+                    continue;
+                }
+                const value = params[key];
+                if (typeof value !== "string") {
+                    continue;
+                }
+                // Strip optional "N:" inline base-channel prefix (e.g. "7:r").
+                const inline = /^(\d+):(.*)$/.exec(value);
+                const channel = inline ? inline[2] : value;
+                if (!source.acceptsChannelCount(channel.length)) {
+                    delete params[key];
+                }
+            }
+
+            if (typeof NewShaderClass.normalizeConfig === "function") {
+                NewShaderClass.normalizeConfig(shaderConfig, {});
+            }
         }
 
         /**
