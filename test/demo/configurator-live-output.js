@@ -228,7 +228,7 @@
 
                 await instance.drawer.overrideConfigureAll({
                     [currentShaderId]: config
-                }, [currentShaderId]);
+                }, [currentShaderId], { immediate: true });
 
                 instance.forceRedraw();
             },

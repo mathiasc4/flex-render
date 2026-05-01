@@ -41,8 +41,8 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
 
     static exampleParams() {
         return {
-            color: { type: "colormap", default: "Viridis", steps: 3, mode: "sequential" },
-            threshold: { breaks: [0.33, 0.66] },
+            color: { type: "colormap", default: "Blues", steps: 3, mode: "singlehue" },
+            threshold: { type: "advanced_slider", breaks: [0.33, 0.66] },
             connect: true
         };
     }
@@ -51,6 +51,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         return [{
             name: "colormap_class_count",
             summary: "Color class count must equal threshold.breaks.length + 1. Resize palette and breaks together.",
+            corrective: "Set params.color.steps = params.threshold.breaks.length + 1 (or pass threshold.breaks of length color.steps - 1).",
             controls: ["color", "threshold"],
             validate: (layer) => {
                 const params = (layer && layer.params) || {};

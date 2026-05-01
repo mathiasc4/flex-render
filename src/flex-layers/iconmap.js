@@ -37,7 +37,8 @@
                         valueType: "float",
                         default: {
                             default: [0.25, 0.75],
-                            mask: [1, 1, 1]
+                            mask: [1, 1, 1],
+                            maskOnly: false
                         },
                         required: {
                             type: "advanced_slider",
@@ -76,6 +77,14 @@
                         type: "advanced_slider",
                         default: [0.25, 0.75],
                         mask: [1, 1, 1],
+                        // The slider's `maskOnly=false` mode returns the
+                        // positional ratio of which interval the value fell
+                        // into (bigger / actualLength = i / breakCount), with
+                        // mask[] left alone as the visibility toggle. IconMap
+                        // recovers the integer interval index from that ratio
+                        // in getFragmentShaderExecution; mask is no longer
+                        // overloaded as an index carrier.
+                        maskOnly: false,
                         title: "Breaks",
                         pips: {
                             mode: "positions",
@@ -168,19 +177,15 @@
                         this._refresh();
                         return;
                     }
-                    if (typeof this.threshold.syncMaskToIntervals === "function") {
-                        this.threshold.syncMaskToIntervals((index) => index, true);
-                    }
+                    // Class count unchanged: the breaks uniform alone moved.
+                    // GLSL re-classifies on the next draw via the slider's
+                    // bigger/actualLength positional-ratio path, so we just
+                    // invalidate. No mask coupling to maintain.
                     this.invalidate();
                 }, true);
             }
 
             super.init();
-
-            if (this.threshold && typeof this.threshold.syncMaskToIntervals === "function") {
-                this.threshold.syncMaskToIntervals((index) => index, true);
-                this.invalidate();
-            }
         }
 
         _getClassCount() {
@@ -376,6 +381,15 @@ ${this._buildIconSamplerFunction()}
             const uid = this.uid;
             const thresholdMaskAtCenter = `sample_advanced_slider(centerChan, ${this.threshold.webGLVariableName}_breaks, ${this.threshold.webGLVariableName}_mask, true, ${this.threshold.webGLVariableName}_min)`;
             const thresholdMaskAtPoint = `sample_advanced_slider(chan, ${this.threshold.webGLVariableName}_breaks, ${this.threshold.webGLVariableName}_mask, true, ${this.threshold.webGLVariableName}_min)`;
+            // breakCount = number of breaks = classCount - 1. The slider
+            // returns i/breakCount as a positional ratio (maskOnly=false on
+            // this control), so multiplying by breakCount and rounding
+            // recovers the integer interval index. With one class there are
+            // no breaks; classIndex is statically 0.
+            const breakCount = Math.max(0, this._getClassCount() - 1);
+            const classIndexExpr = breakCount === 0
+                ? "int classIndex = 0;"
+                : `int classIndex = int(floor(classRatio * float(${breakCount}) + 0.5));`;
 
             return `
 float chan = ${this.sampleChannel("v_texture_coords")};
@@ -388,14 +402,14 @@ if (grid.z <= 0.0) {
 vec2 centerUv = iconmap_cellCenterUv_${uid}(v_texture_coords);
 float centerChan = ${this.sampleChannel("centerUv")};
 float centerMask = ${thresholdMaskAtCenter};
-float classValue = ${this.threshold.sample("centerChan", "float")};
+float classRatio = ${this.threshold.sample("centerChan", "float")};
 float visibleCenter = step(0.05, centerMask);
 
 if (visibleCenter <= 0.0) {
     return vec4(0.0);
 }
 
-int classIndex = int(floor(classValue + 0.5));
+${classIndexExpr}
 vec4 icon = iconmap_sampleIcon_${uid}(classIndex, grid.xy);
 float visible = ${this.clip_icons.sample()} ? step(0.05, ${thresholdMaskAtPoint}) : 1.0;
 
