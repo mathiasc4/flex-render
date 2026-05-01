@@ -47,6 +47,7 @@ module.exports = function(grunt) {
             "src/flex-layers/heatmap.js",
             "src/flex-layers/iconmap.js",
             "src/flex-layers/sobel.js",
+            "src/flex-layers/stain-separation.js",
             "src/flex-layers/texture.js",
             "src/flex-layers/threshold.js",
             "src/flex-layers/time-series.js",
