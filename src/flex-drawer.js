@@ -1233,15 +1233,32 @@
             const sources = [];
             const flatShaders = this.renderer.getFlatShaderLayers(shaders, shaderOrder);
 
+            const canvas = this.renderer.canvas;
+            const osdViewport = this.viewer.viewport;
+            const inner = osdViewport && osdViewport._containerInnerSize;
+            const sx = inner && inner.x ? canvas.width / inner.x : 1;
+            const sy = inner && inner.y ? canvas.height / inner.y : 1;
+
             for (const shader of flatShaders) {
                 const config = shader.getConfig();
                 const hasSources = Array.isArray(config.tiledImages) && config.tiledImages.length > 0;
                 const tiledImage = hasSources ? this.viewer.world.getItemAt(config.tiledImages[0]) : null;
 
+                let imageOriginPx = [0, 0];
+                if (tiledImage && osdViewport) {
+                    // image (0,0) → viewport coords → CSS viewer-element pixels (top-down)
+                    // → framebuffer pixels (bottom-up to match gl_FragCoord).
+                    const vp = tiledImage.imageToViewportCoordinates(0, 0, true);
+                    const cssPt = osdViewport.pixelFromPoint(vp, true);
+                    imageOriginPx[0] = cssPt.x * sx;
+                    imageOriginPx[1] = canvas.height - cssPt.y * sy;
+                }
+
                 sources.push({
                     zoom: viewport.zoom,
                     pixelSize: tiledImage ? this._tiledImageViewportToImageZoom(tiledImage, viewport.zoom) : 1,
                     opacity: tiledImage ? tiledImage.getOpacity() : 1,
+                    imageOriginPx,
                     shader: shader,
                 });
             }

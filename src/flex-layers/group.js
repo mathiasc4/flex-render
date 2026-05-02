@@ -218,10 +218,11 @@ new_color = ${shaderLayer.uid}_blend_func(vec4(0.0), new_color);`;
                     execution += `
     instance_id = ${slot};
 ${getStencilPassCode(shaderLayer)}
-    vec3 attrs_${slot} = u_shaderVariables[${slot}];
+    vec4 attrs_${slot} = u_shaderVariables[${slot}];
     opacity = attrs_${slot}.x;
     pixelSize = attrs_${slot}.y;
-    zoom = attrs_${slot}.z;`;
+    imageOriginPx = attrs_${slot}.zw;
+    zoom = u_zoom;`;
 
                     if (shaderLayer._mode !== "clip") {
                         execution += `${getRemainingBlending()}

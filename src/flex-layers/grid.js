@@ -2,17 +2,20 @@
 /**
  * Grid shader.
  *
- * Renders a configurable grid overlay. Takes no texture data — `sources()` is `[]`.
- *
- * Coordinate space: image-source pixels. The grid follows OSD pan/zoom so cells
- * grow on screen as the user zooms in. To anchor the grid to a specific image,
- * pass a single tiledImage index in shaderConfig.tiledImages — the drawer's
- * _collectShaderUniforms then fills `pixelSize` with that image's image-zoom
- * (screen-px per image-px). With no tiledImages, `pixelSize` defaults to 1 and
- * the grid degrades gracefully into screen-pixel space.
+ * Declares one data reference that the configurator auto-binds (via
+ * tiledImages: [0]) so the grid lives in that image's source-pixel space and
+ * pans/zooms with it. The reference texture is not sampled — it is used
+ * purely as a coordinate anchor: the drawer's _collectShaderUniforms fills
+ * `pixelSize` (screen-px per image-px) from the bound tiledImage. If no
+ * binding exists, `pixelSize` defaults to 1 and the grid degrades gracefully
+ * into screen-pixel space.
  *
  * Cell sizes are in image pixels; line width is in screen pixels (so lines
  * stay readable regardless of zoom).
+ *
+ * Optional adaptive_lod toggle holds on-screen cell size in [1×, 2×) of the
+ * configured size by snapping cellX/cellY to powers of two — merge when the
+ * cell would drop below ½ original; subdivide when it would exceed 2×.
  */
 $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
 
@@ -25,7 +28,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     }
 
     static description() {
-        return "Render a configurable grid overlay (no data input).";
+        return "Render a configurable grid overlay anchored to a reference image.";
     }
 
     static intent() {
@@ -33,42 +36,55 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     }
 
     static expects() {
-        return { dataKind: "none", channels: 0 };
+        return { dataKind: "any", channels: 0 };
     }
 
     static exampleParams() {
         /* eslint-disable camelcase */
-        return { color: "#ffffff", cell_x: 256, cell_y: 256, line_width: 1 };
+        return { color: "#ffffff", cell_x: 256, cell_y: 256, line_width: 1, adaptive_lod: false };
         /* eslint-enable camelcase */
     }
 
     static docs() {
         return {
-            summary: "Configurable grid overlay; no texture sampling.",
-            description: "Draws an axis-aligned grid in image-source pixel coordinates. Cell sizes are in image pixels and follow OSD pan/zoom. Line width is in screen pixels so lines stay readable. Optionally pass a single tiledImage index in tiledImages to anchor coordinates to that image; otherwise the grid lives in screen pixels.",
+            summary: "Configurable grid overlay anchored to a reference image (texture not sampled).",
+            description: "Draws an axis-aligned grid in image-source pixel coordinates. Declares one data reference used purely as a coordinate anchor — the configurator auto-binds it so the grid pans/zooms with the image. Cell sizes are in image pixels; line width is in screen pixels so lines stay readable. With no binding, the grid degrades to screen-pixel space (pixelSize = 1).",
             kind: "shader",
-            inputs: [],
+            inputs: [{
+                index: 0,
+                acceptedChannelCounts: "any",
+                description: "Reference image — used only as a coordinate anchor (not sampled)."
+            }],
             controls: [
                 { name: "color", ui: "color", valueType: "vec3", default: "#ffffff" },
                 { name: "cell_x", ui: "range_input", valueType: "float", default: 256, min: 1, max: 8192, step: 1 },
                 { name: "cell_y", ui: "range_input", valueType: "float", default: 256, min: 1, max: 8192, step: 1 },
-                { name: "line_width", ui: "range_input", valueType: "float", default: 1, min: 0.5, max: 10, step: 0.5 }
+                { name: "line_width", ui: "range_input", valueType: "float", default: 1, min: 0.5, max: 10, step: 0.5 },
+                { name: "adaptive_lod", ui: "bool", valueType: "bool", default: false }
             ],
             notes: [
-                "tiledImages may contain at most one entry; it is used as a coordinate reference, not a data source.",
-                "With empty tiledImages, the grid is in screen pixels (pixelSize = 1)."
+                "The reference texture is bound for coordinate anchoring only; pixels are never sampled.",
+                "With no binding, the grid renders in screen pixels (pixelSize = 1).",
+                "adaptive_lod snaps cell size to powers of two so the on-screen cell stays in [1×, 2×) of the configured size."
             ]
         };
     }
 
     static sources() {
-        return [];
+        return [{
+            acceptsChannelCount: () => true,
+            description: "Reference image — used only as a coordinate anchor (not sampled)."
+        }];
     }
 
     static get defaultControls() {
         return {
+            use_channel0: {  // eslint-disable-line camelcase
+                default: "rgba",
+                accepts: (type, instance) => true,
+            },
             color: {
-                default: {type: "color", default: "#ffffff", title: "Color: "},
+                default: {type: "color", default: "#ff0000", title: "Color: "},
                 accepts: (type, instance) => type === "vec3"
             },
             cell_x: {  // eslint-disable-line camelcase
@@ -82,6 +98,10 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             line_width: {  // eslint-disable-line camelcase
                 default: {type: "range_input", default: 1, min: 0.5, max: 10, step: 0.5, title: "Line width (screen px): "},
                 accepts: (type, instance) => type === "float"
+            },
+            adaptive_lod: {  // eslint-disable-line camelcase
+                default: {type: "bool", default: true, title: "Adaptive LOD: "},
+                accepts: (type, instance) => type === "bool"
             }
         };
     }
@@ -99,7 +119,16 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     float cellX = max(mix(${f(cx.min)}, ${f(cx.max)}, ${this.cell_x.sample()}), 1.0);
     float cellY = max(mix(${f(cy.min)}, ${f(cy.max)}, ${this.cell_y.sample()}), 1.0);
     float scale = max(pixelSize, 1e-6);
-    vec2 imgCoord = gl_FragCoord.xy / scale;
+
+    // Symmetric LOD: snap cell size to a power of two so on-screen cell stays
+    // in [1×, 2×) of the configured size. pixelSize<0.5 → merge; pixelSize≥2 → subdivide.
+    if (${this.adaptive_lod.sample()}) {
+        float lodMult = exp2(-floor(log2(scale)));
+        cellX *= lodMult;
+        cellY *= lodMult;
+    }
+
+    vec2 imgCoord = (gl_FragCoord.xy - imageOriginPx) / scale;
 
     float modX = mod(imgCoord.x, cellX);
     float modY = mod(imgCoord.y, cellY);

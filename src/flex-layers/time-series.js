@@ -65,6 +65,17 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         };
     }
 
+    static _readWrapperParam(config, name, fallback = undefined) {
+        const params = (config && config.params) || {};
+        if (params[name] !== undefined) {
+            return params[name];
+        }
+        if (config && config[name] !== undefined) {
+            return config[name];
+        }
+        return fallback;
+    }
+
     static get defaultControls() {
         return {
             timeline: {
@@ -77,7 +88,49 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     }
 
     static normalizeConfig(config, context = {}) {
-        if (!config || typeof config !== "object" || !Array.isArray(config.series)) {
+        if (!config || typeof config !== "object") {
+            return config;
+        }
+
+        const params = config.params || (config.params = {});
+        if (config.series !== undefined && params.series === undefined) {
+            params.series = config.series;
+        }
+        if (config.seriesRenderer !== undefined && params.seriesRenderer === undefined) {
+            params.seriesRenderer = config.seriesRenderer;
+        }
+
+        const series = Array.isArray(params.series) ? params.series : [];
+        const defs = this.defaultControls || {};
+        const required = defs.timeline && defs.timeline.required ? $.extend(true, {}, defs.timeline.required) : {};
+        const fallback = defs.timeline && defs.timeline.default ? $.extend(true, {}, defs.timeline.default) : {};
+        const timeline = $.extend(true, {}, fallback, required, params.timeline || {});
+
+        timeline.type = "range_input";
+
+        const step = Number(timeline.step);
+        timeline.step = Number.isFinite(step) && step > 0 ? step : 1;
+
+        const min = Number(timeline.min);
+        timeline.min = Number.isFinite(min) ? min : 0;
+
+        if ((timeline.min % timeline.step) !== 0) {
+            timeline.min = 0;
+        }
+
+        const maxIndex = Math.max(0, series.length - 1);
+        timeline.max = timeline.min + maxIndex * timeline.step;
+
+        const defaultValue = Number(timeline.default);
+        if (!Number.isFinite(defaultValue) || ((defaultValue - timeline.min) % timeline.step) !== 0) {
+            timeline.default = timeline.min;
+        } else {
+            timeline.default = Math.max(timeline.min, Math.min(timeline.max, defaultValue));
+        }
+
+        params.timeline = timeline;
+
+        if (!Array.isArray(params.series)) {
             return config;
         }
 
@@ -89,7 +142,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             return config;
         }
 
-        config.series = config.series.map((entry, index) => expand(entry, {
+        params.series = params.series.map((entry, index) => expand(entry, {
             shaderType: this.type(),
             param: "series",
             entryIndex: index,
@@ -107,55 +160,34 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         }];
     }
 
-    _normalizeTimelineConfig(seriesLength) {
-        const defs = this.constructor.defaultControls || {};
-        const config = this.getConfig();
-        const params = config.params || (config.params = {});
-        const required = defs.timeline && defs.timeline.required ? $.extend(true, {}, defs.timeline.required) : {};
-        const fallback = defs.timeline && defs.timeline.default ? $.extend(true, {}, defs.timeline.default) : {};
-        let timeline = $.extend(true, {}, fallback, required, params.timeline || {});
-
-        if (!timeline.type) {
-            timeline.type = "range_input";
-        }
-
-        const step = Number(timeline.step);
-        timeline.step = Number.isFinite(step) && step > 0 ? step : 1;
-
-        const min = Number(timeline.min);
-        timeline.min = Number.isFinite(min) ? min : 0;
-
-        if ((timeline.min % timeline.step) !== 0) {
-            timeline.min = 0;
-        }
-
-        const maxIndex = Math.max(0, seriesLength - 1);
-        timeline.max = timeline.min + maxIndex * timeline.step;
-
-        const defaultValue = Number(timeline.default);
-        if (!Number.isFinite(defaultValue) || ((defaultValue - timeline.min) % timeline.step) !== 0) {
-            timeline.default = timeline.min;
-        } else {
-            timeline.default = Math.max(timeline.min, Math.min(timeline.max, defaultValue));
-        }
-
-        params.timeline = timeline;
-        return timeline;
+    getControlDefinitions() {
+        const defs = $.extend(true, {}, this.constructor.defaultControls);
+        const timeline = defs.timeline || (defs.timeline = {});
+        const config = this.getConfig() || {};
+        const params = config.params || {};
+        timeline.default = $.extend(true, {}, timeline.default || {}, params.timeline || {});
+        timeline.required = $.extend(true, {}, timeline.required || {}, { type: "range_input" });
+        return defs;
     }
 
     _getActiveSeriesOffset() {
-        if (!this.timeline) {
-            return 0;
+        const config = this.getConfig ? (this.getConfig() || {}) : (this.__shaderConfig || {});
+        const timelineConfig = (config.params && config.params.timeline) || {};
+
+        const min = Number(timelineConfig.min) || 0;
+        const step = Number(timelineConfig.step) || 1;
+
+        let encoded;
+        if (this.timeline && this.timeline.encoded !== undefined) {
+            encoded = Number.parseInt(this.timeline.encoded, 10);
+        } else {
+            encoded = Number.parseInt(timelineConfig.default, 10);
         }
 
-        const params = this.timeline.params || {};
-        const min = Number(params.min) || 0;
-        const step = Number(params.step) || 1;
-        const encoded = Number.parseInt(this.timeline.encodedValue, 10);
         if (!Number.isFinite(encoded)) {
-            const fallback = Number(params.default);
-            return Number.isFinite(fallback) ? Math.max(0, Math.round((fallback - min) / step)) : 0;
+            encoded = min;
         }
+
         return Math.max(0, Math.round((encoded - min) / step));
     }
 
@@ -169,28 +201,58 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
 
     _getDelegateShaderConfig(activeEntry) {
         const config = this.getConfig();
-        const activeWorldIndex = Number.isInteger(activeEntry) ? activeEntry : null;
+        const activeWorldIndex = Number.isInteger(activeEntry)
+            ? activeEntry
+            : (Number.isInteger(activeEntry && activeEntry.worldIndex) ? activeEntry.worldIndex : null);
+        const delegateParams = $.extend(true, {}, (config && config.params) || {});
+        delete delegateParams.seriesRenderer;
+        delete delegateParams.series;
+        delete delegateParams.timeline;
 
         return {
             id: `${this.id}_delegate`,
             name: config.name || "Time series delegate",
-            type: config.seriesRenderer || "identity",
+            type: this.constructor._readWrapperParam(config, "seriesRenderer", "identity"),
             visible: 1,
             fixed: false,
             tiledImages: activeWorldIndex === null ? [] : [activeWorldIndex],
-            params: config.params || {},
+            params: delegateParams,
             cache: config.cache || {}
         };
     }
 
     construct() {
         const config = this.getConfig();
-        const series = (config && config.series) || [];
-        const activeEntry = this._getActiveSeriesEntry(series);
+        const series = this.constructor._readWrapperParam(config, "series", []) || [];
+        const timeline = (config.params && config.params.timeline) || {};
+        const min = Number(timeline.min) || 0;
+        const step = Number(timeline.step) || 1;
+        const defaultValue = Number(timeline.default);
+        const initialOffset = Number.isFinite(defaultValue) ? Math.max(0, Math.round((defaultValue - min) / step)) : 0;
+        const activeEntry = series.length ? series[Math.max(0, Math.min(series.length - 1, initialOffset))] : null;
 
-        this._normalizeTimelineConfig(series.length);
+        super.construct();
+
+        timeline.default = this.timeline.encoded || this.timeline.raw || config.params.timeline.default;
 
         const delegateConfig = this._getDelegateShaderConfig(activeEntry);
+
+        // preserve a live source binding
+        // across re-constructs. _refreshShadersForTiledImage (~line 11673) re-runs
+        // construct() when a newly-opened series frame finishes loading. By that
+        // point requestSourceBinding's mutation has already written
+        // config.tiledImages[0] = newIdx; re-deriving from series[initialOffset]
+        // would clobber it back to the original active entry, so first visits to
+        // non-active frames render the active frame's data.
+        const liveTiledImages = config.tiledImages;
+        if (
+            Array.isArray(liveTiledImages) &&
+            liveTiledImages.length > 0 &&
+            liveTiledImages.every(w => Number.isInteger(w) && w >= 0)
+        ) {
+            delegateConfig.tiledImages = liveTiledImages;
+        }
+
         const DelegateShader = $.FlexRenderer.ShaderMediator.getClass(delegateConfig.type);
         if (!DelegateShader) {
             throw new Error(`time-series: unknown child shader type '${delegateConfig.type}'.`);
@@ -198,8 +260,6 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         if (delegateConfig.type === this.constructor.type()) {
             throw new Error("time-series cannot recursively render itself.");
         }
-
-        super.construct();
 
         this._renderer = new DelegateShader(`${this.id}_delegate`, {
             shaderConfig: delegateConfig,
@@ -230,22 +290,27 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         super.init();
         this._renderer.init();
 
-        let lastOffset = this._getActiveSeriesOffset();
-        this.timeline.on("default", () => {
-            const nextOffset = this._getActiveSeriesOffset();
+        // time-series scrub — was reading config.series (raw,
+        // un-expanded by the data-source pipeline) and passing a raw integer to
+        // requestSourceBinding, which routed to the integer-rebind shortcut and
+        // bypassed the xOpat shaderSourceResolver. Drop lastOffset short-circuit
+        // and delegate dedup to the resolver's cache-hit branch (it already
+        // handles same-loadKey rebinds with all rebuild flags false).
+        this.timeline.on("default", () => this.scrubTo(this._getActiveSeriesOffset()));
+    }
 
-            if (nextOffset !== lastOffset) {
-                lastOffset = nextOffset;
-                this.requestSourceBinding(0, this._getActiveSeriesEntry(), {
-                    reason: "time-series-source-change",
-                    refreshShader: true,
-                    rebuildProgram: true,
-                    rebuildDrawer: true,
-                    resetItems: true
-                });
-                return;
-            }
-            this.invalidate();
+    scrubTo(offset) {
+        const series = this.constructor._readWrapperParam(this.getConfig(), "series", []);
+        if (!Array.isArray(series) || series.length === 0) {
+            return;
+        }
+        const idx = Math.max(0, Math.min(series.length - 1, Number(offset) | 0));
+        this.requestSourceBinding(0, series[idx], {
+            reason: "time-series-source-change",
+            refreshShader: false,
+            rebuildProgram: false,
+            rebuildDrawer: false,
+            resetItems: false
         });
     }
 
