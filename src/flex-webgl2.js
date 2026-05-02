@@ -460,8 +460,12 @@ uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
 // Stores texture indexes for each shader, beginning at index obtained from u_instanceOffsets
 uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
 
-// Carries shader global attributes (opacity, pixelSize, zoom)
-uniform vec3 u_shaderVariables[${this.textureMappingsUniformSize}];
+// Carries shader global attributes (opacity, pixelSize, imageOriginPx.xy)
+uniform vec4 u_shaderVariables[${this.textureMappingsUniformSize}];
+
+// Viewport zoom — identical across all shaders this frame, so kept as a scalar
+// instead of duplicating per slot in u_shaderVariables.
+uniform float u_zoom;
 
 // For each tiled image, we store (base texture offset, pack count, channel count)
 uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
@@ -509,6 +513,7 @@ bool stencilPasses;
 float opacity;
 float pixelSize;
 float zoom;
+vec2 imageOriginPx;
 
 
 // FUNCTION DEFINITIONS
@@ -672,7 +677,7 @@ ${execution}
     vec4 overall_color = intermediate_color;
     vec4 clip_color = vec4(.0);
 
-    vec3 attrs;
+    vec4 attrs;
 `;
         let customBlendFunctions = "";
 
@@ -759,7 +764,8 @@ ${getStencilPassCode(shaderLayer)}
     attrs = u_shaderVariables[${slot}];
     opacity = attrs.x;
     pixelSize = attrs.y;
-    zoom = attrs.z;
+    imageOriginPx = attrs.zw;
+    zoom = u_zoom;
 `;
 
             if (shaderLayer._mode !== "clip") {
@@ -829,6 +835,7 @@ ${getStencilPassCode(shaderLayer)}
         this._instanceOffsets = gl.getUniformLocation(program, "u_instanceOffsets[0]");
         this._instanceTextureIndexes = gl.getUniformLocation(program, "u_instanceTextureIndexes[0]");
         this._shaderVariables = gl.getUniformLocation(program, "u_shaderVariables");
+        this._zoomLoc = gl.getUniformLocation(program, "u_zoom");
 
         this._texturesLocation = gl.getUniformLocation(program, "u_inputTextures");
         this._stencilLocation = gl.getUniformLocation(program, "u_stencilTextures");
@@ -876,7 +883,8 @@ ${getStencilPassCode(shaderLayer)}
         for (const renderInfo of renderArray) {
             renderInfo.shader.glDrawing(this.webGLProgram, gl);
 
-            shaderVariables.push(renderInfo.opacity, renderInfo.pixelSize, renderInfo.zoom);
+            const origin = renderInfo.imageOriginPx || [0, 0];
+            shaderVariables.push(renderInfo.opacity, renderInfo.pixelSize, origin[0], origin[1]);
 
             instanceOffsets.push(instanceTextureIndexes.length);
             instanceTextureIndexes.push(...renderInfo.shader.getConfig().tiledImages);
@@ -893,7 +901,8 @@ ${getStencilPassCode(shaderLayer)}
             gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
         }
         // todo changes dynamically, but could be stored per tiled image instead of per-shader layer
-        gl.uniform3fv(this._shaderVariables, shaderVariables);
+        gl.uniform4fv(this._shaderVariables, shaderVariables);
+        gl.uniform1f(this._zoomLoc, renderArray.length > 0 ? renderArray[0].zoom : 1);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, renderOutput.texture);
