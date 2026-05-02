@@ -82,6 +82,11 @@ function glslMat3(rowMajor) {
         `${f(m[0][2])}, ${f(m[1][2])}, ${f(m[2][2])})`;
 }
 
+function glslVec3(v) {
+    const f = (x) => Number(x).toFixed(6);
+    return `vec3(${f(v[0])}, ${f(v[1])}, ${f(v[2])})`;
+}
+
 // preset id -> { matrix rows (input order), GLSL inverse literal, mapping
 // from stain enum to row index, list of stains the preset exposes }.
 // Row order in each `rows` array fixes the index of each stain in `stains`
@@ -98,6 +103,8 @@ const PRESETS = (() => {
         return {
             id,
             matrixInvGlsl: glslMat3(inv),
+            // Per-row normalized stain RGB-OD vector, used for natural reconstruction.
+            stainVecGlsl: rows.map(glslVec3),
             stainToRow,
             stainOrder
         };
@@ -136,6 +143,12 @@ function buildHelpersGlsl(uid) {
         return `    if (preset == ${presetIdx}) {\n${checks}\n        return -1;\n    }`;
     }).join("\n");
 
+    const vectorBranches = PRESET_INDEX.map((id, presetIdx) => {
+        const vecs = PRESETS[id].stainVecGlsl;
+        const checks = vecs.map((v, row) => `        if (row == ${row}) return ${v};`).join("\n");
+        return `    if (preset == ${presetIdx}) {\n${checks}\n    }`;
+    }).join("\n");
+
     return `
 mat3 stain_matrix_inv_${uid}(int preset) {
 ${matrixBranches}
@@ -145,6 +158,11 @@ ${matrixBranches}
 int stain_row_${uid}(int preset, int stain) {
 ${rowBranches}
     return -1;
+}
+
+vec3 stain_vector_${uid}(int preset, int row) {
+${vectorBranches}
+    return vec3(0.0);
 }
 
 float stain_pick_${uid}(vec3 stains, int row) {
@@ -181,6 +199,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         return {
             preset: 0,
             stain: 0,
+            style: 0,
             tintColor: "#5b3ea4",
             intensity: 1.0
         };
@@ -189,7 +208,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
     static docs() {
         return {
             summary: "Brightfield stain separation via Ruifrok–Johnston color deconvolution.",
-            description: "Reads RGB, converts to optical density, multiplies by the inverse stain matrix of the chosen preset, and renders one stain channel as either a tinted display or raw concentration. Stain options not present in the chosen preset render as transparent.",
+            description: "Reads RGB, converts to optical density, multiplies by the inverse stain matrix of the chosen preset, and renders one stain channel. The default Natural style physically reconstructs what the slide would look like with only the chosen stain present (opaque, calibrated colors); Tinted multiplies a custom color by the concentration; Grayscale shows the raw concentration. Stain options not present in the chosen preset render as transparent.",
             kind: "shader",
             inputs: [{
                 index: 0,
@@ -212,9 +231,15 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
                     default: 0,
                     description: "Which stain to display: 0=Hematoxylin, 1=Eosin, 2=DAB, 3=Methyl Green, 4=Residual. Stains absent from the chosen preset render transparent."
                 },
+                {
+                    name: "style",
+                    ui: "select",
+                    valueType: "int",
+                    default: 0,
+                    description: "Display style: 0=Natural (physically reconstructed single-stain slide, opaque), 1=Tinted (stain concentration multiplied by tintColor, alpha = concentration), 2=Grayscale (concentration as gray, alpha = concentration)."
+                },
                 { name: "tintColor", ui: "color", valueType: "vec3", default: "#5b3ea4" },
-                { name: "intensity", ui: "range_input", valueType: "float", default: 1.0, min: 0, max: 3, step: 0.05 },
-                { name: "useRaw", ui: "bool", valueType: "bool", default: false }
+                { name: "intensity", ui: "range_input", valueType: "float", default: 1.0, min: 0, max: 10, step: 0.1 }
             ]
         };
     }
@@ -260,17 +285,26 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
                 },
                 accepts: (type) => type === "int"
             },
+            style: {
+                default: {
+                    type: "select",
+                    default: 0,
+                    title: "Style",
+                    options: [
+                        { value: 0, label: "Natural" },
+                        { value: 1, label: "Tinted" },
+                        { value: 2, label: "Grayscale" }
+                    ]
+                },
+                accepts: (type) => type === "int"
+            },
             tintColor: {
                 default: { type: "color", default: "#5b3ea4", title: "Tint" },
                 accepts: (type) => type === "vec3"
             },
             intensity: {
-                default: { type: "range_input", default: 1.0, min: 0, max: 3, step: 0.05, title: "Intensity" },
+                default: { type: "range_input", default: 1.0, min: 0, max: 10, step: 0.1, title: "Intensity" },
                 accepts: (type) => type === "float"
-            },
-            useRaw: {
-                default: { type: "bool", default: false, title: "Raw concentration" },
-                accepts: (type) => type === "bool"
             }
         };
     }
@@ -299,10 +333,24 @@ ${buildHelpersGlsl(this.uid)}
     mat3 Q = stain_matrix_inv_${uid}(preset);
     vec3 stains = od * Q;
     float v = max(stain_pick_${uid}(stains, row), 0.0);
-    float t = clamp(${this.filter(`v * ${this.intensity.sample()}`)}, 0.0, 1.0);
+    float scaled = ${this.filter(`v * ${this.intensity.sample()}`)};
 
-    vec3 outRgb = ${this.useRaw.sample()} ? vec3(t) : (t * ${this.tintColor.sample()});
-    return vec4(outRgb, t);
+    int style = int(${this.style.sample()});
+    if (style == 0) {
+        // Natural reconstruction: rebuild what the slide would look like with
+        // only this stain present. exp(-c*s*ln10) inverts the OD formulation
+        // back to RGB in [0,1]. Output is fully opaque so contrast is preserved
+        // against any background.
+        vec3 stainVec = stain_vector_${uid}(preset, row);
+        vec3 reconRgb = exp(-scaled * stainVec * log(10.0));
+        return vec4(clamp(reconRgb, 0.0, 1.0), ${this.opacity.sample()});
+    }
+
+    float t = clamp(scaled, 0.0, 1.0);
+    if (style == 2) {
+        return vec4(vec3(t), t);
+    }
+    return vec4(t * ${this.tintColor.sample()}, t);
 `;
     }
 });
