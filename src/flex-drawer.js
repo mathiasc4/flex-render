@@ -1055,8 +1055,12 @@
          * @memberof OpenSeadragon.FlexDrawer#
          */
         draw(tiledImages, view = undefined) {
+            if (!tiledImages || tiledImages.length === 0) {
+                this.renderer.clear();
+                return;
+            }
+
             if (!this._drawReady && !this._refreshDrawReadyState()) {
-                this.viewer.forceRedraw();
                 return;
             }
 
@@ -1074,10 +1078,6 @@
 
             const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
             const secondPass = this._collectSecondPassPayload(view);
-
-            if (!secondPass.length) {
-                this.viewer.forceRedraw();
-            }
 
             this.renderer.render({
                 firstPass: firstPass,
