@@ -1,198 +1,51 @@
-const sources = {
-    "rainbow": "../data/testpattern.dzi",
-    "leaves": "../data/iiif_2_0_sizes/info.json",
-    "bblue": {
-        type: "image",
-        url: "../data/BBlue.png",
+const IMAGE_SOURCES = [
+    {
+        key: "rainbow",
+        label: "Rainbow Grid",
+        tileSource: "../data/testpattern.dzi",
     },
-    "duomo": "https://openseadragon.github.io/example-images/duomo/duomo.dzi",
-    "japan": "http://localhost:8888/data/v3.json"
-};
+    {
+        key: "leaves",
+        label: "Leaves",
+        tileSource: "../data/iiif_2_0_sizes/info.json",
+    },
+    {
+        key: "bblue",
+        label: "Blue B",
+        tileSource: {
+            type: "image",
+            url: "../data/BBlue.png",
+        },
+    },
+    {
+        key: "duomo",
+        label: "Duomo",
+        tileSource: "https://openseadragon.github.io/example-images/duomo/duomo.dzi",
+    },
+    {
+        key: "a",
+        label: "A",
+        tileSource: {
+            type: "image",
+            url: "../data/A.png",
+        },
+    },
+    {
+        key: "book",
+        label: "Book",
+        tileSource: "../data/iiif_1_0_files/info.json",
+    },
+];
 
-const labels = {
-    rainbow: "Rainbow Grid",
-    leaves: "Leaves",
-    bblue: "Blue B",
-    duomo: "Duomo",
-    japan: "Japan",
-};
 
 const drawer = "flex-renderer";
 const drawerOptions = {
     "flex-renderer": {
-        debug: true,
+        debug: false,
         webGLPreferredVersion: "2.0",
-        htmlHandler: (shaderLayer, shaderConfig, htmlContext = {}) => {
-            const container = document.getElementById('my-shader-ui-container');
-
-            // Be careful, shaderLayer.id is changing. It should not be used as a key to identify the layer between
-            // different programs such as in this case, but it's okay to use it when referencing concrete running layer.
-
-            // Create custom layer controls - you can add more HTML controls allowing users to
-            // control gamma, blending, or even change the shader type. Here we just show shader layer name + checkbox representing
-            // its visibility (but we do not manage change event and thus users cannot change it). In case of error, we show
-            // the error message below the checkbox.
-            // The compulsory step is to include `shaderLayer.htmlControls()` output.
-
-            if (!container || !shaderLayer) {
-                return "";
-            }
-
-            const renderer = shaderLayer.backend && shaderLayer.backend.renderer;
-            const drawer = renderer && renderer.drawer ? renderer.drawer : null;
-
-            const depth = Number.isFinite(htmlContext.depth) ? htmlContext.depth : 0;
-            const isGroupChild = !!htmlContext.isGroupChild;
-            const isGroup = shaderConfig.type === "group";
-            const parentName = htmlContext.parentConfig ?
-                (htmlContext.parentConfig.name || htmlContext.parentConfig.type || htmlContext.parentShaderId) :
-                null;
-
-            const pathString = htmlContext.pathString || shaderLayer.id;
-            const pathClass = pathString.replace(/[^0-9a-zA-Z_-]/g, '_');
-
-            const wrapper = document.createElement("div");
-            wrapper.className =
-                `shader-control-card shader-control-card--depth-${depth} ` +
-                `${isGroupChild ? 'shader-control-card--group-child' : 'shader-control-card--top'} ` +
-                `${isGroup ? 'shader-control-card--group' : ''} shader-control-card--${pathClass}`;
-            wrapper.dataset.shaderId = shaderLayer.id;
-            wrapper.dataset.shaderPath = pathString;
-            wrapper.dataset.shaderDepth = String(depth);
-            wrapper.dataset.groupChild = isGroupChild ? "true" : "false";
-
-            wrapper.style.marginLeft = `${depth * 18}px`;
-            wrapper.style.marginBottom = "10px";
-            wrapper.style.padding = "10px 12px";
-            wrapper.style.border = "1px solid #d1d5db";
-            wrapper.style.borderLeft = isGroupChild ? "4px solid #9ca3af" : "1px solid #d1d5db";
-            wrapper.style.borderRadius = "8px";
-            wrapper.style.background = isGroupChild ? "#fafafa" : "#f3f3f3";
-
-            const header = document.createElement("div");
-            header.style.display = "flex";
-            header.style.alignItems = "flex-start";
-            header.style.justifyContent = "space-between";
-            header.style.gap = "10px";
-            header.style.marginBottom = "6px";
-
-            const titleWrap = document.createElement("div");
-            titleWrap.style.minWidth = "0";
-
-            const label = document.createElement("label");
-            label.style.display = "flex";
-            label.style.alignItems = "center";
-            label.style.gap = "6px";
-            label.style.fontWeight = "600";
-            label.style.margin = "0";
-
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.checked = !!shaderConfig.visible;
-
-            const title = document.createElement("span");
-            title.textContent = shaderConfig.name || shaderConfig.type;
-
-            label.appendChild(checkbox);
-            label.appendChild(title);
-            titleWrap.appendChild(label);
-
-            if (isGroupChild && parentName) {
-                const parentLabel = document.createElement("div");
-                parentLabel.style.fontSize = "12px";
-                parentLabel.style.color = "#6b7280";
-                parentLabel.style.marginTop = "2px";
-                parentLabel.textContent = `In group: ${parentName}`;
-                titleWrap.appendChild(parentLabel);
-            }
-
-            const badges = document.createElement("div");
-            badges.style.display = "flex";
-            badges.style.gap = "6px";
-            badges.style.flexWrap = "wrap";
-            badges.style.justifyContent = "flex-end";
-
-            if (isGroup) {
-                const groupBadge = document.createElement("span");
-                groupBadge.textContent = "Group";
-                groupBadge.style.fontSize = "11px";
-                groupBadge.style.padding = "2px 6px";
-                groupBadge.style.border = "1px solid #9ca3af";
-                groupBadge.style.borderRadius = "999px";
-                groupBadge.style.background = "#ffffff";
-                groupBadge.style.color = "#374151";
-                groupBadge.style.whiteSpace = "nowrap";
-                badges.appendChild(groupBadge);
-            }
-
-            if (isGroupChild) {
-                const childBadge = document.createElement("span");
-                childBadge.textContent = `Level ${depth}`;
-                childBadge.style.fontSize = "11px";
-                childBadge.style.padding = "2px 6px";
-                childBadge.style.borderRadius = "999px";
-                childBadge.style.background = "#e5e7eb";
-                childBadge.style.color = "#374151";
-                childBadge.style.whiteSpace = "nowrap";
-                badges.appendChild(childBadge);
-            }
-
-            header.appendChild(titleWrap);
-            header.appendChild(badges);
-            wrapper.appendChild(header);
-
-            if (shaderLayer.error) {
-                const errorNode = document.createElement("div");
-                errorNode.style.marginBottom = "8px";
-                errorNode.style.color = "#b91c1c";
-                errorNode.style.fontSize = "12px";
-                errorNode.textContent = shaderLayer.error;
-                wrapper.appendChild(errorNode);
-            }
-
-            const controls = document.createElement("div");
-            controls.className = "shader-control-card__controls";
-            controls.innerHTML = shaderLayer.htmlControls();
-            wrapper.appendChild(controls);
-
-            checkbox.addEventListener("change", () => {
-                const config = shaderLayer.getConfig ? shaderLayer.getConfig() : shaderConfig;
-                const visible = checkbox.checked ? 1 : 0;
-
-                config.visible = visible;
-                shaderConfig.visible = visible;
-
-                if (renderer && typeof renderer.notifyVisualizationChanged === "function") {
-                    renderer.notifyVisualizationChanged({
-                        reason: "visibility-change",
-                        shaderId: shaderLayer.id,
-                        shaderType: shaderLayer.constructor.type(),
-                        visible: visible
-                    });
-                }
-
-                if (drawer && typeof drawer.rebuild === "function") {
-                    drawer.rebuild();
-                    return;
-                }
-
-                if (typeof shaderLayer._rebuild === "function") {
-                    shaderLayer._rebuild();
-                }
-
-                if (typeof shaderLayer.invalidate === "function") {
-                    shaderLayer.invalidate();
-                }
-            });
-
-            container.appendChild(wrapper);
-            return "";
-        },
-        htmlReset: () => {
-            const container = document.getElementById('my-shader-ui-container');
-            container.innerHTML = '';
-        }
-    }
+        htmlHandler: renderShaderLayerControls,
+        htmlReset: resetShaderLayerControls,
+    },
 };
 
 const viewportMargins = {
@@ -202,9 +55,9 @@ const viewportMargins = {
     bottom: 50,
 };
 
-$("#title-w").html("FlexRenderer");
+$("#title-w").html("OpenSeadragon viewer using FlexRenderer");
 
-let viewer = window.viewer = OpenSeadragon({
+const viewer = window.viewer = OpenSeadragon({
     id: "drawer-canvas",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
@@ -212,7 +65,6 @@ let viewer = window.viewer = OpenSeadragon({
     smoothTileEdgesMinZoom: 1.1,
     crossOriginPolicy: "Anonymous",
     ajaxWithCredentials: false,
-    // maxImageCacheCount: 30,
     drawer: drawer,
     drawerOptions: drawerOptions,
     blendTime: 0,
@@ -220,25 +72,18 @@ let viewer = window.viewer = OpenSeadragon({
     viewportMargins: viewportMargins,
 });
 
-viewer.addTiledImage({
-    tileSource: sources["rainbow"],
-    index: 0,
+
+const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
+    index,
+    label: source.label,
+}));
+
+IMAGE_SOURCES.forEach((source) => {
+    viewer.addTiledImage({
+        tileSource: source.tileSource,
+    });
 });
 
-viewer.addTiledImage({
-    tileSource: sources["leaves"],
-    index: 1,
-});
-
-viewer.addTiledImage({
-    tileSource: sources["bblue"],
-    index: 2,
-});
-
-viewer.addTiledImage({
-    tileSource: sources["duomo"],
-    index: 3,
-});
 
 let shaderLayerConfig = {
     "rainbow": {
@@ -246,13 +91,18 @@ let shaderLayerConfig = {
         "type": "identity",
         "tiledImages": [0],
     },
-    "g": {
+    "duomo": {
+        "name": "Duomo",
+        "type": "identity",
+        "tiledImages": [3],
+    },
+    "group": {
         "name": "Group Layer",
         "type": "group",
         "shaders": {
             "leaves": {
                 "name": "Leaves",
-                "type": "heatmap",
+                "type": "identity",
                 "tiledImages": [1],
             },
             "bblue": {
@@ -260,240 +110,604 @@ let shaderLayerConfig = {
                 "type": "identity",
                 "tiledImages": [2],
             },
+            "nested": {
+                "name": "Nested Group Layer",
+                "type": "group",
+                "shaders": {
+                    "book": {
+                        "name": "Book",
+                        "type": "identity",
+                        "tiledImages": [5],
+                    },
+                    "a": {
+                        "name": "A",
+                        "type": "identity",
+                        "tiledImages": [4],
+                    }
+                }
+            }
         },
-    },
-    "duomo": {
-        "name": "Duomo",
-        "type": "identity",
-        "tiledImages": [3],
     },
 };
 
-// shaderLayerConfig = {
-//     "rainbow": {
-//         "type": "identity",
-//         "tiledImages": [0],
-//     },
-//     "leaves": {
-//         "type": "identity",
-//         "tiledImages": [1],
-//     },
-//     "bblue": {
-//         "type": "identity",
-//         "tiledImages": [2],
-//     },
-// };
-
-viewer.drawer.overrideConfigureAll(shaderLayerConfig);
+let shaderLayerOrder = Object.keys(shaderLayerConfig);
 
 
-// $('#image-picker').sortable({
-//     update: function() {
-//         let shaderLayerOrder = $('#image-picker input.toggle:checked').map((_, e) => $(e).data().image).get();
-//         viewer.drawer.overrideConfigureAll(shaderLayerConfig, shaderLayerOrder);
-//     }
-// });
+function renderShaderLayerControls(shaderLayer, shaderConfig, htmlContext = {}) {
+    const container = document.getElementById("my-shader-ui-container");
 
-// // build select with name attribute and option map {optionValue: label} data
-// function getSelectForValues(name, selectedOption, optionMap) {
-//     return `
-// <select name="${name}" data-image="" data-field="${name}">
-//   ${Object.entries(optionMap).map(([k, v]) => {
-//       const selected = selectedOption === k ? "selected" : "";
-//       return `<option value="${k}" ${selected}>${v}</option>`;
-//     }).join("\n")}
-// </select>`;
-// }
+    if (!container || !shaderLayer) {
+        return "";
+    }
 
-// function makeImagePickerElement(key, label) {
-//     const map = {};
+    const depth = Number.isFinite(htmlContext.depth) ? htmlContext.depth : 0;
+    const isGroupChild = !!htmlContext.isGroupChild;
+    const isGroup = shaderConfig.type === "group";
+    const parentName = htmlContext.parentConfig ?
+        (htmlContext.parentConfig.name || htmlContext.parentConfig.type || htmlContext.parentShaderId) :
+        null;
 
-//     for (let shader of OpenSeadragon.FlexRenderer.ShaderMediator.availableShaders()) {
-//         map[shader.type()] = shader.name();
-//     }
+    const wrapper = document.createElement("div");
+    wrapper.className = [
+        "shader-control-card",
+        `shader-control-card--depth-${depth}`,
+        isGroupChild ? "shader-control-card--group-child" : "shader-control-card--top",
+        isGroup ? "shader-control-card--group" : "",
+    ].filter(Boolean).join(" ");
 
-//     const shaderSelector = `<label>Shader: ${getSelectForValues("shader-type", "identity", map)}</label>`;
+    wrapper.style.marginLeft = `${depth * 18}px`;
+    wrapper.style.marginBottom = "6px";
+    wrapper.style.padding = "6px";
+    wrapper.style.border = "1px solid #d1d5db";
+    wrapper.style.borderLeft = isGroupChild ? "3px solid #d1d5db" : "1px solid #d1d5db";
+    wrapper.style.borderRadius = "0";
+    wrapper.style.background = isGroupChild ? "#fafafa" : "#ffffff";
 
-//     return $(`<div class="image-options">
-//         <span class="ui-icon ui-icon-arrowthick-2-n-s"></span>
-//         <label><input type="checkbox" data-image="" class="toggle">__title__</label>
-//         <div class="option-grid">
-//             <label>Opacity: <input type="number" value="1" data-image="" data-field="opacity" min="0" max="1" step="0.2"> </label>
-//             <label>Debug: <input type="checkbox" data-image="" data-field="debug"></label>
-//             <label>Composite: <select data-image="" data-field="composite"></select></label>
-//             ${shaderSelector}
-//         </div>
-//     </div>`.replaceAll('data-image=""', `data-image="${key}"`).replace('__title__', label));
-// }
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.alignItems = "flex-start";
+    header.style.justifyContent = "space-between";
+    header.style.gap = "10px";
+    header.style.marginBottom = "6px";
 
-// Object.keys(shaderLayerConfig).forEach(
-//     function(key) {
-//         let element = makeImagePickerElement(key, labels[key]);
+    const titleWrap = document.createElement("div");
+    titleWrap.style.minWidth = "0";
+    titleWrap.appendChild(createShaderControlTitle(shaderConfig));
 
-//         $('#image-picker').append(element);
+    if (isGroupChild && parentName) {
+        const parentLabel = document.createElement("div");
+        parentLabel.style.fontSize = "12px";
+        parentLabel.style.color = "#6b7280";
+        parentLabel.style.marginTop = "2px";
+        parentLabel.textContent = `In group: ${parentName}`;
+        titleWrap.appendChild(parentLabel);
+    }
 
-//         // if (index === 0) {
-//             element.find('.toggle').prop('checked', true);
-//         // }
-//     }
-// );
+    header.appendChild(titleWrap);
+    header.appendChild(createShaderBadges({ isGroup, isGroupChild, depth }));
+    wrapper.appendChild(header);
 
-// $('#image-picker input.toggle').on(
-//     'change',
-//     function() {
-//         console.log("toggled");
+    if (shaderLayer.error) {
+        const errorNode = document.createElement("div");
+        errorNode.style.marginBottom = "8px";
+        errorNode.style.color = "#b91c1c";
+        errorNode.style.fontSize = "12px";
+        errorNode.textContent = shaderLayer.error;
+        wrapper.appendChild(errorNode);
+    }
 
-//         let shaderLayerOrder = $('#image-picker input.toggle:checked').map((_, e) => $(e).data().image).get();
-//         viewer.drawer.overrideConfigureAll(shaderLayerConfig, shaderLayerOrder);
-//     }
-// ).trigger('change');
+    const controls = document.createElement("div");
+    controls.className = "shader-control-card__controls";
+    controls.innerHTML = shaderLayer.htmlControls();
+    wrapper.appendChild(controls);
 
+    container.appendChild(wrapper);
+    return "";
+}
 
-// $('#image-picker input').on(
-//     'change',
-//     function() {
-//         let data = $(this).data();
-//         let value = $(this).val();
+function resetShaderLayerControls() {
+    const container = document.getElementById("my-shader-ui-container");
 
-//         console.log(data);
-//         console.log(value);
+    if (container) {
+        container.innerHTML = "";
+    }
+}
 
-//         if (this.checked) {
-//             addTileSource(viewer, data.image, this);
-//         } else {
-//             if (data.item) {
-//                 viewer.world.removeItem(data.item);
-//                 $(this).data({item: null});
-//             }
-//         }
-//     }
-// ).trigger('change');
+function createShaderControlTitle(shaderConfig) {
+    const title = document.createElement("div");
+    title.style.fontWeight = "600";
+    title.style.margin = "0";
+    title.textContent = shaderConfig.name || shaderConfig.type;
 
+    return title;
+}
 
-// function updateTiledImage(tiledImage, data, value, item){
-//     let field = data.field;
+function createShaderBadges({ isGroup, isGroupChild, depth }) {
+    const badges = document.createElement("div");
+    badges.style.display = "flex";
+    badges.style.gap = "6px";
+    badges.style.flexWrap = "wrap";
+    badges.style.justifyContent = "flex-end";
 
-//     if(tiledImage){
-//         //item = tiledImage
-//         if(field == 'x'){
-//             let bounds = tiledImage.getBoundsNoRotate();
-//             let position = new OpenSeadragon.Point(Number(value), bounds.y);
-//             tiledImage.setPosition(position);
-//         } else if ( field == 'y'){
-//             let bounds = tiledImage.getBoundsNoRotate();
-//             let position = new OpenSeadragon.Point(bounds.x, Number(value));
-//             tiledImage.setPosition(position);
-//         } else if (field == 'width'){
-//             tiledImage.setWidth(Number(value));
-//         } else if (field == 'degrees'){
-//             tiledImage.setRotation(Number(value));
-//         } else if (field == 'opacity'){
-//             tiledImage.setOpacity(Number(value));
-//         } else if (field == 'flipped'){
-//             tiledImage.setFlip($(item).prop('checked'));
-//         } else if (field == 'smoothing'){
-//             const checked = $(item).prop('checked');
-//             viewer.drawer.setImageSmoothingEnabled(checked);
-//             $('[data-field=smoothing]').prop('checked', checked);
-//         } else if (field == 'cropped'){
-//             if( $(item).prop('checked') ){
-//                 let scale = tiledImage.source.width;
-//                 let croppingPolygons = [ [{x:0.2*scale, y:0.2*scale}, {x:0.8*scale, y:0.2*scale}, {x:0.5*scale, y:0.8*scale}] ];
-//                 tiledImage.setCroppingPolygons(croppingPolygons);
-//             } else {
-//                 tiledImage.resetCroppingPolygons();
-//             }
-//         } else if (field == 'clipped'){
-//             if( $(item).prop('checked') ){
-//                 let scale = tiledImage.source.width;
-//                 let clipRect = new OpenSeadragon.Rect(0.1*scale, 0.2*scale, 0.6*scale, 0.4*scale);
-//                 tiledImage.setClip(clipRect);
-//             } else {
-//                 tiledImage.setClip(null);
-//             }
-//         } else if (field == 'debug'){
-//             if( $(item).prop('checked') ){
-//                 tiledImage.debugMode = true;
-//             } else {
-//                 tiledImage.debugMode = false;
-//             }
-//         }
-//     } else {
-//         //viewer-level option
-//     }
-// }
+    if (isGroup) {
+        badges.appendChild(createBadge("Group", {
+            border: "1px solid #9ca3af",
+            background: "#ffffff",
+        }));
+    }
 
-// $('.image-options select[data-field=composite]').append(getCompositeOperationOptions()).on('change',function(){
-//     let data = $(this).data();
-//     let tiledImage = $(`#image-picker input.toggle[data-image=${data.image}]`).data('item');
-//     if(tiledImage){
-//         tiledImage.setCompositeOperation(this.value == 'null' ? null : this.value);
-//     }
-// }).trigger('change');
+    if (isGroupChild) {
+        badges.appendChild(createBadge(`Level ${depth}`, {
+            background: "#e5e7eb",
+        }));
+    }
 
-// $('.image-options select[data-field=wrapping]').append(getWrappingOptions()).on('change',function(){
-//     let data = $(this).data();
-//     let tiledImage = $(`#image-picker input.toggle[data-image=${data.image}]`).data('item');
-//     if(tiledImage){
-//         switch(this.value){
-//             case "None": tiledImage.wrapHorizontal = tiledImage.wrapVertical = false; break;
-//             case "Horizontal": tiledImage.wrapHorizontal = true; tiledImage.wrapVertical = false; break;
-//             case "Vertical": tiledImage.wrapHorizontal = false; tiledImage.wrapVertical = true; break;
-//             case "Both": tiledImage.wrapHorizontal = tiledImage.wrapVertical = true; break;
-//         }
-//         tiledImage.redraw();//trigger a redraw for the webgl renderer.
-//     }
-// }).trigger('change');
+    return badges;
+}
 
-// $('.image-options select[data-field=shader-type]').on('change',function(){
-//     let data = $(this).data();
-//     const tiledImages = ['item']
-//         .map(selector => $(`#image-picker input.toggle[data-image=${data.image}]`).data(selector)).filter(Boolean);
+function createBadge(text, style = {}) {
+    const badge = document.createElement("span");
+    badge.textContent = text;
+    badge.style.fontSize = "11px";
+    badge.style.padding = "2px 6px";
+    badge.style.borderRadius = "999px";
+    badge.style.color = "#374151";
+    badge.style.whiteSpace = "nowrap";
 
-//     if (viewer.drawer.getType() === "flex-renderer") {
-//         const drawer = viewer.drawer;
-//         tiledImages.forEach(tiledImage => {
-//             drawer.configureTiledImage(tiledImage, {
-//                 name: "My Custom Shader",
-//                 type: this.value,
-//                 params: {}
-//             });
-//             drawer.tiledImageCreated(tiledImage);
-//         });
-//     }
-// })
+    Object.assign(badge.style, style);
+    return badge;
+}
+
+function renderImageSourceIndexPanel() {
+    const rows = indexedImageSources.map((source) => `
+        <tr>
+            <td>${escapeHtml(source.label)}</td>
+            <td><code>${source.index}</code></td>
+        </tr>
+    `).join("");
+
+    setPanelHtml("image-source-index-panel", `
+        <h3>Image sources</h3>
+        <table class="image-source-index-table">
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Index</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `);
+}
 
 
-// function getWrappingOptions(){
-//     let opts = ['None', 'Horizontal', 'Vertical', 'Both'];
-//     let elements = opts.map((opt, i)=>{
-//         let el = $('<option>',{value:opt}).text(opt);
-//         if(i===0){
-//             el.attr('selected',true);
-//         }
-//         return el[0];
-//         // $('.image-options select').append(el);
-//     });
-//     return $(elements);
-// }
+function renderShaderConfigPanel() {
+    ensureGroupOrders(shaderLayerConfig);
 
-// function getCompositeOperationOptions(){
-//     let opts = [null,'source-over','source-in','source-out','source-atop',
-//                 'destination-over','destination-in','destination-out','destination-atop',
-//                 'lighten','darken','copy','xor','multiply','screen','overlay','color-dodge',
-//                 'color-burn','hard-light','soft-light','difference','exclusion',
-//                 'hue','saturation','color','luminosity'];
+    setPanelHtml("shader-config-panel", `
+        <h3>Shader layer configuration</h3>
+        ${renderShaderConfigList(shaderLayerConfig, shaderLayerOrder)}
+        <p class="shader-config-help">
+            Drag layers to reorder them. Edit names directly. Choose image indexes from the Image sources table.
+            Mode controls whether the layer is shown, blended, or used as a clip.
+            Blend controls how the layer combines when mode is blend or clip.
+            Group layers keep their type fixed and do not bind directly to an image source.
+            Changing a non-group type resets shader-specific params and cache.
+        </p>
+    `);
 
-//     let elements = opts.map((opt, i)=>{
-//         let el = $('<option>', {value: opt}).text(opt);
+    bindShaderConfigPanelEvents();
+}
 
-//         if (i === 0) {
-//             el.attr('selected', true);
-//         }
+function renderShaderConfigList(shaderMap, order, path = []) {
+    const rows = order
+        .filter((shaderId) => shaderMap[shaderId])
+        .map((shaderId) => renderShaderConfigItem(shaderId, shaderMap[shaderId], path))
+        .join("");
 
-//         return el[0];
-//         // $('.image-options select').append(el);
-//     });
+    return `
+        <ul
+            class="shader-config-list ${path.length ? "shader-config-list--children" : ""}"
+            data-order-path="${escapeHtml(encodePath(path))}"
+        >
+            ${rows}
+        </ul>
+    `;
+}
 
-//     return $(elements);
-// }
+function renderShaderConfigItem(shaderId, shaderConfig, path) {
+    const currentPath = path.concat([shaderId]);
+    const pathString = encodePath(currentPath);
+    const isGroup = shaderConfig.type === "group";
+    const visible = shaderConfig.visible !== 0;
+    const name = shaderConfig.name || shaderId;
+    const children = isGroup ? renderShaderConfigList(
+        shaderConfig.shaders || {},
+        shaderConfig.order || Object.keys(shaderConfig.shaders || {}),
+        currentPath
+    ) : "";
+
+    return `
+        <li class="shader-config-item" data-shader-id="${escapeHtml(shaderId)}">
+            <div class="shader-config-row ${isGroup ? "shader-config-row--group" : ""}">
+            <span class="shader-config-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
+
+            <label class="shader-config-visible-label" title="Visible">
+                <input
+                    type="checkbox"
+                    class="shader-config-visible-toggle"
+                    data-shader-path="${escapeHtml(pathString)}"
+                    ${visible ? "checked" : ""}
+                >
+            </label>
+
+            <label class="shader-config-field-label shader-config-row__name">
+                Name
+                <input
+                    type="text"
+                    class="shader-config-name-input"
+                    data-shader-path="${escapeHtml(pathString)}"
+                    value="${escapeHtml(name)}"
+                >
+            </label>
+
+            <div class="shader-config-row__selectors">
+                <div class="shader-config-row__type">
+                    ${renderShaderTypeControl(shaderConfig, pathString)}
+                </div>
+
+                <div class="shader-config-row__image">
+                    ${renderShaderImageIndexControl(shaderConfig, pathString)}
+                </div>
+            </div>
+
+            <div class="shader-config-row__blend">
+                ${renderShaderBlendControls(shaderConfig, pathString)}
+            </div>
+        </div>
+
+            ${children}
+        </li>
+    `;
+}
+
+function renderShaderTypeControl(shaderConfig, pathString) {
+    if (shaderConfig.type === "group") {
+        return `
+            <label class="shader-config-field-label">
+                Type
+                <span class="shader-config-type-locked">group</span>
+            </label>
+        `;
+    }
+
+    return `
+        <label class="shader-config-field-label">
+            Type
+            <select class="shader-config-type-select" data-shader-path="${escapeHtml(pathString)}">
+                ${renderShaderTypeOptions(shaderConfig.type)}
+            </select>
+        </label>
+    `;
+}
+
+function renderShaderTypeOptions(selectedType) {
+    return getAvailableNonGroupShaderTypes().map((shaderType) => {
+        const selected = shaderType.type === selectedType ? "selected" : "";
+
+        return `
+            <option value="${escapeHtml(shaderType.type)}" ${selected}>
+                ${escapeHtml(shaderType.name)} (${escapeHtml(shaderType.type)})
+            </option>
+        `;
+    }).join("");
+}
+
+function renderImageIndexOptions(selectedIndex) {
+    return indexedImageSources.map((source) => {
+        const selected = source.index === selectedIndex ? "selected" : "";
+
+        return `
+            <option value="${source.index}" ${selected}>
+                ${escapeHtml(source.label)} (${source.index})
+            </option>
+        `;
+    }).join("");
+}
+
+function renderUseModeOptions(selectedMode) {
+    return ["show", "blend", "clip"].map((mode) => {
+        const selected = mode === selectedMode ? "selected" : "";
+
+        return `
+            <option value="${escapeHtml(mode)}" ${selected}>
+                ${escapeHtml(mode)}
+            </option>
+        `;
+    }).join("");
+}
+
+function renderUseBlendOptions(selectedBlend) {
+    return [
+        "mask",
+        "add",
+        "multiply",
+        "screen",
+        "overlay",
+        "darken",
+        "lighten",
+        "difference",
+        "exclusion",
+        "source-over",
+        "source-in",
+        "source-out",
+        "source-atop",
+    ].map((blend) => {
+        const selected = blend === selectedBlend ? "selected" : "";
+
+        return `
+            <option value="${escapeHtml(blend)}" ${selected}>
+                ${escapeHtml(blend)}
+            </option>
+        `;
+    }).join("");
+}
+
+function renderShaderImageIndexControl(shaderConfig, pathString) {
+    if (shaderConfig.type === "group") {
+        return `
+            <label class="shader-config-field-label">
+                Image
+                <span class="shader-config-type-locked">—</span>
+            </label>
+        `;
+    }
+
+    const selectedIndex = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
+        Number(shaderConfig.tiledImages[0]) :
+        0;
+
+    return `
+        <label class="shader-config-field-label">
+            Image
+            <select class="shader-config-image-index-select" data-shader-path="${escapeHtml(pathString)}">
+                ${renderImageIndexOptions(selectedIndex)}
+            </select>
+        </label>
+    `;
+}
+
+function renderShaderBlendControls(shaderConfig, pathString) {
+    const params = shaderConfig.params || {};
+    const selectedMode = params.use_mode || "show";
+    const selectedBlend = params.use_blend || "mask";
+    const blendDisabled = selectedMode === "show" ? "disabled" : "";
+
+    return `
+        <div class="shader-config-row__use-mode">
+            <label class="shader-config-field-label">
+                Mode
+                <select class="shader-config-use-mode-select" data-shader-path="${escapeHtml(pathString)}">
+                    ${renderUseModeOptions(selectedMode)}
+                </select>
+            </label>
+        </div>
+
+        <div class="shader-config-row__use-blend">
+            <label class="shader-config-field-label">
+                Blend
+                <select
+                    class="shader-config-use-blend-select"
+                    data-shader-path="${escapeHtml(pathString)}"
+                    ${blendDisabled}
+                >
+                    ${renderUseBlendOptions(selectedBlend)}
+                </select>
+            </label>
+        </div>
+    `;
+}
+
+function bindShaderConfigPanelEvents() {
+    $(".shader-config-list").sortable({
+        handle: ".shader-config-drag-handle",
+        items: "> .shader-config-item",
+        update: function() {
+            const orderPath = decodePath($(this).attr("data-order-path"));
+            const orderOwner = getOrderOwnerFromPath(orderPath);
+
+            if (!orderOwner) {
+                return;
+            }
+
+            orderOwner.setOrder($(this)
+                .children(".shader-config-item")
+                .map((_, item) => $(item).attr("data-shader-id"))
+                .get());
+
+            applyShaderLayerGuiConfig();
+            renderShaderConfigPanel();
+        },
+    });
+
+    $(".shader-config-visible-toggle").on("change", function() {
+        updateShaderConfigFromPath(this, (shaderConfig) => {
+            shaderConfig.visible = this.checked ? 1 : 0;
+        });
+    });
+
+    $(".shader-config-name-input").on("change", function() {
+        updateShaderConfigFromPath(this, (shaderConfig, shaderPath) => {
+            shaderConfig.name = this.value.trim() || shaderPath[shaderPath.length - 1];
+        });
+    });
+
+    $(".shader-config-image-index-select").on("change", function() {
+        updateShaderConfigFromPath(this, (shaderConfig) => {
+            if (shaderConfig.type === "group") {
+                return;
+            }
+
+            shaderConfig.tiledImages = [Number(this.value)];
+        });
+    });
+
+    $(".shader-config-use-mode-select").on("change", function() {
+        updateShaderConfigFromPath(this, (shaderConfig) => {
+            shaderConfig.params = shaderConfig.params || {};
+            shaderConfig.params.use_mode = this.value;
+        });
+    });
+
+    $(".shader-config-use-blend-select").on("change", function() {
+        updateShaderConfigFromPath(this, (shaderConfig) => {
+            shaderConfig.params = shaderConfig.params || {};
+            shaderConfig.params.use_blend = this.value;
+        });
+    });
+
+    $(".shader-config-type-select").on("change", function() {
+        updateShaderConfigFromPath(this, (shaderConfig) => {
+            if (shaderConfig.type === "group") {
+                return;
+            }
+
+            const previousParams = shaderConfig.params || {};
+            const preservedGlobalParams = {
+                use_mode: previousParams.use_mode,
+                use_blend: previousParams.use_blend,
+            };
+
+            shaderConfig.type = this.value;
+            shaderConfig.params = Object.fromEntries(
+                Object.entries(preservedGlobalParams).filter(([, value]) => value !== undefined)
+            );
+            shaderConfig.cache = {};
+        });
+    });
+}
+
+function updateShaderConfigFromPath(element, update) {
+    const shaderPath = decodePath($(element).attr("data-shader-path"));
+    const shaderConfig = getShaderConfigByPath(shaderPath);
+
+    if (!shaderConfig) {
+        return;
+    }
+
+    update(shaderConfig, shaderPath);
+    applyShaderLayerGuiConfig();
+    renderShaderConfigPanel();
+}
+
+function getAvailableNonGroupShaderTypes() {
+    return OpenSeadragon.FlexRenderer.ShaderMediator
+        .availableShaders()
+        .filter((Shader) => Shader.type() !== "group")
+        .map((Shader) => ({
+            type: Shader.type(),
+            name: Shader.name ? Shader.name() : Shader.type(),
+        }));
+}
+
+function getShaderConfigByPath(path) {
+    const shaderId = path[path.length - 1];
+    const parentMap = getShaderMapFromPath(path.slice(0, -1));
+
+    return parentMap ? parentMap[shaderId] : null;
+}
+
+function getOrderOwnerFromPath(path) {
+    if (!path.length) {
+        return {
+            order: shaderLayerOrder,
+            setOrder: (nextOrder) => {
+                shaderLayerOrder = nextOrder;
+            },
+        };
+    }
+
+    const groupConfig = getShaderConfigByPath(path);
+
+    if (!groupConfig || groupConfig.type !== "group") {
+        return null;
+    }
+
+    groupConfig.order = groupConfig.order || Object.keys(groupConfig.shaders || {});
+
+    return {
+        order: groupConfig.order,
+        setOrder: (nextOrder) => {
+            groupConfig.order = nextOrder;
+        },
+    };
+}
+
+function getShaderMapFromPath(path) {
+    let shaderMap = shaderLayerConfig;
+
+    for (const shaderId of path) {
+        const shaderConfig = shaderMap[shaderId];
+
+        if (!shaderConfig || shaderConfig.type !== "group") {
+            return null;
+        }
+
+        shaderMap = shaderConfig.shaders || {};
+    }
+
+    return shaderMap;
+}
+
+function ensureGroupOrders(shaderMap = shaderLayerConfig) {
+    Object.values(shaderMap || {}).forEach((shaderConfig) => {
+        if (!shaderConfig || shaderConfig.type !== "group") {
+            return;
+        }
+
+        const childMap = shaderConfig.shaders || {};
+        const childIds = Object.keys(childMap);
+        const existingOrder = Array.isArray(shaderConfig.order) ? shaderConfig.order : childIds;
+
+        shaderConfig.order = existingOrder
+            .filter((childId) => childMap[childId])
+            .concat(childIds.filter((childId) => !existingOrder.includes(childId)));
+
+        ensureGroupOrders(childMap);
+    });
+}
+
+function applyShaderLayerGuiConfig() {
+    ensureGroupOrders(shaderLayerConfig);
+    viewer.drawer.overrideConfigureAll(shaderLayerConfig, shaderLayerOrder);
+}
+
+function encodePath(path) {
+    return path.join("/");
+}
+
+function decodePath(pathString) {
+    return pathString ? String(pathString).split("/") : [];
+}
+
+function setPanelHtml(id, html) {
+    const container = document.getElementById(id);
+
+    if (container) {
+        container.innerHTML = html;
+    }
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+
+applyShaderLayerGuiConfig();
+renderImageSourceIndexPanel();
+renderShaderConfigPanel();
