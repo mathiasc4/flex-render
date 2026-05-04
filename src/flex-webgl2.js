@@ -1579,35 +1579,17 @@ void main() {
                             gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
                         }
 
-                        // Bind positions
+                        // Bind positions. payload0 is vec4(x, y, depth, textureId).
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
                         gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
 
-                        // Bind per-vertex colors (normalized u8 → float 0..1)
+                        // Bind per-vertex colors (normalized u8 → float 0..1).
+                        // For colored point meshes: vec4(r, g, b, a).
+                        // For icon point meshes: vec4(xStart, yStart, width, height).
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
                         gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
 
-                        // Bind indices and draw one instance
-                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
-                        gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
-                    }
-
-                    // TODO: find out if we can somehow combine points and icons
-                    batch = vectorTile.icons;
-                    if (batch) {
-                        if (!vectorTile.fills && !vectorTile.lines && !vectorTile.points) {
-                            gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
-                        }
-
-                        // Bind positions
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
-                        gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
-
-                        // Bind per-vertex icon parameters
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
-                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
-
-                        // Bind indices and draw one instance
+                        // Bind indices and draw one instance.
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }

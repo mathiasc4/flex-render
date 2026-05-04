@@ -53,12 +53,12 @@ $.MVTTileSource = class extends $.TileSource {
 
             if (msg.ok) {
                 const t = msg.data;
+
                 for (const ctx of waiters) {
                     ctx.finish({
-                        fills: t.fills.map(packMesh),
-                        lines: t.lines.map(packMesh),
-                        points: t.points.map(packMesh),
-                        icons: t.icons.map(packMesh),
+                        fills: (t.fills || []).map(packMesh),
+                        lines: (t.lines || []).map(packMesh),
+                        points: (t.points || []).map(packMesh),
                     }, undefined, 'vector-mesh');
                 }
             } else {

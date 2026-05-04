@@ -10,6 +10,29 @@
      */
 
     /**
+     * Tessellated vector payload for one tile.
+     *
+     * Icons are represented as point meshes. A point mesh is rendered as an icon
+     * when its vertex textureId component is >= 0 and its `parameters` array
+     * contains per-vertex atlas placement data.
+     *
+     * @typedef {object} VectorMeshTile
+     * @property {VectorMesh[]} [fills] - Polygon fill triangle meshes.
+     * @property {VectorMesh[]} [lines] - Stroke triangle meshes.
+     * @property {VectorMesh[]} [points] - Point marker and icon quad meshes.
+     */
+
+    /**
+     * One tessellated vector mesh.
+     *
+     * @typedef {object} VectorMesh
+     * @property {Float32Array} vertices - Packed vertices as vec4(x, y, depth, textureId).
+     * @property {Uint32Array} indices - Triangle indices into the vertex array.
+     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
+     * @property {Float32Array} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     */
+
+    /**
      * @property {Number} idGenerator unique ID getter
      *
      * @class OpenSeadragon.FlexDrawer
@@ -1192,9 +1215,6 @@
                             if (tileInfo.vectors.points) {
                                 tileInfo.vectors.points.matrix = transformMatrix;
                             }
-                            if (tileInfo.vectors.icons) {
-                                tileInfo.vectors.icons.matrix = transformMatrix;
-                            }
 
                             vecPayload.push(tileInfo.vectors);
                         }
@@ -1654,24 +1674,20 @@
                 const gl = this._gl;
                 if (data.vectors.fills) {
                     gl.deleteBuffer(data.vectors.fills.vboPos);
-                    gl.deleteBuffer(data.vectors.fills.vboCol);
+                    gl.deleteBuffer(data.vectors.fills.vboParam);
                     gl.deleteBuffer(data.vectors.fills.ibo);
                 }
                 if (data.vectors.lines) {
                     gl.deleteBuffer(data.vectors.lines.vboPos);
-                    gl.deleteBuffer(data.vectors.lines.vboCol);
+                    gl.deleteBuffer(data.vectors.lines.vboParam);
                     gl.deleteBuffer(data.vectors.lines.ibo);
                 }
                 if (data.vectors.points) {
                     gl.deleteBuffer(data.vectors.points.vboPos);
-                    gl.deleteBuffer(data.vectors.points.vboCol);
+                    gl.deleteBuffer(data.vectors.points.vboParam);
                     gl.deleteBuffer(data.vectors.points.ibo);
                 }
-                if (data.vectors.icons) {
-                    gl.deleteBuffer(data.vectors.icons.vboPos);
-                    gl.deleteBuffer(data.vectors.icons.vboCol);
-                    gl.deleteBuffer(data.vectors.icons.ibo);
-                }
+
                 data.vectors = null;
             }
         }
@@ -1842,9 +1858,6 @@
             }
             if (data.points && data.points.length) {
                 tileInfo.vectors.points = buildBatch(data.points);
-            }
-            if (data.icons && data.icons.length) {
-                tileInfo.vectors.icons = buildBatch(data.icons);
             }
 
             return tileInfo;

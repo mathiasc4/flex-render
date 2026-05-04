@@ -37,7 +37,6 @@ self.onmessage = async (e) => {
             const fills = [];
             const lines = [];
             const points = [];
-            const icons = [];
 
             // Iterate layers
             for (const lname in vt.layers) {
@@ -112,30 +111,51 @@ self.onmessage = async (e) => {
                     if (feat.type === 1 && fstyle.type === 'point') {
                         const size = (fstyle.size || 10.0) / 2.0;
                         const verts = [];
-                        const idx = [0, 1, 2, 0, 2, 3];
+                        const idx = [];
+
                         for (let p = 0; p < geom.length; p++) {
                             const pts = geom[p];
+
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
+                                const base = verts.length / 4;
+
                                 verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
+
+                                idx.push(
+                                    base + 0, base + 1, base + 3,
+                                    base + 0, base + 2, base + 3
+                                );
                             }
                         }
-                        points.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
+
+                        if (idx.length) {
+                            points.push({
+                                vertices: new Float32Array(verts).buffer,
+                                indices: new Uint32Array(idx).buffer,
+                                color: fstyle.color
+                            });
+                        }
                     }
 
                     if (feat.type === 1 && fstyle.type === 'icon') {
                         const size = fstyle.size || 1.0;
-                        const icon = fstyle.iconMapping[feat.properties.class] || { textureId: -1, width: 16, height: 16 };
+                        const icon = fstyle.iconMapping[feat.properties.class] || {
+                            textureId: -1,
+                            width: 16,
+                            height: 16
+                        };
 
                         const verts = [];
-                        const idx = [0, 1, 3, 0, 2, 3];
+                        const idx = [];
                         const parameters = [];
 
                         for (let p = 0; p < geom.length; p++) {
                             const pts = geom[p];
+
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
 
@@ -147,18 +167,36 @@ self.onmessage = async (e) => {
                                 const yStart = (pt.y - (height / 2.0)) / lyr.extent;
                                 const yEnd = (pt.y + (height / 2.0)) / lyr.extent;
 
+                                const base = verts.length / 4;
+
                                 verts.push(xStart, yStart, tileDepth, icon.textureId);
                                 verts.push(xEnd, yStart, tileDepth, icon.textureId);
                                 verts.push(xStart, yEnd, tileDepth, icon.textureId);
                                 verts.push(xEnd, yEnd, tileDepth, icon.textureId);
 
                                 for (let i = 0; i < 4; i += 1) {
-                                    parameters.push(xStart, yStart, width / lyr.extent, height / lyr.extent);
+                                    parameters.push(
+                                        xStart,
+                                        yStart,
+                                        width / lyr.extent,
+                                        height / lyr.extent
+                                    );
                                 }
+
+                                idx.push(
+                                    base + 0, base + 1, base + 3,
+                                    base + 0, base + 2, base + 3
+                                );
                             }
                         }
 
-                        icons.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, parameters: new Float32Array(parameters).buffer });
+                        if (idx.length) {
+                            points.push({
+                                vertices: new Float32Array(verts).buffer,
+                                indices: new Uint32Array(idx).buffer,
+                                parameters: new Float32Array(parameters).buffer
+                            });
+                        }
                     }
                 }
             }
@@ -168,21 +206,29 @@ self.onmessage = async (e) => {
 
             for (const a of fills) {
                 transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
             }
 
             for (const a of lines) {
                 transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
             }
 
             for (const a of points) {
                 transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
             }
 
-            for (const a of icons) {
-                transfer.push(a.vertices, a.indices, a.parameters);
-            }
-
-            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, points, icons } }, transfer);
+            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, points } }, transfer);
         }
     } catch (err) {
         self.postMessage({ type: 'tile', key: e.data && e.data.key, ok: false, error: String(err) });
