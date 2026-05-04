@@ -1,33 +1,19 @@
-const source = "http://localhost:8888/data/v3.json";
+const sources = {
+    mvt: "http://localhost:8888/data/v3.json",
+    fabric: "../data/fabric.geometry.json",
+};
 
-const renderer = "OpenSeadragon";
+const labels = {
+    mvt: "MVT",
+    fabric: "Fabric",
+};
 
 const drawerOptions = {
     "flex-renderer": {
         debug: true,
         webGLPreferredVersion: "2.0",
-        htmlHandler: (shaderLayer, shaderConfig) => {
-            const container = document.getElementById('shader-ui-container');
-            // Be careful, shaderLayer.id is changing. It should not be used as a key to identify the layer between
-            // different programs such as in this case, but it's okay to use it when referencing concrete running layer.
-
-            // Create custom layer controls - you can add more HTML controls allowing users to
-            // control gamma, blending, or even change the shader type. Here we just show shader layer name + checkbox representing
-            // its visibility (but we do not manage change event and thus users cannot change it). In case of error, we show
-            // the error message below the checkbox.
-            // The compulsory step is to include `shaderLayer.htmlControls()` output.
-            container.insertAdjacentHTML('beforeend', `<div>
-    <input type="checkbox" disabled id="enable-layer-${shaderLayer.id}" ${shaderConfig.visible ? 'checked' : ''}><span>${shaderConfig.name || shaderConfig.type}</span>
-    <div>${shaderLayer.error || ""}</div>
-    ${shaderLayer.htmlControls()}
-</div>`);
-        },
-        htmlReset: () => {
-            const container = document.getElementById('shader-ui-container');
-            container.innerHTML = '';
-        },
-    }
-}
+    },
+};
 
 const viewportMargins = {
     left: 50,
@@ -35,6 +21,8 @@ const viewportMargins = {
     right: 50,
     bottom: 0,
 };
+
+$("#title-w").html("OpenSeadragon viewer using FlexRenderer");
 
 let viewer = window.viewer = OpenSeadragon({
     id: "viewer-container",
@@ -52,31 +40,16 @@ let viewer = window.viewer = OpenSeadragon({
     viewportMargins,
 });
 
-let tiledImage = null;
-
-function createSelect(name, optionMap, selectedOption) {
-    return `
-<select name="${name}" data-image="" data-field="${name}">
-  ${Object.entries(optionMap).map(([k, v]) => {
-      const selected = selectedOption === k ? "selected" : "";
-      return `<option value="${k}" ${selected}>${v}</option>`;
-    }).join("\n")}
-</select>`;
-}
 
 function createImageOptionsElement(key, label){
-    let shaderSelector = "";
+    return $(`<div class="image-options" data-image-row="">
+        <span class="image-options-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
 
-    const map = {};
+        <label class="image-options-title">
+            <input type="checkbox" data-image="" class="toggle">
+            __title__
+        </label>
 
-    for (let shader of OpenSeadragon.FlexRenderer.ShaderMediator.availableShaders()) {
-        map[shader.type()] = shader.name();
-    }
-
-    shaderSelector = `<label>Shader: ${createSelect("shader-type", map, "identity")}</label>`;
-
-    return $(`<div class="image-options">
-        <label>__title__</label>
         <div class="option-grid">
             <label>X: <input type="number" value="0" data-image="" data-field="x"> </label>
             <label>Y: <input type="number" value="0" data-image="" data-field="y"> </label>
@@ -88,41 +61,65 @@ function createImageOptionsElement(key, label){
             <label>Clipped: <input type="checkbox" data-image="" data-field="clipped"></label>
             <label>Chess Tile Opacity: <input type="checkbox" data-image="" data-field="tile-level-opecity"></label>
             <label>Debug: <input type="checkbox" data-image="" data-field="debug"></label>
+            <label>Composite: <select data-image="" data-field="composite"></select></label>
             <label>Wrap: <select data-image="" data-field="wrapping"></select></label>
             <label>Smoothing: <input type="checkbox" data-image="" data-field="smoothing" checked></label>
-            ${shaderSelector}
         </div>
     </div>`.replaceAll('data-image=""', `data-image="${key}"`).replace('__title__', label));
 }
 
-$('#image-options-container').append(createImageOptionsElement("world", "World"));
+Object.keys(sources).forEach((key, index) => {
+    const element = createImageOptionsElement(key, labels[key] || key);
 
-let options = $(`#image-options input[type=number]`).toArray().reduce((acc, input)=>{
-    let field = $(input).data('field');
+    $('#image-options-container').append(element);
 
-    if (field) {
-        acc[field] = Number(input.value);
+    if (index === 0) {
+        element.find('.toggle').prop('checked', true);
     }
-
-    return acc;
-}, {});
-
-options.flipped = $(`#image-options input[data-type=flipped]`).prop('checked');
-
-viewer && viewer.addTiledImage({tileSource: source, ...options});
-
-viewer && viewer.world.addOnceHandler('add-item', function(ev) {
-    tiledImage = ev.item;
 });
 
-$('#image-options-container input').on('change', function() {
-    let data = $(this).data();
-    let value = $(this).val();
+$('#image-options-container').sortable({
+    handle: '.image-options-drag-handle',
+    items: '> .image-options',
+    update: function(event, ui) {
+        const thisItem = ui.item.find('.toggle').data('item');
+        const items = $('#image-options-container input.toggle:checked')
+            .toArray()
+            .map((item) => $(item).data('item'))
+            .filter(Boolean);
 
-    updateTiledImage(data, value, this);
+        const newIndex = items.indexOf(thisItem);
+
+        if (thisItem && newIndex !== -1) {
+            viewer.world.setItemIndex(thisItem, newIndex);
+        }
+    },
 });
 
-function updateTiledImage(data, value, item) {
+$('#image-options-container input.toggle').on('change', function() {
+    const data = $(this).data();
+
+    if (this.checked) {
+        addTileSource(data.image, this);
+    } else {
+        const item = $(this).data('item');
+
+        if (item) {
+            viewer.world.removeItem(item);
+            $(this).data('item', null);
+        }
+    }
+}).trigger('change');
+
+$('#image-options-container input:not(.toggle)').on('change', function() {
+    const data = $(this).data();
+    const value = $(this).val();
+    const tiledImage = getTiledImageForSource(data.image);
+
+    updateTiledImage(tiledImage, data, value, this);
+});
+
+function updateTiledImage(tiledImage, data, value, item) {
     if (!tiledImage) {
         return;
     }
@@ -177,7 +174,19 @@ function updateTiledImage(data, value, item) {
     }
 }
 
-$('.image-options select[data-field=wrapping]').append(getWrappingOptions()).on('change',function(){
+$('.image-options select[data-field=composite]').append(getCompositeOperationOptions()).on('change', function() {
+    const data = $(this).data();
+    const tiledImage = getTiledImageForSource(data.image);
+
+    if (tiledImage) {
+        tiledImage.setCompositeOperation(this.value === 'null' ? null : this.value);
+    }
+}).trigger('change');
+
+$('.image-options select[data-field=wrapping]').append(getWrappingOptions()).on('change', function() {
+    const data = $(this).data();
+    const tiledImage = getTiledImageForSource(data.image);
+
     if (tiledImage) {
         switch (this.value) {
             case "None": tiledImage.wrapHorizontal = tiledImage.wrapVertical = false; break;
@@ -186,23 +195,81 @@ $('.image-options select[data-field=wrapping]').append(getWrappingOptions()).on(
             case "Both": tiledImage.wrapHorizontal = tiledImage.wrapVertical = true; break;
         }
 
-        tiledImage.redraw();//trigger a redraw for the webgl renderer.
+        tiledImage.redraw();
     }
 }).trigger('change');
 
-$('.image-options select[data-field=shader-type]').on('change',function(){
-    const drawer = viewer.drawer;
+function getTiledImageForSource(image) {
+    return $(`#image-options-container input.toggle[data-image="${image}"]`).data('item');
+}
 
-    if (tiledImage) {
-        drawer.configureTiledImage(tiledImage, {
-            name: "My Custom Shader",
-            type: this.value,
-            params: {}
-        });
+function getOptionsForSource(image) {
+    const options = $(`#image-options-container input[data-image="${image}"][type=number]`)
+        .toArray()
+        .reduce((acc, input) => {
+            const field = $(input).data('field');
 
-        drawer.tiledImageCreated(tiledImage);
+            if (field) {
+                acc[field] = Number(input.value);
+            }
+
+            return acc;
+        }, {});
+
+    options.flipped = $(`#image-options-container input[data-image="${image}"][data-field=flipped]`).prop('checked');
+
+    return options;
+}
+
+function getInsertionIndex(checkbox) {
+    const items = $('#image-options-container input.toggle:checked').toArray();
+
+    return items.indexOf(checkbox);
+}
+
+function addTileSource(image, checkbox) {
+    const tileSource = sources[image];
+
+    if (!tileSource) {
+        return;
     }
-})
+
+    const options = getOptionsForSource(image);
+    const index = getInsertionIndex(checkbox);
+
+    viewer && viewer.addTiledImage({
+        tileSource: tileSource,
+        ...options,
+        index: index,
+        success: function(event) {
+            const item = event.item;
+
+            $(checkbox).data('item', item);
+
+            applySelectOptionsToTiledImage(image, item);
+        },
+    });
+}
+
+function applySelectOptionsToTiledImage(image, tiledImage) {
+    const composite = $(`#image-options-container select[data-image="${image}"][data-field=composite]`).val();
+    const wrapping = $(`#image-options-container select[data-image="${image}"][data-field=wrapping]`).val();
+
+    if (composite !== undefined) {
+        tiledImage.setCompositeOperation(composite === 'null' ? null : composite);
+    }
+
+    if (wrapping !== undefined) {
+        switch (wrapping) {
+            case "None": tiledImage.wrapHorizontal = tiledImage.wrapVertical = false; break;
+            case "Horizontal": tiledImage.wrapHorizontal = true; tiledImage.wrapVertical = false; break;
+            case "Vertical": tiledImage.wrapHorizontal = false; tiledImage.wrapVertical = true; break;
+            case "Both": tiledImage.wrapHorizontal = tiledImage.wrapVertical = true; break;
+        }
+
+        tiledImage.redraw();
+    }
+}
 
 function getWrappingOptions(){
     let opts = ['None', 'Horizontal', 'Vertical', 'Both'];
@@ -214,5 +281,48 @@ function getWrappingOptions(){
         return el[0];
         // $('.image-options select').append(el);
     });
+    return $(elements);
+}
+
+function getCompositeOperationOptions(){
+    let opts = [
+        null,
+        'source-over',
+        'source-in',
+        'source-out',
+        'source-atop',
+        'destination-over',
+        'destination-in',
+        'destination-out',
+        'destination-atop',
+        'lighten',
+        'darken',
+        'copy',
+        'xor',
+        'multiply',
+        'screen',
+        'overlay',
+        'color-dodge',
+        'color-burn',
+        'hard-light',
+        'soft-light',
+        'difference',
+        'exclusion',
+        'hue',
+        'saturation',
+        'color',
+        'luminosity'
+    ];
+
+    let elements = opts.map((opt, i)=>{
+        let el = $('<option>', { value: opt }).text(opt);
+
+        if (i === 0) {
+            el.attr('selected', true);
+        }
+
+        return el[0];
+    });
+
     return $(elements);
 }

@@ -11,66 +11,178 @@
 
     <script type="module" src="vector-rendering.js"></script>
 
-    <style type="text/css">
-        .content {
-            max-width: 60vw;
-            margin: 0 auto;
+    <style>
+        html,
+        body {
+            min-height: 100%;
         }
 
-        .container {
+        body {
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .content {
+            max-width: 1280px;
+            min-height: 100vh;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        .demo-main {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .viewer-section {
+            min-width: 0;
+        }
+
+        .viewer-container {
+            aspect-ratio: 4 / 3;
             border: thin gray solid;
             position: relative;
         }
 
-        #viewer-container {
-            aspect-ratio: 4 / 3;
+        .viewer-title {
+            margin: 0 0 8px 0;
         }
 
-        .description pre{
-            display:inline-block;
-            background-color:gainsboro;
-            padding:0;
-            margin:0;
+        .image-sources-panel {
+            margin: 12px 0 0 0;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            font-size: 13px;
+            box-sizing: border-box;
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .image-sources-panel h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .image-options-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
 
         .image-options {
             display: grid;
-            grid-template-columns: 5em auto;
-            padding: 5px;
+            grid-template-columns: 24px 160px minmax(0, 1fr);
+            align-items: start;
+            gap: 8px;
+            margin: 0;
+            padding: 6px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+
+        .image-options-drag-handle {
+            cursor: move;
+            color: #555;
+            text-align: center;
+            margin-top: 2px;
+        }
+
+        .image-options-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 600;
+            color: #111;
+            min-width: 0;
+            word-break: break-word;
+        }
+
+        .image-options-title input {
+            flex: 0 0 auto;
         }
 
         .option-grid {
             display: grid;
-            grid-template-columns: repeat(5, 20%);
-            grid-template-rows: repeat(3, 3em);
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 8px;
+            min-width: 0;
         }
 
-        .image-options input[type=number]{
-            width: 5em;
+        .option-grid label {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 11px;
+            color: #666;
+            min-width: 0;
         }
 
-        .image-options select{
-            width: 5em;
+        .option-grid input,
+        .option-grid select {
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+            font-size: 13px;
+            color: #111;
+        }
+
+        .option-grid input[type="checkbox"] {
+            width: auto;
+            align-self: flex-start;
+        }
+
+        .image-sources-help {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        @media (max-width: 1000px) {
+            .option-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 700px) {
+            .image-options {
+                grid-template-columns: 24px minmax(0, 1fr);
+            }
+
+            .option-grid {
+                grid-column: 1 / -1;
+            }
+
+            .option-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
     </style>
 </head>
 <body>
-    <div class="content">
-        <div style="display: flex; flex-direction: row; flex-wrap: wrap;">
-            <div style="flex: auto">
-                <h2><strong>OpenSeadragon</strong> vector tile renderer</h2>
-                <div id="viewer-container" class="container"></div>
-            </div>
-            <div style="width: 400px; margin-left: 40px;">
-                <h2>Shader options</h2>
-                <div id="shader-ui-container" class="container" style="padding: 5px;"></div>
-            </div>
-        </div>
+<div class="content">
+    <h2>Vector Rendering Demo</h2>
 
-        <div>
-            <h2>Image options</h2>
-            <div id="image-options-container" class="container" style="padding: 5px;"></div>
-        </div>
-    </div>
+    <h3 id="title-w" class="viewer-title">OpenSeadragon viewer using FlexDrawer vector sources</h3>
+
+    <main class="demo-main">
+        <section class="viewer-section">
+            <div id="viewer-container" class="viewer-container"></div>
+        </section>
+
+        <section class="image-sources-panel">
+            <h3>Image sources</h3>
+            <div id="image-options-container" class="image-options-list"></div>
+            <p class="image-sources-help">
+                Configure the OpenSeadragon TiledImages.
+            </p>
+        </section>
+    </main>
+</div>
 </body>
 </html>
