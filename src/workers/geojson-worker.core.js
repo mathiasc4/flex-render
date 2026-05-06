@@ -369,6 +369,9 @@ function forEachCoordinate(coordinates, visitor) {
 /**
  * Return one tile's full-resolution image bounds.
  *
+ * Low pyramid levels and edge tiles can be smaller than tileSize in level-pixel
+ * coordinates, so bounds must be derived from the actual clipped level rectangle.
+ *
  * @param {number} level - OSD level.
  * @param {number} x - Tile x.
  * @param {number} y - Tile y.
@@ -376,12 +379,13 @@ function forEachCoordinate(coordinates, visitor) {
  */
 function getTileImageBounds(level, x, y) {
     const scale = getLevelScale(level);
+    const rect = getTileLevelRect(level, x, y);
 
     return [
-        x * STATE.tileSize / scale,
-        y * STATE.tileSize / scale,
-        (x + 1) * STATE.tileSize / scale,
-        (y + 1) * STATE.tileSize / scale
+        rect.left / scale,
+        rect.top / scale,
+        rect.right / scale,
+        rect.bottom / scale
     ];
 }
 
@@ -393,6 +397,49 @@ function getTileImageBounds(level, x, y) {
  */
 function getLevelScale(level) {
     return 1 / Math.pow(2, STATE.maxLevel - level);
+}
+
+/**
+ * Return the image dimensions at one pyramid level.
+ *
+ * @param {number} level - OSD level.
+ * @returns {number[]} Level dimensions as [width, height].
+ */
+function getLevelDimensions(level) {
+    const scale = getLevelScale(level);
+
+    return [
+        Math.max(1, Math.ceil(STATE.width * scale)),
+        Math.max(1, Math.ceil(STATE.height * scale))
+    ];
+}
+
+/**
+ * Return the actual tile rectangle in level-pixel coordinates.
+ *
+ * For low pyramid levels, the whole level image can be smaller than tileSize.
+ * For edge tiles, only part of the nominal tile rectangle is inside the level.
+ *
+ * @param {number} level - OSD level.
+ * @param {number} x - Tile x.
+ * @param {number} y - Tile y.
+ * @returns {{left: number, top: number, right: number, bottom: number, width: number, height: number}}
+ */
+function getTileLevelRect(level, x, y) {
+    const [levelWidth, levelHeight] = getLevelDimensions(level);
+    const left = x * STATE.tileSize;
+    const top = y * STATE.tileSize;
+    const right = Math.min(left + STATE.tileSize, levelWidth);
+    const bottom = Math.min(top + STATE.tileSize, levelHeight);
+
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        width: Math.max(1, right - left),
+        height: Math.max(1, bottom - top)
+    };
 }
 
 /**
@@ -426,32 +473,37 @@ function intersects(a, b) {
  *
  * @param {number[]} coordinate - Image coordinate.
  * @param {object} tile - Tile request.
- * @returns {number[]} Tile-local coordinate normalized to tile size.
+ * @returns {number[]} Tile-local coordinate normalized to the actual tile rectangle.
  */
 function imageToTileUv(coordinate, tile) {
     const scale = getLevelScale(tile.level);
+    const rect = getTileLevelRect(tile.level, tile.x, tile.y);
     const levelX = coordinate[0] * scale;
     const levelY = coordinate[1] * scale;
-    const localX = levelX - tile.x * STATE.tileSize;
-    const localY = levelY - tile.y * STATE.tileSize;
+    const localX = levelX - rect.left;
+    const localY = levelY - rect.top;
 
     return [
-        localX / STATE.tileSize,
-        localY / STATE.tileSize
+        localX / rect.width,
+        localY / rect.height
     ];
 }
 
 /**
- * Convert a tile-pixel size to normalized tile-local units.
+ * Convert a level-pixel size to normalized tile-local units.
  *
- * Mesh coordinates are emitted in normalized tile-local coordinates, where
- * 1.0 equals the full tile width or height.
+ * Mesh coordinates are emitted in normalized tile-local coordinates, where 1.0
+ * equals the actual tile width or height at the requested level.
  *
- * @param {number} size - Size in tile pixels.
+ * @param {number} size - Size in level pixels.
+ * @param {object} tile - Tile request.
  * @returns {number} Size in normalized tile-local units.
  */
-function tilePixelSizeToUv(size) {
-    return size / STATE.tileSize;
+function tilePixelSizeToUv(size, tile) {
+    const rect = getTileLevelRect(tile.level, tile.x, tile.y);
+    const denominator = Math.max(rect.width, rect.height);
+
+    return size / denominator;
 }
 
 /**
@@ -464,7 +516,7 @@ function tilePixelSizeToUv(size) {
  */
 function makePointMesh(coordinate, tile, tileDepth) {
     const [x, y] = imageToTileUv(coordinate, tile);
-    const size = tilePixelSizeToUv((STATE.style.pointSize !== null && STATE.style.pointSize !== undefined) ? STATE.style.pointSize : 12);
+    const size = tilePixelSizeToUv((STATE.style.pointSize !== undefined && STATE.style.pointSize !== null) ? STATE.style.pointSize : 12, tile);
     const half = size / 2;
 
     return makeMesh(
@@ -494,7 +546,7 @@ function makeLineMesh(coordinates, tile, tileDepth) {
 
     const vertices = [];
     const indices = [];
-    const width = tilePixelSizeToUv((STATE.style.lineWidth !== null && STATE.style.lineWidth !== undefined) ? STATE.style.lineWidth : 4);
+    const width = tilePixelSizeToUv((STATE.style.lineWidth !== undefined && STATE.style.lineWidth !== null) ? STATE.style.lineWidth : 4, tile);
     const half = width / 2;
 
     for (let i = 0; i < coordinates.length - 1; i++) {
