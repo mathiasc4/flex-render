@@ -139,9 +139,10 @@ $.MVTTileSource = class extends $.TileSource {
         const list = this._pending.get(key);
         if (list) {
             list.push(context);
-        } else {
-            this._pending.set(key, [ context ]);
+            return;
         }
+
+        this._pending.set(key, [ context ]);
 
         this._worker.postMessage({
             type: 'tile',

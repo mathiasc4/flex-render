@@ -4,37 +4,32 @@
      *
      * @readonly
      * @enum {string}
-     *
-     * @todo Add more projection types if necessary.
      */
     $.GeoJSONTileSourceProjection = Object.freeze({
-        /** GeoJSON coordinates are WGS84 longitude/latitude. */
-        EPSG4326: 'EPSG:4326',
-
-        /** GeoJSON coordinates are Web Mercator meters. */
-        EPSG3857: 'EPSG:3857',
-
         /** GeoJSON coordinates are already in OpenSeadragon image coordinates. */
         IMAGE: 'image'
+
+        // TODO: add other projection options as necessary.
     });
 
     /**
      * Options used to construct a GeoJSON tile source.
      *
      * @typedef {object} GeoJSONTileSourceOptions
-     * @property {object} [data] - Parsed GeoJSON object.
-     * @property {string} [url] - Source URL used to fetch or identify the GeoJSON.
+     * @property {string} url - Source URL used to fetch or identify the GeoJSON.
+     * @property {number} width - Full-resolution overlay width in OpenSeadragon image coordinates.
+     *     For pathology WSI overlays, this should match the full-resolution slide width.
+     * @property {number} height - Full-resolution overlay height in OpenSeadragon image coordinates.
+     *     For pathology WSI overlays, this should match the full-resolution slide height.
      * @property {number} [tileSize=512] - Logical tile size used by OpenSeadragon.
      * @property {number} [minLevel=0] - Minimum pyramid level.
-     * @property {number} [maxLevel=14] - Maximum pyramid level.
-     * @property {number} [width] - Full-resolution logical source width.
-     * @property {number} [height] - Full-resolution logical source height.
-     * @property {number} [extent=4096] - Tile-local coordinate extent for generated vector meshes.
-     * @property {number[]} [bounds] - GeoJSON bounds as [minX, minY, maxX, maxY].
-     * @property {GeoJSONTileSourceProjection} [projection=OpenSeadragon.GeoJSONTileSourceProjection.EPSG4326] - Coordinate interpretation mode.
+     * @property {number} [maxLevel] - Maximum pyramid level. Defaults to ceil(log2(max(width, height))).
+     * @property {GeoJSONTileSourceProjection} [projection=OpenSeadragon.GeoJSONTileSourceProjection.IMAGE] - Coordinate interpretation mode.
+     * @property {number[]} [bounds] - Optional source coordinate bounds as [minX, minY, maxX, maxY].
+     *     Defaults to [0, 0, width, height]. Provide this only when GeoJSON
+     *     coordinates need to be mapped from another coordinate rectangle into the
+     *     overlay coordinate space.
      * @property {object} [style] - Optional source-level style descriptor.
-     * @property {string} [workerUrl] - Optional worker script URL.
-     * @property {string} [workerSource] - Optional inline worker source.
      */
 
     /**
@@ -63,14 +58,6 @@
             });
 
             /**
-             * Parsed GeoJSON payload, if supplied inline or through configure().
-             *
-             * @private
-             * @type {?object}
-             */
-            this._data = normalized.data;
-
-            /**
              * URL used to fetch or identify the source.
              *
              * @private
@@ -79,25 +66,24 @@
             this._url = normalized.url;
 
             /**
-             * Tile-local coordinate extent used by the worker output.
-             *
-             * @type {number}
-             */
-            this.extent = normalized.extent;
-
-            /**
-             * Source-coordinate bounds.
-             *
-             * @type {number[]}
-             */
-            this.bounds = normalized.bounds;
-
-            /**
              * Coordinate interpretation mode for this source.
              *
              * @type {GeoJSONTileSourceProjection}
              */
             this.projection = normalized.projection;
+
+            /**
+             * Source coordinate bounds used to map GeoJSON coordinates into the overlay
+             * image space.
+             *
+             * Defaults to [0, 0, width, height]. For pathology image-space annotations,
+             * this should usually be omitted by the caller. Non-default bounds should be
+             * used only when the GeoJSON coordinates are in a different coordinate
+             * rectangle that must be mapped onto the overlay image space.
+             *
+             * @type {number[]}
+             */
+            this.bounds = normalized.bounds;
 
             /**
              * Optional source-level styling configuration.
@@ -123,15 +109,25 @@
             this._worker = null;
 
             /**
-             * Worker construction options. Used by _createWorker().
+             * Object URL used to construct the inline Blob worker.
+             *
+             * This is revoked in destroy() after the worker is terminated.
              *
              * @private
-             * @type {{workerUrl: ?string, workerSource: ?string}}
+             * @type {?string}
              */
-            this._workerOptions = {
-                workerUrl: normalized.workerUrl,
-                workerSource: normalized.workerSource
-            };
+            this._workerObjectUrl = null;
+
+            /**
+             * Fatal worker setup or runtime error, if one has occurred.
+             *
+             * Once set, future tile jobs fail immediately instead of being sent to a
+             * worker that cannot produce valid tiles.
+             *
+             * @private
+             * @type {?string}
+             */
+            this._workerError = null;
 
             this._worker = this._createWorker();
             this._configureWorker();
@@ -145,24 +141,36 @@
          * @throws {Error} Thrown when required coordinate or tiling options are invalid.
          */
         static normalizeOptions(options = {}) {
-            const normalized = $.extend(true, {
-                data: null,
-                url: null,
-                tileSize: 512,
-                minLevel: 0,
-                maxLevel: 14,
-                width: undefined,
-                height: undefined,
-                extent: 4096,
-                bounds: null,
-                projection: $.GeoJSONTileSourceProjection.EPSG4326,
-                style: null,
-                workerUrl: null,
-                workerSource: null
-            }, options || {});
+            const normalized = {
+                url: options.url,
+                width: options.width,
+                height: options.height,
+                tileSize: (options.tileSize !== null && options.tileSize !== undefined) ? options.tileSize : 512,
+                minLevel: (options.minLevel !== null && options.minLevel !== undefined) ? options.minLevel : 0,
+                maxLevel: options.maxLevel,
+                projection: options.projection || $.GeoJSONTileSourceProjection.IMAGE,
+                bounds: options.bounds || null,
+                style: options.style || null
+            };
 
-            if (!normalized.data && !normalized.url) {
-                throw new Error('GeoJSONTileSource: either data or url is required.');
+            if (typeof normalized.url !== 'string' || !normalized.url.trim()) {
+                throw new Error('GeoJSONTileSource: url is required and must be a non-empty string.');
+            }
+
+            normalized.url = resolveUrl(normalized.url);
+
+            if (!Number.isFinite(normalized.width) || normalized.width <= 0) {
+                throw new Error(
+                    'GeoJSONTileSource: width must be a positive finite number. ' +
+                    'For pathology WSI overlays, use the full-resolution slide width.'
+                );
+            }
+
+            if (!Number.isFinite(normalized.height) || normalized.height <= 0) {
+                throw new Error(
+                    'GeoJSONTileSource: height must be a positive finite number. ' +
+                    'For pathology WSI overlays, use the full-resolution slide height.'
+                );
             }
 
             if (!Number.isFinite(normalized.tileSize) || normalized.tileSize <= 0) {
@@ -171,6 +179,12 @@
 
             if (!Number.isInteger(normalized.minLevel) || normalized.minLevel < 0) {
                 throw new Error('GeoJSONTileSource: minLevel must be a non-negative integer.');
+            }
+
+            if (normalized.maxLevel === undefined || normalized.maxLevel === null) {
+                normalized.maxLevel = Math.ceil(
+                    Math.log2(Math.max(normalized.width, normalized.height))
+                );
             }
 
             if (!Number.isInteger(normalized.maxLevel) || normalized.maxLevel < normalized.minLevel) {
@@ -185,133 +199,93 @@
                 );
             }
 
-            if (!normalized.bounds && normalized.data && Array.isArray(normalized.data.bbox)) {
-                normalized.bounds = normalized.data.bbox.slice();
-            } else if (normalized.bounds) {
+            if (normalized.bounds) {
                 normalized.bounds = normalized.bounds.slice();
-            }
-
-            if (normalized.projection === $.GeoJSONTileSourceProjection.IMAGE) {
-                if (!normalized.bounds) {
-                    if (!Number.isFinite(normalized.width) || !Number.isFinite(normalized.height)) {
-                        throw new Error(
-                            'GeoJSONTileSource: projection "image" requires either bounds or both width and height.'
-                        );
-                    }
-
-                    normalized.bounds = [0, 0, normalized.width, normalized.height];
-                }
-
-                if (!Number.isFinite(normalized.width)) {
-                    normalized.width = normalized.bounds[2] - normalized.bounds[0];
-                }
-
-                if (!Number.isFinite(normalized.height)) {
-                    normalized.height = normalized.bounds[3] - normalized.bounds[1];
-                }
             } else {
-                if (!Number.isFinite(normalized.width)) {
-                    normalized.width = Math.pow(2, normalized.maxLevel) * normalized.tileSize;
-                }
-
-                if (!Number.isFinite(normalized.height)) {
-                    normalized.height = Math.pow(2, normalized.maxLevel) * normalized.tileSize;
-                }
+                normalized.bounds = [0, 0, normalized.width, normalized.height];
             }
 
-            if (!Number.isFinite(normalized.width) || normalized.width <= 0) {
-                throw new Error('GeoJSONTileSource: width must be a positive finite number.');
+            if (!Array.isArray(normalized.bounds) || normalized.bounds.length !== 4) {
+                throw new Error('GeoJSONTileSource: bounds must be [minX, minY, maxX, maxY].');
             }
 
-            if (!Number.isFinite(normalized.height) || normalized.height <= 0) {
-                throw new Error('GeoJSONTileSource: height must be a positive finite number.');
+            const [minX, minY, maxX, maxY] = normalized.bounds;
+
+            if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+                throw new Error('GeoJSONTileSource: bounds values must be finite numbers.');
             }
 
-            if (!Number.isFinite(normalized.extent) || normalized.extent <= 0) {
-                throw new Error('GeoJSONTileSource: extent must be a positive finite number.');
+            if (minX >= maxX) {
+                throw new Error('GeoJSONTileSource: bounds minX must be smaller than maxX.');
             }
 
-            if (normalized.bounds !== null) {
-                if (!Array.isArray(normalized.bounds) || normalized.bounds.length !== 4) {
-                    throw new Error('GeoJSONTileSource: bounds must be [minX, minY, maxX, maxY].');
-                }
-
-                const [minX, minY, maxX, maxY] = normalized.bounds;
-
-                if (
-                    !Number.isFinite(minX) ||
-                    !Number.isFinite(minY) ||
-                    !Number.isFinite(maxX) ||
-                    !Number.isFinite(maxY)
-                ) {
-                    throw new Error('GeoJSONTileSource: bounds values must be finite numbers.');
-                }
-
-                if (minX >= maxX) {
-                    throw new Error('GeoJSONTileSource: bounds minX must be smaller than maxX.');
-                }
-
-                if (minY >= maxY) {
-                    throw new Error('GeoJSONTileSource: bounds minY must be smaller than maxY.');
-                }
+            if (minY >= maxY) {
+                throw new Error('GeoJSONTileSource: bounds minY must be smaller than maxY.');
             }
 
             return normalized;
         }
 
         /**
-         * Determine whether the supplied metadata looks like GeoJSON.
+         * Determine whether the supplied metadata can configure a GeoJSON tile source.
+         *
+         * Raw GeoJSON alone is not enough for automatic TileSource configuration,
+         * because this source needs the dimensions of the destination overlay coordinate
+         * space. For pathology WSI overlays, width and height must match the
+         * full-resolution slide dimensions.
+         *
+         * Supported metadata should use the wrapper form:
+         *
+         * {
+         *     type: 'geojson',
+         *     url: 'annotations.geojson',
+         *     width: slideFullResolutionWidth,
+         *     height: slideFullResolutionHeight
+         * }
+         *
+         * Raw GeoJSON is intentionally not accepted. This source requires WSI
+         * image-space width and height, and GeoJSON fetching/parsing is owned by
+         * the worker.
          *
          * @param {object} data - Parsed metadata or inline source object.
          * @param {string} url - Metadata URL, if available.
          * @returns {boolean} True when this source can configure the input.
          */
         supports(data, url) {
-            if (typeof url === 'string' && url.toLowerCase().endsWith('.geojson')) {
-                return true;
-            }
-
             if (!data || typeof data !== 'object') {
                 return false;
             }
 
-            if (data.type === 'FeatureCollection' || data.type === 'Feature') {
-                return true;
+            if (data.type !== 'geojson') {
+                return false;
             }
 
-            if (data.type === 'geojson' && (data.data || data.url)) {
-                return true;
+            if (typeof data.url !== 'string' || !data.url.trim()) {
+                return false;
             }
 
-            return false;
+            return Number.isFinite(data.width) && data.width > 0 && Number.isFinite(data.height) && data.height > 0;
         }
 
         /**
          * Convert GeoJSON metadata into constructor options.
          *
-         * @param {object} data - Parsed GeoJSON or wrapper options.
+         * @param {object} data - GeoJSON TileSource wrapper options.
          * @param {string} dataUrl - URL the metadata was loaded from, if any.
-         * @param {string} postData - POST data passed during metadata loading, if any.
+         * @param {string} _postData - POST data passed during metadata loading, if any.
          * @returns {GeoJSONTileSourceOptions} Constructor options.
          */
-        configure(data = {}, dataUrl, postData) {
-            const wrapped = data && data.type === 'geojson';
-            const geojson = wrapped ? data.data : data;
-
+        configure(data = {}, dataUrl, _postData) {
             return {
-                data: geojson || null,
-                url: wrapped ? data.url || dataUrl : dataUrl,
-                tileSize: data.tileSize || 512,
-                minLevel: data.minLevel || data.minzoom || 0,
-                maxLevel: data.maxLevel || data.maxzoom || 14,
+                url: resolveUrl(data.url, dataUrl),
                 width: data.width,
                 height: data.height,
-                extent: data.extent || 4096,
-                bounds: data.bounds || data.bbox || (geojson && geojson.bbox) || null,
-                projection: data.projection || $.GeoJSONTileSourceProjection.EPSG4326,
-                style: data.style || null,
-                workerUrl: data.workerUrl || null,
-                workerSource: data.workerSource || null
+                tileSize: (data.tileSize !== undefined && data.tileSize !== null) ? data.tileSize : 512,
+                minLevel: (data.minLevel !== undefined && data.minLevel !== null) ? data.minLevel : 0,
+                maxLevel: data.maxLevel,
+                projection: data.projection || $.GeoJSONTileSourceProjection.IMAGE,
+                bounds: data.bounds || null,
+                style: data.style || null
             };
         }
 
@@ -324,24 +298,7 @@
          * @returns {string} Stable tile identifier.
          */
         getTileUrl(level, x, y) {
-            const sourceId = this._url || 'inline';
-            return `geojson://${sourceId}/${level}/${x}/${y}`;
-        }
-
-        /**
-         * Return tile coordinates as POST-style job data.
-         *
-         * @param {number} level - Pyramid level.
-         * @param {number} x - Tile column.
-         * @param {number} y - Tile row.
-         * @returns {{level: number, x: number, y: number}}
-         */
-        getTilePostData(level, x, y) {
-            return {
-                level,
-                x,
-                y
-            };
+            return `geojson://${encodeURIComponent(this._url)}/${level}/${x}/${y}`;
         }
 
         /**
@@ -358,36 +315,54 @@
         }
 
         /**
+         * GeoJSON vector tiles are transparent overlays.
+         *
+         * @returns {boolean} Always true.
+         */
+        hasTransparency() {
+            return true;
+        }
+
+        /**
          * Start loading or generating one GeoJSON vector tile.
-         *
-         * The final implementation should call:
-         *
-         *     job.finish(vectorMeshPayload, undefined, 'vector-mesh');
-         *
-         * or:
-         *
-         *     job.fail(errorMessage);
          *
          * @param {OpenSeadragon.ImageJob} job - OpenSeadragon image job.
          * @returns {void}
          */
         downloadTileStart(job) {
-            const tile = job.postData || this._readTileFromUrl(job.src);
-            const key = this.getTileHashKey(tile.level, tile.x, tile.y);
-
-            if (!this._pending.has(key)) {
-                this._pending.set(key, []);
+            if (this._workerError) {
+                job.fail(this._workerError);
+                return;
             }
 
-            this._pending.get(key).push(job);
+            if (!this._worker) {
+                job.fail('GeoJSONTileSource: worker is not available.');
+                return;
+            }
 
-            // TODO:
-            // 1. Send { type: 'tile', key, level, x, y } to the worker.
-            // 2. Worker clips/project/features for this tile.
-            // 3. Worker returns a normalized vector-mesh payload.
-            // 4. _handleWorkerMessage(...) calls job.finish(..., 'vector-mesh').
+            const tile = job.tile;
+            if (!tile) {
+                job.fail('GeoJSONTileSource: tile job is missing tile coordinates.');
+                return;
+            }
 
-            job.fail('GeoJSONTileSource.downloadTileStart is not implemented yet.');
+            const key = this.getTileHashKey(tile.level, tile.x, tile.y);
+            const jobs = this._pending.get(key);
+
+            if (jobs) {
+                jobs.push(job);
+                return;
+            }
+
+            this._pending.set(key, [ job ]);
+
+            this._worker.postMessage({
+                type: 'tile',
+                key,
+                level: tile.level,
+                x: tile.x,
+                y: tile.y
+            });
         }
 
         /**
@@ -397,7 +372,11 @@
          * @returns {void}
          */
         downloadTileAbort(job) {
-            const tile = job.postData || this._readTileFromUrl(job.src);
+            const tile = job.tile;
+            if (!tile) {
+                return;
+            }
+
             const key = this.getTileHashKey(tile.level, tile.x, tile.y);
             const jobs = this._pending.get(key);
 
@@ -413,7 +392,7 @@
             if (!jobs.length) {
                 this._pending.delete(key);
 
-                // TODO: optionally notify worker to cancel this tile.
+                // TODO: implement cooperative cancellation in the worker and add a cancel call here as a possible optimization
             }
         }
 
@@ -426,15 +405,16 @@
             return {
                 type: 'geojson',
                 url: this._url,
-                bounds: this.bounds ? this.bounds.slice() : null,
-                projection: this.projection,
-                extent: this.extent,
-                minLevel: this.minLevel,
-                maxLevel: this.maxLevel,
                 dimensions: {
                     width: this.dimensions.x,
                     height: this.dimensions.y
-                }
+                },
+                tileSize: this.tileSize,
+                minLevel: this.minLevel,
+                maxLevel: this.maxLevel,
+                projection: this.projection,
+                bounds: this.bounds ? this.bounds.slice() : null,
+                style: this.style
             };
         }
 
@@ -448,8 +428,7 @@
             return !!(
                 otherSource &&
                 otherSource instanceof $.GeoJSONTileSource &&
-                otherSource._url === this._url &&
-                otherSource._data === this._data
+                otherSource._url === this._url
             );
         }
 
@@ -466,21 +445,33 @@
                 this._worker = null;
             }
 
-            this._data = null;
+            if (this._workerObjectUrl) {
+                (window.URL || window.webkitURL).revokeObjectURL(this._workerObjectUrl);
+                this._workerObjectUrl = null;
+            }
+
+            this._workerError = null;
         }
 
         /**
-         * Create the GeoJSON worker.
+         * Create the GeoJSON worker from the bundled inline worker source.
          *
          * @private
-         * @returns {?Worker} Worker instance.
+         * @returns {Worker} Worker instance.
          */
         _createWorker() {
-            // TODO:
-            // - If workerUrl is set, return new Worker(workerUrl).
-            // - If workerSource is set, create a Blob URL and return a Worker.
-            // - Otherwise use a bundled worker source variable, if the build adds one.
-            return null;
+            const inline = (OpenSeadragon && OpenSeadragon.__GEOJSON_WORKER_SOURCE__);
+
+            if (!inline) {
+                throw new Error('GeoJSONTileSource: no worker source available.');
+            }
+
+            const blob = new Blob([inline], { type: 'text/javascript' });
+            const URLConstructor = window.URL || window.webkitURL;
+
+            this._workerObjectUrl = URLConstructor.createObjectURL(blob);
+
+            return new Worker(this._workerObjectUrl);
         }
 
         /**
@@ -490,25 +481,30 @@
          * @returns {void}
          */
         _configureWorker() {
-            if (!this._worker) {
-                return;
-            }
-
             this._worker.onmessage = (event) => {
                 this._handleWorkerMessage(event.data || {});
             };
 
             this._worker.onerror = (event) => {
-                this._failAllPending(event.message || 'GeoJSON worker failed.');
+                this._workerError = event.message || 'GeoJSON worker failed.';
+                this._failAllPending(this._workerError);
+            };
+
+            this._worker.onmessageerror = () => {
+                this._workerError = 'GeoJSON worker sent an unreadable message.';
+                this._failAllPending(this._workerError);
             };
 
             this._worker.postMessage({
                 type: 'config',
-                data: this._data,
                 url: this._url,
-                bounds: this.bounds,
+                tileSize: this.tileSize,
+                minLevel: this.minLevel,
+                maxLevel: this.maxLevel,
                 projection: this.projection,
-                extent: this.extent,
+                bounds: this.bounds,
+                width: this.dimensions.x,
+                height: this.dimensions.y,
                 style: this.style
             });
         }
@@ -521,6 +517,12 @@
          * @returns {void}
          */
         _handleWorkerMessage(message) {
+            if (message.type === 'error' && !message.key) {
+                this._workerError = message.error || 'GeoJSON worker failed.';
+                this._failAllPending(this._workerError);
+                return;
+            }
+
             if (!message.key) {
                 return;
             }
@@ -532,10 +534,18 @@
 
             this._pending.delete(message.key);
 
-            for (const job of jobs) {
-                if (message.ok) {
-                    job.finish(message.data, undefined, 'vector-mesh');
-                } else {
+            if (message.ok) {
+                const tile = message.data || {};
+
+                for (const job of jobs) {
+                    job.finish({
+                        fills: (tile.fills || []).map(packMesh),
+                        lines: (tile.lines || []).map(packMesh),
+                        points: (tile.points || []).map(packMesh)
+                    }, undefined, 'vector-mesh');
+                }
+            } else {
+                for (const job of jobs) {
                     job.fail(message.error || 'GeoJSON tile generation failed.');
                 }
             }
@@ -557,25 +567,41 @@
 
             this._pending.clear();
         }
-
-        /**
-         * Read tile coordinates from this source's pseudo URL.
-         *
-         * @private
-         * @param {string} url - Pseudo tile URL.
-         * @returns {{level: number, x: number, y: number}}
-         */
-        _readTileFromUrl(url) {
-            const parts = String(url || '').split('/');
-            const y = Number.parseInt(parts.pop(), 10) || 0;
-            const x = Number.parseInt(parts.pop(), 10) || 0;
-            const level = Number.parseInt(parts.pop(), 10) || 0;
-
-            return {
-                level,
-                x,
-                y
-            };
-        }
     };
+
+    /**
+     * Resolve a GeoJSON source URL before sending it to a Blob worker.
+     *
+     * Relative URLs passed directly in a tile source object are resolved against
+     * the document base URL. Relative URLs loaded from a metadata document are
+     * resolved against that metadata document URL.
+     *
+     * @param {string} url - Source URL, absolute or relative.
+     * @param {string} [baseUrl] - Optional metadata document URL.
+     * @returns {string} Absolute URL.
+     * @throws {Error} Thrown when the URL cannot be resolved.
+     */
+    function resolveUrl(url, baseUrl) {
+        try {
+            const base = baseUrl || (typeof document !== 'undefined' && document.baseURI) || (typeof window !== 'undefined' && window.location && window.location.href);
+            return new URL(url, base).href;
+        } catch (error) {
+            throw new Error(`GeoJSONTileSource: invalid url '${url}'.`);
+        }
+    }
+
+    /**
+     * Convert worker-transferred mesh buffers into runtime typed arrays.
+     *
+     * @param {object} mesh - Worker mesh payload.
+     * @returns {object} Runtime vector mesh.
+     */
+    function packMesh(mesh) {
+        return {
+            vertices: new Float32Array(mesh.vertices),
+            indices: new Uint32Array(mesh.indices),
+            color: mesh.color || [0, 1, 0, 1],
+            parameters: mesh.parameters ? new Float32Array(mesh.parameters) : undefined
+        };
+    }
 })(OpenSeadragon);

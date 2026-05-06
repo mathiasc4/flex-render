@@ -1,11 +1,19 @@
 const sources = {
     mvt: "http://localhost:8888/data/v3.json",
     fabric: "../data/fabric.geometry.json",
+    geojson: {
+        type: "geojson",
+        url: "../data/geojson-sample.geojson",
+        projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
+        width: 4096,
+        height: 4096,
+    },
 };
 
 const labels = {
     mvt: "MVT",
     fabric: "Fabric",
+    geojson: "GeoJSON",
 };
 
 const drawerOptions = {
