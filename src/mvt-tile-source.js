@@ -80,8 +80,42 @@ $.MVTTileSource = class extends $.TileSource {
      * @param {String} url - optional
      */
     supports(data, url) {
-        return data["tiles"] && data["format"] === "pbf" && url.endsWith(".json");
+        if (!isPlainObject(data)) {
+            return false;
+        }
+
+        if (!hasTileTemplate(data)) {
+            return false;
+        }
+
+        // Explicit opt-in for manually supplied sources.
+        // Useful for:
+        // {
+        //   type: "mvt",
+        //   tiles: ["http://localhost:3000/source/{z}/{x}/{y}"]
+        // }
+        if (data.type === "mvt" || data.type === "vector") {
+            return true;
+        }
+
+        // Common TileJSON / tileserver declarations.
+        if (data.format === "pbf" || data.format === "mvt") {
+            return true;
+        }
+
+        // Vector TileJSON commonly contains vector_layers.
+        // Martin/OpenMapTiles should generally expose this on the source endpoint,
+        // not on /catalog.
+        if (Array.isArray(data.vector_layers)) {
+            return true;
+        }
+
+        // Last safe fallback: the tile template itself clearly says MVT/PBF.
+        // This accepts e.g. ".../{z}/{x}/{y}.pbf" but avoids raster TileJSON
+        // such as png/jpg tiles.
+        return hasVectorTileTemplate(data);
     }
+
     /**
      *
      * @function
@@ -94,17 +128,26 @@ $.MVTTileSource = class extends $.TileSource {
     configure(data, dataUrl, postData) {
         const tj = data;
 
-        // Basic TileJSON fields
-        const tiles = (tj.tiles && tj.tiles.length) ? tj.tiles : (tj.tilesURL ? [tj.tilesURL] : null);
-        if (!tiles) {
-            throw new Error('TileJSON missing tiles template');
+        const tiles = getTileTemplates(tj);
+        if (!tiles.length) {
+            throw new Error("TileJSON missing tiles template");
         }
-        const template = tiles[0];
-        const tileSize = tj.tileSize || 512;  // many vector tile sets use 512
-        const minLevel = tj.minzoom ? tj.minzoom : 0;
-        const maxLevel = tj.maxzoom ? tj.maxzoom : 14;
-        const scheme = tj.scheme || 'xyz'; // 'xyz' or 'tms'
-        const extent = (tj.extent && Number.isFinite(tj.extent)) ? tj.extent : 4096;
+
+        const template = resolveTileTemplate(tiles[0], dataUrl);
+
+        const tileSize = Number.isFinite(tj.tileSize)
+            ? tj.tileSize
+            : Number.isFinite(tj.tile_size)
+                ? tj.tile_size
+                : 512;
+
+        const minLevel = Number.isFinite(tj.minzoom) ? tj.minzoom : 0;
+        const maxLevel = Number.isFinite(tj.maxzoom) ? tj.maxzoom : 14;
+
+        const scheme = tj.scheme === "tms" ? "tms" : "xyz";
+
+        // This is the internal vector-tile coordinate extent, not geographic bounds.
+        const extent = Number.isFinite(tj.extent) ? tj.extent : 4096;
 
         const width = Math.pow(2, maxLevel) * tileSize;
         const height = width;
@@ -118,15 +161,21 @@ $.MVTTileSource = class extends $.TileSource {
             width,
             height,
             extent,
-            style: defaultStyle(),  // todo style
+            style: tj.style || defaultStyle(),
         };
     }
 
     getTileUrl(level, x, y) {
         const z = level;
         const n = 1 << z;
-        const ty = (this.scheme === 'tms') ? (n - 1 - y) : y;
-        return this.template.replace('{z}', z).replace('{x}', x).replace('{y}', ty);
+        const flippedY = n - 1 - y;
+        const yValue = this.scheme === "tms" ? flippedY : y;
+
+        return this.template
+            .replace(/\{-y\}/g, String(flippedY))
+            .replace(/\{z\}/g, String(z))
+            .replace(/\{x\}/g, String(x))
+            .replace(/\{y\}/g, String(yValue));
     }
 
     /**
@@ -223,6 +272,79 @@ function makeWorker() {
     }
 
     throw new Error('No worker source available');
+}
+
+function isPlainObject(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getTileTemplates(data) {
+    if (!isPlainObject(data)) {
+        return [];
+    }
+
+    if (Array.isArray(data.tiles)) {
+        return data.tiles.filter(t => typeof t === "string");
+    }
+
+    if (typeof data.tilesURL === "string") {
+        return [data.tilesURL];
+    }
+
+    if (typeof data.template === "string") {
+        return [data.template];
+    }
+
+    return [];
+}
+
+function hasTileTemplate(data) {
+    return getTileTemplates(data).some(isZxyTemplate);
+}
+
+function isZxyTemplate(template) {
+    return /\{z\}/.test(template)
+        && /\{x\}/.test(template)
+        && (/\{y\}/.test(template) || /\{-y\}/.test(template));
+}
+
+function hasVectorTileTemplate(data) {
+    return getTileTemplates(data).some(template => {
+        const clean = template.split("?")[0].split("#")[0];
+
+        return /\.(pbf|mvt)$/i.test(clean)
+            || /[?&]format=(pbf|mvt)(?:&|$)/i.test(template);
+    });
+}
+
+function resolveTileTemplate(template, dataUrl) {
+    if (!dataUrl) {
+        return template;
+    }
+
+    const placeholders = [
+        ["{-y}", "__MVT_NEG_Y__"],
+        ["{z}", "__MVT_Z__"],
+        ["{x}", "__MVT_X__"],
+        ["{y}", "__MVT_Y__"],
+    ];
+
+    let protectedTemplate = template;
+    for (const [raw, token] of placeholders) {
+        protectedTemplate = protectedTemplate.replaceAll(raw, token);
+    }
+
+    try {
+        let resolved = new URL(protectedTemplate, dataUrl).toString();
+
+        for (const [raw, token] of placeholders) {
+            resolved = resolved.replaceAll(token, raw);
+        }
+
+        return resolved;
+    } catch (e) {
+        return template;
+    }
 }
 
 })(OpenSeadragon);

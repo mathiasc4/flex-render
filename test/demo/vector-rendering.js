@@ -1,5 +1,5 @@
 const sources = {
-    mvt: "http://localhost:8888/data/v3.json",
+    mvt: "http://localhost:3000/osm-2020-02-10-v3.11_asia_japan",
     fabric: "../data/fabric.geometry.json",
     geojson: {
         type: "geojson",
@@ -8,12 +8,20 @@ const sources = {
         width: 4096,
         height: 4096,
     },
+    geojson_10k: {
+        type: "geojson",
+        url: "../data/geojson-performance-10k.geojson",
+        projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
+        width: 4096,
+        height: 4096,
+    }
 };
 
 const labels = {
     mvt: "MVT",
     fabric: "Fabric",
     geojson: "GeoJSON",
+    geojson_10k: "GeoJSON 10k",
 };
 
 const drawerOptions = {

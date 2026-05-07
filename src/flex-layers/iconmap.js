@@ -332,7 +332,7 @@ vec3 iconmap_gridUv_${uid}(vec2 fragCoord) {
         vec2 denom = max(vec2(1.0) - 2.0 * spacingVec, vec2(1e-5));
         vec2 paddedUv = clamp((local - spacingVec) / denom, 0.0, 1.0);
 
-        return vec3(paddedUv, inside);
+        return vec3(paddedUv.x, 1.0 - paddedUv.y, inside);
     }
 
 vec2 iconmap_cellCenterUv_${uid}(vec2 dataUv) {
