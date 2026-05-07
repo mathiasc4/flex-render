@@ -2,8 +2,11 @@
  * GeoJSON worker for GeoJSONTileSource.
  *
  * Debug-first implementation:
- * - supports Point, LineString, and Polygon exterior rings only;
- * - ignores Multi* geometries, GeometryCollection, and polygon holes;
+ * - accepts standard GeoJSON Feature, FeatureCollection, raw Geometry, and GeometryCollection objects;
+ * - explodes MultiPoint, MultiLineString, MultiPolygon, and GeometryCollection
+ *   into simple Point, LineString, and Polygon records before projection;
+ * - meshes Point, LineString, and Polygon exterior rings;
+ * - currently ignores polygon holes during meshing;
  * - performs bbox filtering, not exact clipping;
  * - emits FlexDrawer-compatible vector-mesh payloads with vec4 vertices.
  *
@@ -18,7 +21,7 @@
 let STATE = {
     configured: false,
     configurePromise: null,
-    features: [],
+    geometries: [],
     tileSize: 512,
     minLevel: 0,
     maxLevel: 0,
@@ -54,8 +57,6 @@ self.onmessage = function(event) {
  */
 async function configure(message) {
     try {
-        const data = await fetchGeoJSON(message.url);
-        const rawFeatures = readSimpleFeatures(data);
         const projection = message.projection || 'image';
         const bounds = message.bounds;
 
@@ -70,10 +71,14 @@ async function configure(message) {
             throw new Error('GeoJSON worker: bounds are required.');
         }
 
+        const data = await fetchGeoJSON(message.url);
+
+        const rawGeometries = parseGeojson(data);
+
         STATE = {
             configured: true,
             configurePromise: null,
-            features: [],
+            geometries: [],
             width: (message.width !== null && message.width !== undefined) ? message.width : 1,
             height: (message.height !== null && message.height !== undefined) ? message.height : 1,
             tileSize: (message.tileSize !== null && message.tileSize !== undefined) ? message.tileSize : 512,
@@ -84,9 +89,7 @@ async function configure(message) {
             style: (message.style !== null && message.style !== undefined) ? message.style : {}
         };
 
-        STATE.features = rawFeatures
-            .map(projectFeature)
-            .filter(Boolean);
+        STATE.geometries = rawGeometries.map(projectGeometry).filter(Boolean);
     } catch (error) {
         self.postMessage({
             type: 'error',
@@ -95,6 +98,7 @@ async function configure(message) {
         });
     }
 }
+
 
 /**
  * Fetch a GeoJSON document.
@@ -114,6 +118,277 @@ async function fetchGeoJSON(url) {
 
     return response.json();
 }
+
+const GEOMETRY_TYPES = new Set([
+    "Point",
+    "MultiPoint",
+    "LineString",
+    "MultiLineString",
+    "Polygon",
+    "MultiPolygon",
+    "GeometryCollection"
+]);
+
+/**
+ * Extract simple GeoJSON geometry records from a GeoJSON object.
+ *
+ * The renderer only consumes simple Point, LineString, and Polygon records.
+ * This reader accepts standard GeoJSON containers and explodes multi-geometries
+ * into those simple records while preserving feature properties and id.
+ *
+ * Supported standard GeoJSON inputs:
+ * - FeatureCollection
+ * - Feature
+ * - a simple geometry type or a GeometryCollection
+ *
+ * @param {object} geojson - GeoJSON object.
+ * @returns {object[]} Simple feature records.
+ * @throws {Error} Thrown when geojson is not a valid GeoJSON object.
+ */
+function parseGeojson(geojson) {
+    if (!geojson || typeof geojson !== 'object' || Array.isArray(geojson)) {
+        throw new Error('GeoJSON worker: root GeoJSON value must be a non-array object.');
+    }
+
+    if (geojson.type === 'FeatureCollection') {
+        return parseFeatureCollection(geojson);
+    }
+
+    if (geojson.type === 'Feature') {
+        return parseFeature(geojson);
+    }
+
+    if (GEOMETRY_TYPES.has(geojson.type)) {
+        return parseGeometry(geojson);
+    }
+
+    throw new Error('GeoJSON worker: root GeoJSON type must be FeatureCollection, Feature, or a supported geometry type.');
+}
+
+/**
+ * Parse a standard GeoJSON FeatureCollection.
+ *
+ * @param {object} collection - FeatureCollection object.
+ * @returns {object[]} Simple feature records.
+ * @throws {Error} Thrown when collection is not a valid GeoJSON FeatureCollection.
+ */
+function parseFeatureCollection(collection) {
+    if (!collection || typeof collection !== 'object' || Array.isArray(collection)) {
+        throw new Error('GeoJSON worker: FeatureCollection must be a non-array object.');
+    }
+
+    if (collection.type !== 'FeatureCollection') {
+        throw new Error('GeoJSON worker: FeatureCollection.type must be "FeatureCollection".');
+    }
+
+    if (!Array.isArray(collection.features)) {
+        throw new Error('GeoJSON worker: FeatureCollection.features must be an array of Feature objects.');
+    }
+
+    return collection.features.flatMap(feature => parseFeature(feature));
+}
+
+/**
+ * Parse a standard GeoJSON Feature.
+ *
+ * @param {object} feature - Feature object.
+ * @returns {object[]} Simple feature records.
+ * @throws {Error} Thrown when feature is not a valid GeoJSON Feature.
+ */
+function parseFeature(feature) {
+    if (!feature || typeof feature !== 'object' || Array.isArray(feature)) {
+        throw new Error('GeoJSON worker: Feature must be a non-array object.');
+    }
+
+    if (feature.type !== 'Feature') {
+        throw new Error('GeoJSON worker: Feature.type must be "Feature".');
+    }
+
+    // the GeoJSON standard specifies properties as required,
+    // but they are not strictly necessary for rendering so we will be permissive and allow them to be undefined
+    if (!(feature.properties === undefined || (typeof feature.properties === 'object' && !Array.isArray(feature.properties)) || feature.properties === null)) {
+        throw new Error('GeoJSON worker: Feature.properties must be an object, null, or undefined.');
+    }
+
+    if (!(feature.id === undefined || typeof feature.id === 'string' || typeof feature.id === 'number')) {
+        throw new Error('GeoJSON worker: Feature.id must be a string, number, or undefined.');
+    }
+
+    return parseGeometry(feature.geometry, feature.properties, feature.id);
+}
+
+/**
+ * Convert a supported standard GeoJSON geometry into internal simple feature records.
+ *
+ * Multi* geometries and GeometryCollection are exploded into simple records.
+ * Polygon holes are preserved in the coordinate structure for now, but the
+ * current mesher still consumes only the exterior ring.
+ *
+ * @param {object} geometry - GeoJSON geometry.
+ * @param {object|null|undefined} properties - Feature properties.
+ * @param {string|number|undefined} id - Feature id.
+ * @returns {object[]} Internal simple feature records.
+ * @throws {Error} Thrown when geometry is not a valid GeoJSON geometry object.
+ */
+function parseGeometry(geometry, properties = undefined, id = undefined) {
+    if (!geometry || typeof geometry !== 'object' || Array.isArray(geometry)) {
+        throw new Error('GeoJSON worker: geometry must be a non-array GeoJSON geometry object.');
+    }
+
+    switch (geometry.type) {
+        case 'Point':
+            validatePointCoordinates(geometry.coordinates);
+            return [ createGeometryRecord('Point', geometry.coordinates, properties, id) ];
+
+        case 'LineString':
+            validateLineStringCoordinates(geometry.coordinates);
+            return [ createGeometryRecord('LineString', geometry.coordinates, properties, id) ];
+
+        case 'Polygon':
+            validatePolygonCoordinates(geometry.coordinates);
+            return [ createGeometryRecord('Polygon', geometry.coordinates, properties, id) ];
+
+        case 'MultiPoint':
+            if (!Array.isArray(geometry.coordinates)) {
+                throw new Error('GeoJSON worker: MultiPoint.coordinates must be an array of Point positions.');
+            }
+
+            geometry.coordinates.forEach(validatePointCoordinates);
+
+            return geometry.coordinates.map(coordinate => createGeometryRecord('Point', coordinate, properties, id));
+
+        case 'MultiLineString':
+            if (!Array.isArray(geometry.coordinates)) {
+                throw new Error('GeoJSON worker: MultiLineString.coordinates must be an array of LineString coordinate arrays.');
+            }
+
+            geometry.coordinates.forEach(validateLineStringCoordinates);
+
+            return geometry.coordinates.map(line => createGeometryRecord('LineString', line, properties, id));
+
+        case 'MultiPolygon':
+            if (!Array.isArray(geometry.coordinates)) {
+                throw new Error('GeoJSON worker: MultiPolygon.coordinates must be an array of Polygon coordinate arrays.');
+            }
+
+            geometry.coordinates.forEach(validatePolygonCoordinates);
+
+            return geometry.coordinates.map(polygon => createGeometryRecord('Polygon', polygon, properties, id));
+
+        case 'GeometryCollection':
+            if (!Array.isArray(geometry.geometries)) {
+                throw new Error('GeoJSON worker: GeometryCollection.geometries must be an array of geometry objects.');
+            }
+
+            return geometry.geometries.flatMap(child => parseGeometry(child, properties, id));
+
+        default:
+            throw new Error('GeoJSON worker: unsupported or missing GeoJSON geometry type.');
+    }
+}
+
+/**
+ * Validate a GeoJSON Point coordinate array.
+ *
+ * A Point coordinate must be one GeoJSON position: an array of at least two
+ * finite numbers. Extra dimensions are allowed by GeoJSON but are ignored by
+ * the current 2D renderer.
+ *
+ * @param {*} coordinates - Candidate Point coordinates.
+ * @returns {void}
+ * @throws {Error} Thrown when coordinates are not valid GeoJSON Point coordinates.
+ */
+function validatePointCoordinates(coordinates) {
+    if (!isPosition(coordinates)) {
+        throw new Error('GeoJSON worker: Point.coordinates must be a GeoJSON position: an array of at least two finite numbers.');
+    }
+}
+
+/**
+ * Validate a GeoJSON LineString coordinate array.
+ *
+ * A LineString coordinate array must contain at least two valid GeoJSON
+ * positions.
+ *
+ * @param {*} coordinates - Candidate LineString coordinates.
+ * @returns {void}
+ * @throws {Error} Thrown when coordinates are not valid GeoJSON LineString coordinates.
+ */
+function validateLineStringCoordinates(coordinates) {
+    if (!Array.isArray(coordinates) || coordinates.length < 2 || !coordinates.every(isPosition)) {
+        throw new Error('GeoJSON worker: LineString.coordinates must be an array containing at least two GeoJSON positions.');
+    }
+}
+
+/**
+ * Validate a GeoJSON Polygon coordinate array.
+ *
+ * A Polygon coordinate array contains linear rings.
+ *
+ * @param {*} coordinates - Candidate Polygon coordinates.
+ * @returns {void}
+ * @throws {Error} Thrown when coordinates are not valid GeoJSON Polygon coordinates.
+ */
+function validatePolygonCoordinates(coordinates) {
+    if (!Array.isArray(coordinates) || !coordinates.every(isLinearRing)) {
+        throw new Error('GeoJSON worker: Polygon.coordinates must be an array.');
+    }
+}
+
+
+/**
+ * Test whether a value is a valid GeoJSON linear ring.
+ *
+ * A linear ring is an array of at least four positions whose first and last
+ * positions are equivalent. This check compares only x/y values because the
+ * current renderer is 2D.
+ *
+ * @param {*} coordinates - Candidate linear-ring coordinates.
+ * @returns {boolean} True when coordinates form a valid linear ring.
+ */
+function isLinearRing(coordinates) {
+    if (Array.isArray(coordinates) && coordinates.length >= 4 && coordinates.every(isPosition)) {
+        const first = coordinates[0];
+        const last = coordinates[coordinates.length - 1];
+
+        return first[0] === last[0] && first[1] === last[1];
+    }
+
+    return false;
+}
+
+/**
+ * Test whether a value is a valid GeoJSON position.
+ *
+ * A position is an array of at least two finite numbers. The first two values
+ * are interpreted as x/y by the current renderer; additional dimensions are
+ * accepted but not rendered.
+ *
+ * @param {*} coordinate - Candidate position.
+ * @returns {boolean} True when coordinate is a valid position.
+ */
+function isPosition(coordinate) {
+    return Array.isArray(coordinate) && coordinate.length >= 2 && coordinate.every(Number.isFinite);
+}
+
+/**
+ * Create one simple internal geometry record.
+ *
+ * @param {'Point'|'LineString'|'Polygon'} type - Simple geometry type.
+ * @param {*} coordinates - Geometry coordinates.
+ * @param {object|null|undefined} properties - Feature properties.
+ * @param {string|number|undefined} id - Feature id.
+ * @returns {object} Internal feature record.
+ */
+function createGeometryRecord(type, coordinates, properties, id) {
+    return {
+        type,
+        coordinates,
+        properties,
+        id
+    };
+}
+
 
 /**
  * Build a tile after configuration completes.
@@ -151,9 +426,11 @@ async function buildTileWhenReady(message) {
 function buildTile(tile) {
     const tileBounds = getTileImageBounds(tile.level, tile.x, tile.y);
     const tileDepth = getTileDepth(tile.level, tile.x, tile.y);
+
     const fills = [];
     const lines = [];
     const points = [];
+
     const transfers = [];
 
     // TODO: Add a spatial index when feature counts become large. The current
@@ -164,25 +441,25 @@ function buildTile(tile) {
     // intersects a tile is emitted into that tile in full, so large features can
     // produce tile-local coordinates outside [0, 1] and duplicate geometry across
     // many tiles.
-    for (const feature of STATE.features) {
-        if (!intersects(feature.bbox, tileBounds)) {
+    for (const geometry of STATE.geometries) {
+        if (!intersects(geometry.bbox, tileBounds)) {
             continue;
         }
 
         let mesh = null;
 
-        if (feature.type === 'Point') {
-            mesh = makePointMesh(feature.coordinates, tile, tileDepth);
+        if (geometry.type === 'Point') {
+            mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
             if (mesh) {
                 points.push(mesh);
             }
-        } else if (feature.type === 'LineString') {
-            mesh = makeLineMesh(feature.coordinates, tile, tileDepth);
+        } else if (geometry.type === 'LineString') {
+            mesh = makeLineMesh(geometry.coordinates, tile, tileDepth);
             if (mesh) {
                 lines.push(mesh);
             }
-        } else if (feature.type === 'Polygon') {
-            mesh = makePolygonMesh(feature.coordinates, tile, tileDepth);
+        } else if (geometry.type === 'Polygon') {
+            mesh = makePolygonMesh(geometry.coordinates, tile, tileDepth);
             if (mesh) {
                 fills.push(mesh);
             }
@@ -209,77 +486,56 @@ function buildTile(tile) {
     }, transfers);
 }
 
-/**
- * Extract simple GeoJSON features.
- *
- * @param {object} geojson - GeoJSON object.
- * @returns {object[]} Simple feature records.
- */
-function readSimpleFeatures(geojson) {
-    if (!geojson || typeof geojson !== 'object') {
-        throw new Error('GeoJSON worker: invalid GeoJSON object.');
-    }
-
-    if (geojson.type === 'FeatureCollection') {
-        return (geojson.features || []).flatMap(readSimpleFeatures);
-    }
-
-    if (geojson.type === 'Feature') {
-        return readGeometry(geojson.geometry, geojson.properties || {}, geojson.id);
-    }
-
-    return readGeometry(geojson, {}, undefined);
-}
 
 /**
- * Convert a supported geometry into internal feature records.
+ * Project one raw geometry into full-resolution image coordinates.
  *
- * @param {object} geometry - GeoJSON geometry.
- * @param {object} properties - Feature properties.
- * @param {string|number|undefined} id - Feature id.
- * @returns {object[]} Internal feature records.
+ * @param {object} feature - Raw geometry.
+ * @returns {?object} Projected geometry.
  */
-function readGeometry(geometry, properties, id) {
-    if (!geometry || typeof geometry !== 'object') {
-        return [];
-    }
-
-    if (
-        geometry.type !== 'Point' &&
-        geometry.type !== 'LineString' &&
-        geometry.type !== 'Polygon'
-    ) {
-        return [];
-    }
-
-    return [{
-        id,
-        properties,
-        type: geometry.type,
-        coordinates: geometry.coordinates
-    }];
-}
-
-/**
- * Project one raw feature into full-resolution image coordinates.
- *
- * @param {object} feature - Raw feature.
- * @returns {?object} Projected feature.
- */
-function projectFeature(feature) {
+function projectGeometry(feature) {
     let coordinates;
 
     if (feature.type === 'Point') {
-        coordinates = projectCoordinate(feature.coordinates);
-    } else if (feature.type === 'LineString') {
-        coordinates = feature.coordinates.map(projectCoordinate);
-    } else if (feature.type === 'Polygon') {
-        if (!feature.coordinates || !feature.coordinates[0]) {
+        if (!isCoordinate(feature.coordinates)) {
             return null;
         }
 
-        coordinates = [feature.coordinates[0].map(projectCoordinate)];
+        coordinates = projectCoordinate(feature.coordinates);
+    } else if (feature.type === 'LineString') {
+        if (!Array.isArray(feature.coordinates)) {
+            return null;
+        }
+
+        coordinates = feature.coordinates
+            .filter(isCoordinate)
+            .map(projectCoordinate);
+
+        if (coordinates.length < 2) {
+            return null;
+        }
+    } else if (feature.type === 'Polygon') {
+        if (!Array.isArray(feature.coordinates)) {
+            return null;
+        }
+
+        coordinates = feature.coordinates
+            .filter(Array.isArray)
+            .map(ring => ring
+                .filter(isCoordinate)
+                .map(projectCoordinate)
+            )
+            .filter(ring => ring.length >= 4);
+
+        if (!coordinates.length) {
+            return null;
+        }
     } else {
+        return null;
+    }
+
+    const bbox = computeImageBounds(coordinates);
+    if (!isFiniteBounds(bbox)) {
         return null;
     }
 
@@ -288,8 +544,30 @@ function projectFeature(feature) {
         properties: feature.properties,
         type: feature.type,
         coordinates,
-        bbox: computeImageBounds(coordinates)
+        bbox
     };
+}
+
+/**
+ * Test whether a value is a valid 2D coordinate.
+ *
+ * Extra coordinate dimensions are ignored.
+ *
+ * @param {*} coordinate - Candidate coordinate.
+ * @returns {boolean} True when the value has finite x/y entries.
+ */
+function isCoordinate(coordinate) {
+    return Array.isArray(coordinate) && coordinate.length >= 2 && Number.isFinite(coordinate[0]) && Number.isFinite(coordinate[1]);
+}
+
+/**
+ * Test whether bounds contain finite values.
+ *
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {boolean} True when all values are finite and ordered.
+ */
+function isFiniteBounds(bounds) {
+    return Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[0] <= bounds[2] && bounds[1] <= bounds[3];
 }
 
 /**
@@ -310,6 +588,7 @@ function projectFeature(feature) {
  * @returns {number[]} Image coordinate.
  */
 function projectCoordinate(coordinate) {
+    // GeoJSON coordinates may contain z or other extra dimensions. Rendering is 2D.
     const [x, y] = coordinate;
     const [minX, minY, maxX, maxY] = STATE.bounds;
 
@@ -462,10 +741,7 @@ function getTileDepth(level, x, y) {
  * @returns {boolean} True when the rectangles intersect.
  */
 function intersects(a, b) {
-    return a[0] <= b[2] &&
-        a[2] >= b[0] &&
-        a[1] <= b[3] &&
-        a[3] >= b[1];
+    return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
 /**
