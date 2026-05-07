@@ -391,12 +391,8 @@ return texture(u_atlasTex, vec3(st, float(packedLayer)));
                 (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement);
 
             if (isDomImageSource) {
-                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-                try {
-                    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, physicalLayer, w, h, 1, this.format, this.type, source);
-                } finally {
-                    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-                }
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, physicalLayer, w, h, 1, this.format, this.type, source);
                 return;
             }
 

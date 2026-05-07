@@ -120,13 +120,13 @@ self.onmessage = async (e) => {
                                 const pt = pts[pi];
                                 const base = verts.length / 4;
 
-                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
 
                                 idx.push(
-                                    base + 0, base + 1, base + 3,
+                                    base + 0, base + 1, base + 2,
                                     base + 0, base + 2, base + 3
                                 );
                             }

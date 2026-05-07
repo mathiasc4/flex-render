@@ -205,7 +205,7 @@ function defaultStyle() {
             place:          {
                 type: 'icon',
                 color: [0.80, 0.10, 0.10, 1.00],
-                size: 1.2,
+                size: 0.8,
                 iconMapping: iconMapping, // TODO: somehow pass a function instead?
             },
         },
