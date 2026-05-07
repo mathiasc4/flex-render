@@ -217,6 +217,107 @@
           }
         ]
       }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-fill-a",
+      "properties": {
+        "name": "Overlap fill A",
+        "purpose": "First semi-transparent polygon in overlap test area"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [2450, 2350],
+            [3250, 2350],
+            [3250, 2850],
+            [2450, 2850],
+            [2450, 2350]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-fill-b",
+      "properties": {
+        "name": "Overlap fill B",
+        "purpose": "Second semi-transparent polygon overlapping fill A"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [2850, 2450],
+            [3900, 2600],
+            [3700, 3050],
+            [2700, 2950],
+            [2850, 2450]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-hole-on-fill",
+      "properties": {
+        "name": "Overlapping polygon with hole",
+        "purpose": "Hole should reveal whatever is underneath rather than being filled by this polygon"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [3300, 2300],
+            [4050, 2300],
+            [4050, 3000],
+            [3300, 3000],
+            [3300, 2300]
+          ],
+          [
+            [3525, 2500],
+            [3825, 2500],
+            [3825, 2800],
+            [3525, 2800],
+            [3525, 2500]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-line-on-fill",
+      "properties": {
+        "name": "Line over overlapping fills",
+        "purpose": "Tests whether lines remain visible over filled polygons"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [2350, 2600],
+          [2850, 2500],
+          [3300, 2700],
+          [3900, 2850]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-points-on-fill",
+      "properties": {
+        "name": "Points over overlapping fills",
+        "purpose": "Tests whether point markers remain visible over filled polygons"
+      },
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [2750, 2600],
+          [3050, 2700],
+          [3450, 2650],
+          [3750, 2900]
+        ]
+      }
     }
   ]
 }

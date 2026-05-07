@@ -616,6 +616,273 @@ function intersects(a, b) {
 }
 
 /**
+ * Test whether an image-space point is inside image-space bounds.
+ *
+ * @param {number[]} point - Image-space point.
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {boolean} True when the point is inside or on the bounds edge.
+ */
+function pointInBounds(point, bounds) {
+    return point[0] >= bounds[0] &&
+        point[0] <= bounds[2] &&
+        point[1] >= bounds[1] &&
+        point[1] <= bounds[3];
+}
+
+/**
+ * Clip a LineString to rectangular image-space bounds.
+ *
+ * Each visible segment is returned as a separate two-point LineString. This
+ * avoids connecting disjoint clipped segments after clipping.
+ *
+ * @param {number[][]} coordinates - Image-space LineString coordinates.
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {number[][][]} Clipped LineString segments.
+ */
+function clipLineStringToBounds(coordinates, bounds) {
+    const clipped = [];
+
+    for (let i = 0; i < coordinates.length - 1; i += 1) {
+        const segment = clipLineSegmentToBounds(coordinates[i], coordinates[i + 1], bounds);
+
+        if (segment) {
+            clipped.push(segment);
+        }
+    }
+
+    return clipped;
+}
+
+/**
+ * Clip one line segment to rectangular image-space bounds.
+ *
+ * Uses Liang-Barsky segment clipping.
+ *
+ * @param {number[]} start - Segment start point.
+ * @param {number[]} end - Segment end point.
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {?number[][]} Clipped two-point segment, or null when outside.
+ */
+function clipLineSegmentToBounds(start, end, bounds) {
+    const [minX, minY, maxX, maxY] = bounds;
+    const x0 = start[0];
+    const y0 = start[1];
+    const x1 = end[0];
+    const y1 = end[1];
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+
+    let t0 = 0;
+    let t1 = 1;
+
+    const clip = (p, q) => {
+        if (p === 0) {
+            return q >= 0;
+        }
+
+        const r = q / p;
+
+        if (p < 0) {
+            if (r > t1) {
+                return false;
+            }
+
+            if (r > t0) {
+                t0 = r;
+            }
+        } else {
+            if (r < t0) {
+                return false;
+            }
+
+            if (r < t1) {
+                t1 = r;
+            }
+        }
+
+        return true;
+    };
+
+    if (
+        clip(-dx, x0 - minX) &&
+        clip(dx, maxX - x0) &&
+        clip(-dy, y0 - minY) &&
+        clip(dy, maxY - y0)
+    ) {
+        return [
+            [x0 + t0 * dx, y0 + t0 * dy],
+            [x0 + t1 * dx, y0 + t1 * dy]
+        ];
+    }
+
+    return null;
+}
+
+/**
+ * Clip a Polygon to rectangular image-space bounds.
+ *
+ * The first ring is clipped as the exterior ring. Following rings are clipped
+ * as hole rings and passed through to earcut.
+ *
+ * @param {number[][][]} coordinates - Polygon image-space coordinates.
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {?number[][][]} Clipped Polygon coordinates, or null when outside.
+ */
+function clipPolygonToBounds(coordinates, bounds) {
+    if (!coordinates || coordinates.length === 0) {
+        return null;
+    }
+
+    const clippedRings = [];
+
+    for (let ringIndex = 0; ringIndex < coordinates.length; ringIndex += 1) {
+        const clippedRing = clipRingToBounds(coordinates[ringIndex], bounds);
+
+        if (clippedRing.length >= 4) {
+            clippedRings.push(clippedRing);
+        }
+    }
+
+    if (!clippedRings.length) {
+        return null;
+    }
+
+    return clippedRings;
+}
+
+/**
+ * Clip one polygon ring to rectangular image-space bounds.
+ *
+ * Uses Sutherland-Hodgman clipping against the four rectangle edges.
+ *
+ * @param {number[][]} ring - Closed polygon ring.
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {number[][]} Closed clipped ring, or an empty array.
+ */
+function clipRingToBounds(ring, bounds) {
+    if (!Array.isArray(ring) || ring.length < 4) {
+        return [];
+    }
+
+    const [minX, minY, maxX, maxY] = bounds;
+    let output = ring.slice(0, -1);
+
+    output = clipRingToBoundary(
+        output,
+        point => point[0] >= minX,
+        (start, end) => intersectVertical(start, end, minX)
+    );
+
+    output = clipRingToBoundary(
+        output,
+        point => point[0] <= maxX,
+        (start, end) => intersectVertical(start, end, maxX)
+    );
+
+    output = clipRingToBoundary(
+        output,
+        point => point[1] >= minY,
+        (start, end) => intersectHorizontal(start, end, minY)
+    );
+
+    output = clipRingToBoundary(
+        output,
+        point => point[1] <= maxY,
+        (start, end) => intersectHorizontal(start, end, maxY)
+    );
+
+    if (output.length < 3) {
+        return [];
+    }
+
+    output.push(output[0].slice());
+
+    return output;
+}
+
+/**
+ * Clip one polygon ring against one half-plane.
+ *
+ * @param {number[][]} ring - Ring without duplicate closing coordinate.
+ * @param {function(number[]): boolean} isInside - Boundary inclusion test.
+ * @param {function(number[], number[]): number[]} intersect - Boundary intersection function.
+ * @returns {number[][]} Clipped ring without duplicate closing coordinate.
+ */
+function clipRingToBoundary(ring, isInside, intersect) {
+    if (!ring.length) {
+        return [];
+    }
+
+    const clipped = [];
+
+    for (let i = 0; i < ring.length; i += 1) {
+        const current = ring[i];
+        const previous = ring[(i + ring.length - 1) % ring.length];
+        const currentInside = isInside(current);
+        const previousInside = isInside(previous);
+
+        if (currentInside) {
+            if (!previousInside) {
+                clipped.push(intersect(previous, current));
+            }
+
+            clipped.push(current);
+        } else if (previousInside) {
+            clipped.push(intersect(previous, current));
+        }
+    }
+
+    return clipped;
+}
+
+/**
+ * Intersect a segment with a vertical line.
+ *
+ * @param {number[]} start - Segment start.
+ * @param {number[]} end - Segment end.
+ * @param {number} x - Vertical line x coordinate.
+ * @returns {number[]} Intersection point.
+ */
+function intersectVertical(start, end, x) {
+    const dx = end[0] - start[0];
+
+    if (dx === 0) {
+        return [x, start[1]];
+    }
+
+    const t = (x - start[0]) / dx;
+
+    return [
+        x,
+        start[1] + t * (end[1] - start[1])
+    ];
+}
+
+/**
+ * Intersect a segment with a horizontal line.
+ *
+ * @param {number[]} start - Segment start.
+ * @param {number[]} end - Segment end.
+ * @param {number} y - Horizontal line y coordinate.
+ * @returns {number[]} Intersection point.
+ */
+function intersectHorizontal(start, end, y) {
+    const dy = end[1] - start[1];
+
+    if (dy === 0) {
+        return [start[0], y];
+    }
+
+    const t = (y - start[1]) / dy;
+
+    return [
+        start[0] + t * (end[0] - start[0]),
+        y
+    ];
+}
+
+
+/**
  * Convert image coordinates into normalized tile-local coordinates.
  *
  * @param {number[]} coordinate - Image coordinate.
@@ -697,43 +964,60 @@ function buildTile(tile) {
 
     const transfers = [];
 
-    // TODO: Add a spatial index when feature counts become large. The current
-    // implementation scans every feature for every tile and filters by bbox, which
+    // TODO: perf: Add a spatial index when feature counts become large.
+    // The current implementation scans every feature for every tile and filters by bbox, which
     // is simple but O(tileCount * featureCount).
     //
-    // TODO: Add geometry clipping before meshing. Right now, any feature whose bbox
-    // intersects a tile is emitted into that tile in full, so large features can
-    // produce tile-local coordinates outside [0, 1] and duplicate geometry across
-    // many tiles.
+    // Geometries are bbox-filtered first, then clipped to the current tile before meshing.
+    // This prevents large geometries from being emitted into every intersecting tile in full.
     for (const geometry of STATE.geometries) {
         if (!intersects(geometry.bbox, tileBounds)) {
             continue;
         }
 
-        let mesh = null;
-
         if (geometry.type === 'Point') {
-            mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
+            if (!pointInBounds(geometry.coordinates, tileBounds)) {
+                continue;
+            }
+
+            const mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
             if (mesh) {
                 points.push(mesh);
+                transfers.push(mesh.vertices, mesh.indices);
+
+                if (mesh.parameters) {
+                    transfers.push(mesh.parameters);
+                }
             }
         } else if (geometry.type === 'LineString') {
-            mesh = makeLineMesh(geometry.coordinates, tile, tileDepth);
-            if (mesh) {
-                lines.push(mesh);
+            const clippedLines = clipLineStringToBounds(geometry.coordinates, tileBounds);
+
+            for (const clippedLine of clippedLines) {
+                const mesh = makeLineMesh(clippedLine, tile, tileDepth);
+                if (mesh) {
+                    lines.push(mesh);
+                    transfers.push(mesh.vertices, mesh.indices);
+
+                    if (mesh.parameters) {
+                        transfers.push(mesh.parameters);
+                    }
+                }
             }
         } else if (geometry.type === 'Polygon') {
-            mesh = makePolygonMesh(geometry.coordinates, tile, tileDepth);
+            const clippedPolygon = clipPolygonToBounds(geometry.coordinates, tileBounds);
+
+            if (!clippedPolygon) {
+                continue;
+            }
+
+            const mesh = makePolygonMesh(clippedPolygon, tile, tileDepth);
             if (mesh) {
                 fills.push(mesh);
-            }
-        }
+                transfers.push(mesh.vertices, mesh.indices);
 
-        if (mesh) {
-            transfers.push(mesh.vertices, mesh.indices);
-
-            if (mesh.parameters) {
-                transfers.push(mesh.parameters);
+                if (mesh.parameters) {
+                    transfers.push(mesh.parameters);
+                }
             }
         }
     }
