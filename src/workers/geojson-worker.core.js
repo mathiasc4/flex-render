@@ -23,6 +23,7 @@ let STATE = {
     configured: false,
     configurePromise: null,
     geometries: [],
+    spatialIndex: null,
     tileSize: 512,
     minLevel: 0,
     maxLevel: 0,
@@ -35,6 +36,33 @@ let STATE = {
     height: 1,
     style: {}
 };
+
+/**
+ * Minimum projected geometry count before a spatial index is built.
+ *
+ * Small sources are usually faster to scan directly because the quadtree has
+ * build cost and adds extra traversal during tile generation.
+ *
+ * @type {number}
+ */
+const SPATIAL_INDEX_MIN_GEOMETRIES = 256;
+
+/**
+ * Maximum number of geometries stored in one quadtree node before subdivision.
+ *
+ * @type {number}
+ */
+const QUADTREE_NODE_CAPACITY = 32;
+
+/**
+ * Maximum quadtree depth.
+ *
+ * This prevents excessive subdivision for highly clustered or nearly identical
+ * bboxes.
+ *
+ * @type {number}
+ */
+const QUADTREE_MAX_DEPTH = 12;
 
 
 self.onmessage = function(event) {
@@ -82,6 +110,7 @@ async function configure(message) {
             configured: true,
             configurePromise: null,
             geometries: [],
+            spatialIndex: null,
             width: (message.width !== null && message.width !== undefined) ? message.width : 1,
             height: (message.height !== null && message.height !== undefined) ? message.height : 1,
             tileSize: (message.tileSize !== null && message.tileSize !== undefined) ? message.tileSize : 512,
@@ -94,6 +123,7 @@ async function configure(message) {
         };
 
         STATE.geometries = rawGeometries.map(projectGeometry).filter(Boolean);
+        STATE.spatialIndex = createSpatialIndex(STATE.geometries);
     } catch (error) {
         self.postMessage({
             type: 'error',
@@ -550,6 +580,200 @@ function forEachCoordinate(coordinates, visitor) {
     }
 }
 
+
+/**
+ * Create a static quadtree spatial index for projected geometries.
+ *
+ * The quadtree is built in full-resolution image coordinates. It stores
+ * references to projected geometry records, not copies. Geometry insertion is
+ * conservative: a geometry is pushed into a child only when its bbox is fully
+ * contained by that child; otherwise it remains in the current node.
+ *
+ * @param {object[]} geometries - Projected geometry records.
+ * @returns {?object} Quadtree root node, or null when direct scanning is preferable.
+ */
+function createSpatialIndex(geometries) {
+    if (!Array.isArray(geometries) || geometries.length < SPATIAL_INDEX_MIN_GEOMETRIES) {
+        return null;
+    }
+
+    const root = createQuadtreeNode([0, 0, STATE.width, STATE.height], 0);
+
+    for (const geometry of geometries) {
+        insertIntoQuadtree(root, geometry);
+    }
+
+    return root;
+}
+
+/**
+ * Create one quadtree node.
+ *
+ * @param {number[]} bounds - Node bounds as [minX, minY, maxX, maxY].
+ * @param {number} depth - Node depth.
+ * @returns {{bounds: number[], depth: number, geometries: object[], children: ?object[]}} Quadtree node.
+ */
+function createQuadtreeNode(bounds, depth) {
+    return {
+        bounds,
+        depth,
+        geometries: [],
+        children: null
+    };
+}
+
+/**
+ * Insert one geometry into a quadtree node.
+ *
+ * @param {object} node - Quadtree node.
+ * @param {object} geometry - Projected geometry record.
+ * @returns {void}
+ */
+function insertIntoQuadtree(node, geometry) {
+    if (node.children) {
+        const child = findContainingChild(node.children, geometry.bbox);
+
+        if (child) {
+            insertIntoQuadtree(child, geometry);
+            return;
+        }
+    }
+
+    node.geometries.push(geometry);
+
+    if (node.geometries.length > QUADTREE_NODE_CAPACITY && node.depth < QUADTREE_MAX_DEPTH) {
+        subdivideQuadtreeNode(node);
+    }
+}
+
+/**
+ * Subdivide one quadtree node and move contained geometries into children.
+ *
+ * Geometries that do not fit completely inside a single child remain in the
+ * parent node. This avoids duplicating large lines and polygons across many
+ * descendants.
+ *
+ * @param {object} node - Quadtree node.
+ * @returns {void}
+ */
+function subdivideQuadtreeNode(node) {
+    if (node.children) {
+        return;
+    }
+
+    const [minX, minY, maxX, maxY] = node.bounds;
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+    const nextDepth = node.depth + 1;
+
+    if (midX <= minX || midX >= maxX || midY <= minY || midY >= maxY) {
+        return;
+    }
+
+    node.children = [
+        createQuadtreeNode([minX, minY, midX, midY], nextDepth),
+        createQuadtreeNode([midX, minY, maxX, midY], nextDepth),
+        createQuadtreeNode([minX, midY, midX, maxY], nextDepth),
+        createQuadtreeNode([midX, midY, maxX, maxY], nextDepth)
+    ];
+
+    const remaining = [];
+
+    for (const geometry of node.geometries) {
+        const child = findContainingChild(node.children, geometry.bbox);
+
+        if (child) {
+            insertIntoQuadtree(child, geometry);
+        } else {
+            remaining.push(geometry);
+        }
+    }
+
+    node.geometries = remaining;
+}
+
+/**
+ * Return the child that fully contains a bbox.
+ *
+ * @param {object[]} children - Quadtree child nodes.
+ * @param {number[]} bbox - Geometry bbox as [minX, minY, maxX, maxY].
+ * @returns {?object} Containing child node, or null when no single child contains the bbox.
+ */
+function findContainingChild(children, bbox) {
+    for (const child of children) {
+        if (containsBounds(child.bounds, bbox)) {
+            return child;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Return candidate geometries for a tile.
+ *
+ * If no spatial index is available, this returns the full geometry list and
+ * preserves the previous direct-scan behavior.
+ *
+ * @param {number[]} tileBounds - Tile image-space bounds.
+ * @returns {object[]} Candidate geometry records.
+ */
+function getTileCandidateGeometries(tileBounds) {
+    if (!STATE.spatialIndex) {
+        return STATE.geometries;
+    }
+
+    const results = [];
+    queryQuadtree(STATE.spatialIndex, tileBounds, results);
+
+    return results;
+}
+
+/**
+ * Query a quadtree node for geometries whose node may intersect the query.
+ *
+ * This function intentionally does not test each geometry bbox. buildTile()
+ * still performs the existing geometry-level intersects() check so candidate
+ * filtering stays centralized and behavior remains unchanged.
+ *
+ * @param {object} node - Quadtree node.
+ * @param {number[]} queryBounds - Query bounds as [minX, minY, maxX, maxY].
+ * @param {object[]} results - Mutable result list.
+ * @returns {void}
+ */
+function queryQuadtree(node, queryBounds, results) {
+    if (!intersects(node.bounds, queryBounds)) {
+        return;
+    }
+
+    for (const geometry of node.geometries) {
+        results.push(geometry);
+    }
+
+    if (!node.children) {
+        return;
+    }
+
+    for (const child of node.children) {
+        queryQuadtree(child, queryBounds, results);
+    }
+}
+
+/**
+ * Test whether outer bounds fully contain inner bounds.
+ *
+ * @param {number[]} outer - Outer bounds as [minX, minY, maxX, maxY].
+ * @param {number[]} inner - Inner bounds as [minX, minY, maxX, maxY].
+ * @returns {boolean} True when inner is fully inside outer.
+ */
+function containsBounds(outer, inner) {
+    return inner[0] >= outer[0] &&
+        inner[1] >= outer[1] &&
+        inner[2] <= outer[2] &&
+        inner[3] <= outer[3];
+}
+
+
 /**
  * Return one tile's full-resolution image bounds.
  *
@@ -998,13 +1222,18 @@ function buildTile(tile) {
 
     const transfers = [];
 
-    // TODO: perf: Add a spatial index when feature counts become large.
-    // The current implementation scans every feature for every tile and filters by bbox, which
-    // is simple but O(tileCount * featureCount).
+    // Candidate geometries are read from a static image-space quadtree when the
+    // source is large enough to justify indexing. Small sources fall back to
+    // direct scanning.
     //
+    // The quadtree is only an acceleration structure. Each candidate is still
+    // bbox-checked and then clipped/meshed by the existing geometry-specific
+    // paths, preserving previous rendering behavior.
+    const candidateGeometries = getTileCandidateGeometries(tileBounds);
+
     // Geometries are bbox-filtered first, then clipped to the current tile before meshing.
     // This prevents large geometries from being emitted into every intersecting tile in full.
-    for (const geometry of STATE.geometries) {
+    for (const geometry of candidateGeometries) {
         if (!intersects(geometry.bbox, tileBounds)) {
             continue;
         }
