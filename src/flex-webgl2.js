@@ -1573,9 +1573,28 @@ void main() {
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }
 
-                    batch = vectorTile.points;
+                    batch = vectorTile.linePrimitives;
                     if (batch) {
                         if (!vectorTile.fills && !vectorTile.lines) {
+                            gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
+                        }
+
+                        // Bind positions. payload0 is vec4(x, y, depth, textureId).
+                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
+                        gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
+
+                        // Bind per-vertex colors.
+                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
+
+                        // Bind indices and draw native line segments.
+                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
+                        gl.drawElementsInstanced(gl.LINES, batch.count, gl.UNSIGNED_INT, 0, 1);
+                    }
+
+                    batch = vectorTile.points;
+                    if (batch) {
+                        if (!vectorTile.fills && !vectorTile.lines && !vectorTile.linePrimitives) {
                             gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
                         }
 

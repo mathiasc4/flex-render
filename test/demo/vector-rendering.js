@@ -1,7 +1,22 @@
 const sources = {
-    mvt: "http://localhost:3000/osm-2020-02-10-v3.11_asia_japan",
+    mvt: {
+        type: "mvt",
+        tiles: [ "http://localhost:3000/data/v3/{z}/{x}/{y}.pbf" ],
+        tileSize: 512,
+        minzoom: 0,
+        maxzoom: 14,
+        scheme: "xyz",
+        extent: 4096
+    },
     fabric: "../data/fabric.geometry.json",
-    geojson: "../data/geojson-sample.geojson",
+    geojson: {
+        type: "geojson",
+        url: "../data/geojson-sample.geojson",
+        projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
+        width: 4096,
+        height: 4096,
+        bounds: [0, 0, 4096, 4096]
+    },
     geojson_10k: {
         type: "geojson",
         url: "../data/geojson-performance-10k.geojson",
@@ -70,6 +85,10 @@ function createImageOptionsElement(key, label){
         ? `<label>Aggregation: <input type="checkbox" data-image="" data-field="aggregation" checked></label>`
         : "";
 
+    const nativeLinesControl = key !== "fabric"
+        ? `<label>Native Lines: <input type="checkbox" data-image="" data-field="useNativeLines"></label>`
+        : "";
+
     return $(`<div class="image-options" data-image-row="">
         <span class="image-options-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
 
@@ -92,6 +111,7 @@ function createImageOptionsElement(key, label){
             <label>Composite: <select data-image="" data-field="composite"></select></label>
             <label>Wrap: <select data-image="" data-field="wrapping"></select></label>
             <label>Smoothing: <input type="checkbox" data-image="" data-field="smoothing" checked></label>
+            ${nativeLinesControl}
             ${aggregationControl}
         </div>
     </div>`.replaceAll('data-image=""', `data-image="${key}"`).replace('__title__', label));
@@ -149,14 +169,19 @@ $('#image-options-container input:not(.toggle)').on('change', function() {
 });
 
 function updateTiledImage(tiledImage, data, value, item) {
-    if (!tiledImage) {
-        return;
-    }
-
     let field = data.field;
 
     if (field === "aggregation") {
         updateGeoJSON10kAggregation(Boolean(value));
+        return;
+    }
+
+    if (field === "useNativeLines") {
+        reloadTileSource(data.image);
+        return;
+    }
+
+    if (!tiledImage) {
         return;
     }
 
@@ -272,18 +297,28 @@ function getInsertionIndex(checkbox) {
 function getTileSourceForImage(image) {
     const source = sources[image];
 
-    if (!source || image !== GEOJSON_10K_SOURCE_KEY) {
+    if (!source || image === "fabric") {
         return source;
     }
 
-    const aggregationEnabled = getGeoJSON10kAggregationEnabled();
+    const useNativeLines = getUseNativeLinesEnabled(image);
+
+    if (image === GEOJSON_10K_SOURCE_KEY) {
+        const aggregationEnabled = getGeoJSON10kAggregationEnabled();
+
+        return {
+            ...source,
+            useNativeLines,
+            aggregation: {
+                ...source.aggregation,
+                enabled: aggregationEnabled
+            }
+        };
+    }
 
     return {
         ...source,
-        aggregation: {
-            ...source.aggregation,
-            enabled: aggregationEnabled
-        }
+        useNativeLines
     };
 }
 
@@ -340,6 +375,12 @@ function updateGeoJSON10kAggregation(enabled) {
             applySelectOptionsToTiledImage(GEOJSON_10K_SOURCE_KEY, item);
         }
     });
+}
+
+function getUseNativeLinesEnabled(image) {
+    const input = $(`#image-options-container input[data-image="${image}"][data-field=useNativeLines]`);
+
+    return input.length ? input.prop("checked") : false;
 }
 
 function addTileSource(image, checkbox) {
@@ -440,4 +481,57 @@ function getCompositeOperationOptions(){
     });
 
     return $(elements);
+}
+
+function reloadTileSource(image) {
+    const checkbox = $(`#image-options-container input.toggle[data-image="${image}"]`);
+    const tiledImage = checkbox.data("item");
+
+    if (!tiledImage) {
+        return;
+    }
+
+    const oldIndex = viewer.world.getIndexOfItem(tiledImage);
+    const bounds = tiledImage.getBoundsNoRotate();
+    const opacity = tiledImage.opacity;
+    const degrees = tiledImage.getRotation ? tiledImage.getRotation() : 0;
+    const flipped = tiledImage.getFlip ? tiledImage.getFlip() : false;
+    const composite = tiledImage.compositeOperation;
+    const wrapHorizontal = tiledImage.wrapHorizontal;
+    const wrapVertical = tiledImage.wrapVertical;
+    const debugMode = tiledImage.debugMode === true;
+
+    viewer.world.removeItem(tiledImage);
+    checkbox.data("item", null);
+
+    const tileSource = getTileSourceForImage(image);
+
+    if (!tileSource || !checkbox.prop("checked")) {
+        return;
+    }
+
+    viewer.addTiledImage({
+        tileSource,
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        degrees,
+        opacity,
+        flipped,
+        index: oldIndex,
+        success: function(event) {
+            const item = event.item;
+
+            item.debugMode = debugMode;
+            item.wrapHorizontal = wrapHorizontal;
+            item.wrapVertical = wrapVertical;
+
+            if (composite !== undefined) {
+                item.setCompositeOperation(composite === "null" ? null : composite);
+            }
+
+            checkbox.data("item", item);
+            applySelectOptionsToTiledImage(image, item);
+        }
+    });
 }

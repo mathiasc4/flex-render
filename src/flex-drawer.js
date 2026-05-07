@@ -10,6 +10,16 @@
      */
 
     /**
+     * One vector mesh.
+     *
+     * @typedef {object} VectorMesh
+     * @property {Float32Array} vertices - Packed vertices as vec4(x, y, depth, textureId).
+     * @property {Uint32Array} indices - Indices into the vertex array.
+     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
+     * @property {Float32Array} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     */
+
+    /**
      * Tessellated vector payload for one tile.
      *
      * Icons are represented as point meshes. A point mesh is rendered as an icon
@@ -18,18 +28,9 @@
      *
      * @typedef {object} VectorMeshTile
      * @property {VectorMesh[]} [fills] - Polygon fill triangle meshes.
-     * @property {VectorMesh[]} [lines] - Stroke triangle meshes.
+     * @property {VectorMesh[]} [lines] - Stroke triangle meshes rendered with gl.TRIANGLES.
+     * @property {VectorMesh[]} [linePrimitives] - Native line segment meshes rendered with gl.LINES.
      * @property {VectorMesh[]} [points] - Point marker and icon quad meshes.
-     */
-
-    /**
-     * One tessellated vector mesh.
-     *
-     * @typedef {object} VectorMesh
-     * @property {Float32Array} vertices - Packed vertices as vec4(x, y, depth, textureId).
-     * @property {Uint32Array} indices - Triangle indices into the vertex array.
-     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
-     * @property {Float32Array} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
      */
 
     /**
@@ -1204,13 +1205,16 @@
                                 tile: tile
                             });
                         } else if (tileInfo.vectors) {
-                            // Flatten fill + line meshes into a simple draw list
+                            // Flatten vector meshes into a simple draw list.
 
                             if (tileInfo.vectors.fills) {
                                 tileInfo.vectors.fills.matrix = transformMatrix;
                             }
                             if (tileInfo.vectors.lines) {
                                 tileInfo.vectors.lines.matrix = transformMatrix;
+                            }
+                            if (tileInfo.vectors.linePrimitives) {
+                                tileInfo.vectors.linePrimitives.matrix = transformMatrix;
                             }
                             if (tileInfo.vectors.points) {
                                 tileInfo.vectors.points.matrix = transformMatrix;
@@ -1570,7 +1574,7 @@
                 return null;
             }
 
-            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.points))) {
+            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points))) {
                 return this._buildVectorTileInfo(data, gl);
             }
 
@@ -1681,6 +1685,11 @@
                     gl.deleteBuffer(data.vectors.lines.vboPos);
                     gl.deleteBuffer(data.vectors.lines.vboParam);
                     gl.deleteBuffer(data.vectors.lines.ibo);
+                }
+                if (data.vectors.linePrimitives) {
+                    gl.deleteBuffer(data.vectors.linePrimitives.vboPos);
+                    gl.deleteBuffer(data.vectors.linePrimitives.vboParam);
+                    gl.deleteBuffer(data.vectors.linePrimitives.ibo);
                 }
                 if (data.vectors.points) {
                     gl.deleteBuffer(data.vectors.points.vboPos);
@@ -1855,6 +1864,9 @@
             }
             if (data.lines && data.lines.length) {
                 tileInfo.vectors.lines = buildBatch(data.lines);
+            }
+            if (data.linePrimitives && data.linePrimitives.length) {
+                tileInfo.vectors.linePrimitives = buildBatch(data.linePrimitives);
             }
             if (data.points && data.points.length) {
                 tileInfo.vectors.points = buildBatch(data.points);

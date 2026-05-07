@@ -6,6 +6,7 @@
  * - explodes MultiPoint, MultiLineString, MultiPolygon, and GeometryCollection
  *   into simple Point, LineString, and Polygon records before projection;
  * - meshes Point, LineString, and Polygon geometries;
+ * - can emit LineString geometries as native gl.LINES payloads;
  * - triangulates Polygon rings with earcut, including holes;
  * - uses a top-level GeoJSON bbox as source bounds when provided by the tile source;
  * - performs geometry bbox filtering before exact per-tile clipping;
@@ -36,6 +37,7 @@ let STATE = {
     width: 1,
     height: 1,
     style: {},
+    useNativeLines: false,
     aggregation: null
 };
 
@@ -141,6 +143,7 @@ async function configure(message) {
             bounds,
             bbox,
             style: (message.style !== null && message.style !== undefined) ? message.style : {},
+            useNativeLines: message.useNativeLines === true,
             aggregation: normalizeAggregationOptions(message.aggregation)
         };
 
@@ -1283,15 +1286,16 @@ function buildTile(tile) {
 
     const fills = [];
     const lines = [];
+    const linePrimitives = [];
     const points = [];
 
     const transfers = [];
     const visibleGeometries = getVisibleTileGeometries(tileBounds);
 
     if (shouldAggregateTile(tile, visibleGeometries.length)) {
-        buildAggregateTile(tile, tileBounds, tileDepth, visibleGeometries.length, fills, lines, transfers);
+        buildAggregateTile(tile, tileBounds, tileDepth, visibleGeometries.length, fills, lines, linePrimitives, transfers);
     } else {
-        buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, points, transfers);
+        buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, linePrimitives, points, transfers);
     }
 
     self.postMessage({
@@ -1301,6 +1305,7 @@ function buildTile(tile) {
         data: {
             fills,
             lines,
+            linePrimitives,
             points
         }
     }, transfers);
@@ -1392,11 +1397,12 @@ function shouldAggregateTile(tile, count) {
  * @param {object[]} visibleGeometries - Visible tile geometry records.
  * @param {object[]} fills - Fill mesh output.
  * @param {object[]} lines - Line mesh output.
+ * @param {object[]} linePrimitives - Native line primitive output.
  * @param {object[]} points - Point mesh output.
  * @param {ArrayBuffer[]} transfers - Transferable buffers.
  * @returns {void}
  */
-function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, points, transfers) {
+function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, linePrimitives, points, transfers) {
     for (const item of visibleGeometries) {
         const geometry = item.geometry;
 
@@ -1404,9 +1410,11 @@ function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, poi
             const mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
             pushMesh(points, transfers, mesh);
         } else if (geometry.type === 'LineString') {
+            const target = STATE.useNativeLines ? linePrimitives : lines;
+
             for (const clippedLine of item.clippedLines) {
                 const mesh = makeLineMesh(clippedLine, tile, tileDepth);
-                pushMesh(lines, transfers, mesh);
+                pushMesh(target, transfers, mesh);
             }
         } else if (geometry.type === 'Polygon') {
             const mesh = makePolygonMesh(item.clippedPolygon, tile, tileDepth);
@@ -1423,18 +1431,21 @@ function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, poi
  * @param {number} tileDepth - Packed tile-depth value.
  * @param {number} count - Visible annotation count.
  * @param {object[]} fills - Fill mesh output.
- * @param {object[]} lines - Line mesh output.
+ * @param {object[]} lines - Stroke-triangle line mesh output.
+ * @param {object[]} linePrimitives - Native line primitive output.
  * @param {ArrayBuffer[]} transfers - Transferable buffers.
  * @returns {void}
  */
-function buildAggregateTile(tile, tileBounds, tileDepth, count, fills, lines, transfers) {
+function buildAggregateTile(tile, tileBounds, tileDepth, count, fills, lines, linePrimitives, transfers) {
     const center = getBoundsCenter(tileBounds);
     const badgeMesh = makeAggregateBadgeMesh(center, tile, tileDepth, count);
 
     pushMesh(fills, transfers, badgeMesh);
 
+    const labelTarget = STATE.useNativeLines ? linePrimitives : lines;
+
     for (const labelMesh of makeAggregateLabelMeshes(center, tile, tileDepth, count)) {
-        pushMesh(lines, transfers, labelMesh);
+        pushMesh(labelTarget, transfers, labelMesh);
     }
 }
 
@@ -1673,6 +1684,27 @@ function makeLineMesh(coordinates, tile, tileDepth) {
 function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
     if (!coordinates || coordinates.length < 2) {
         return null;
+    }
+
+    if (STATE.useNativeLines) {
+        const vertices = [];
+        const indices = [];
+
+        for (let i = 0; i < coordinates.length; i++) {
+            const point = imageToTileUv(coordinates[i], tile);
+
+            vertices.push(point[0], point[1], tileDepth, -1);
+
+            if (i < coordinates.length - 1) {
+                indices.push(i, i + 1);
+            }
+        }
+
+        if (!indices.length) {
+            return null;
+        }
+
+        return makeMesh(vertices, indices, color);
     }
 
     const vertices = [];

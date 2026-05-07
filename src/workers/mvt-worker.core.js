@@ -6,6 +6,8 @@ let STYLE = {
     fallback: { type: 'line', color: [0, 0, 0, 1], widthPx: 1, join: 'bevel', cap: 'butt' }
 };
 
+let USE_NATIVE_LINES = false;
+
 self.onmessage = async (e) => {
     const msg = e.data;
 
@@ -13,6 +15,7 @@ self.onmessage = async (e) => {
         if (msg.type === 'config') {
             EXTENT = msg.extent || EXTENT;
             STYLE = msg.style || STYLE;
+            USE_NATIVE_LINES = msg.useNativeLines === true;
             return;
         }
 
@@ -36,6 +39,7 @@ self.onmessage = async (e) => {
 
             const fills = [];
             const lines = [];
+            const linePrimitives = [];
             const points = [];
 
             // Iterate layers
@@ -88,22 +92,53 @@ self.onmessage = async (e) => {
                     }
 
                     if (feat.type === 2 && fstyle.type === 'line') {
-                        // Build stroke triangles (bevel joins + requested caps; miter threshold)
-                        const widthPx = fstyle.widthPx || 1.0;
-                        const widthTile = widthPx * (lyr.extent / (512)); // heuristic: px@512 tile
-                        for (let p = 0; p < geom.length; p++) {
-                            const pts = geom[p];
-                            const mesh = strokePoly(pts, widthTile, fstyle.join || 'bevel', fstyle.cap || 'butt', fstyle.miterLimit || 2.0);
-                            if (mesh && mesh.indices.length) {
-                                const vertCount = mesh.vertices.length / 2;
-                                const verts = new Float32Array(4 * vertCount);
-                                for (let v = 0; v < vertCount; v += 1) {
-                                    verts[4 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
-                                    verts[4 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                        if (USE_NATIVE_LINES) {
+                            for (let p = 0; p < geom.length; p++) {
+                                const pts = geom[p];
+
+                                if (!pts || pts.length < 2) {
+                                    continue;
+                                }
+
+                                const verts = new Float32Array(pts.length * 4);
+                                const idx = new Uint32Array((pts.length - 1) * 2);
+
+                                for (let v = 0; v < pts.length; v += 1) {
+                                    verts[4 * v + 0] = pts[v].x / lyr.extent;
+                                    verts[4 * v + 1] = pts[v].y / lyr.extent;
                                     verts[4 * v + 2] = tileDepth;
                                     verts[4 * v + 3] = -1;
+
+                                    if (v < pts.length - 1) {
+                                        idx[2 * v + 0] = v;
+                                        idx[2 * v + 1] = v + 1;
+                                    }
                                 }
-                                lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
+
+                                linePrimitives.push({
+                                    vertices: verts.buffer,
+                                    indices: idx.buffer,
+                                    color: fstyle.color
+                                });
+                            }
+                        } else {
+                            // Build stroke triangles (bevel joins + requested caps; miter threshold)
+                            const widthPx = fstyle.widthPx || 1.0;
+                            const widthTile = widthPx * (lyr.extent / (512)); // heuristic: px@512 tile
+                            for (let p = 0; p < geom.length; p++) {
+                                const pts = geom[p];
+                                const mesh = strokePoly(pts, widthTile, fstyle.join || 'bevel', fstyle.cap || 'butt', fstyle.miterLimit || 2.0);
+                                if (mesh && mesh.indices.length) {
+                                    const vertCount = mesh.vertices.length / 2;
+                                    const verts = new Float32Array(4 * vertCount);
+                                    for (let v = 0; v < vertCount; v += 1) {
+                                        verts[4 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
+                                        verts[4 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                                        verts[4 * v + 2] = tileDepth;
+                                        verts[4 * v + 3] = -1;
+                                    }
+                                    lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
+                                }
                             }
                         }
                     }
@@ -220,6 +255,14 @@ self.onmessage = async (e) => {
                 }
             }
 
+            for (const a of linePrimitives) {
+                transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
+            }
+
             for (const a of points) {
                 transfer.push(a.vertices, a.indices);
 
@@ -228,7 +271,7 @@ self.onmessage = async (e) => {
                 }
             }
 
-            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, points } }, transfer);
+            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, linePrimitives, points } }, transfer);
         }
     } catch (err) {
         self.postMessage({ type: 'tile', key: e.data && e.data.key, ok: false, error: String(err) });

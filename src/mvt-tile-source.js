@@ -4,7 +4,7 @@
  * ------------------
  * A TileSource that reads TileJSON metadata, fetches MVT (.mvt/.pbf) tiles,
  * decodes + tessellates them on a Web Worker, and returns FlexDrawer-compatible
- * caches using the new `vector-mesh` format (fills + lines).
+ * caches using the `vector-mesh` format.
  *
  * Requirements:
  *  - flex-drawer.js patched to accept `vector-mesh` (see vector-mesh-support.patch)
@@ -29,12 +29,25 @@
  * TODO OSD uses // eslint-disable-next-line compat/compat to disable URL warns for opera mini - what is the purpose of supporting it at all
  */
 $.MVTTileSource = class extends $.TileSource {
-    constructor({ template, scheme = 'xyz', tileSize = 512, minLevel = 0, maxLevel = 14, width, height, extent = 4096, style }) {
+    constructor({
+                    template,
+                    scheme = 'xyz',
+                    tileSize = 512,
+                    minLevel = 0,
+                    maxLevel = 14,
+                    width,
+                    height,
+                    extent = 4096,
+                    style,
+                    useNativeLines = false
+                }) {
         super({ width, height, tileSize, minLevel, maxLevel });
         this.template = template;
         this.scheme = scheme;
         this.extent = extent;
         this.style = style || defaultStyle();
+        this.useNativeLines = useNativeLines === true;
+
         this._worker = makeWorker();
         this._pending = new Map(); // key -> {resolve,reject}
 
@@ -58,6 +71,7 @@ $.MVTTileSource = class extends $.TileSource {
                     ctx.finish({
                         fills: (t.fills || []).map(packMesh),
                         lines: (t.lines || []).map(packMesh),
+                        linePrimitives: (t.linePrimitives || []).map(packMesh),
                         points: (t.points || []).map(packMesh),
                     }, undefined, 'vector-mesh');
                 }
@@ -69,7 +83,12 @@ $.MVTTileSource = class extends $.TileSource {
         };
 
         // Send config once
-        this._worker.postMessage({ type: 'config', extent: this.extent, style: this.style });
+        this._worker.postMessage({
+            type: 'config',
+            extent: this.extent,
+            style: this.style,
+            useNativeLines: this.useNativeLines
+        });
     }
 
     /**
@@ -162,6 +181,7 @@ $.MVTTileSource = class extends $.TileSource {
             height,
             extent,
             style: tj.style || defaultStyle(),
+            useNativeLines: tj.useNativeLines === true
         };
     }
 
@@ -176,6 +196,10 @@ $.MVTTileSource = class extends $.TileSource {
             .replace(/\{z\}/g, String(z))
             .replace(/\{x\}/g, String(x))
             .replace(/\{y\}/g, String(yValue));
+    }
+
+    getTileHashKey(level, x, y) {
+        return `mvt:${this.useNativeLines ? 'native-lines' : 'stroke-lines'}:${this.getTileUrl(level, x, y)}`;
     }
 
     /**

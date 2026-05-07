@@ -52,6 +52,7 @@
      *     to [0, 0, width, height]. Provide this only when GeoJSON coordinates need
      *     to be mapped from another coordinate rectangle into the overlay coordinate space.
      * @property {object} [style] - Optional source-level style descriptor.
+     * @property {boolean} [useNativeLines=false] - Whether LineString geometries are rendered as gl.LINES instead of stroke-triangle meshes.
      * @property {GeoJSONTileAggregationOptions} [aggregation] - Optional per-tile aggregation settings.
      */
 
@@ -126,6 +127,13 @@
             this.style = normalized.style;
 
             /**
+             * Whether LineString geometries are rendered with native gl.LINES.
+             *
+             * @type {boolean}
+             */
+            this.useNativeLines = normalized.useNativeLines;
+
+            /**
              * Optional per-tile annotation aggregation settings.
              *
              * @type {GeoJSONTileAggregationOptions}
@@ -139,6 +147,14 @@
              * @type {string}
              */
             this._aggregationHash = getAggregationHash(this.aggregation);
+
+            /**
+             * Stable native-line rendering identity included in tile cache keys.
+             *
+             * @private
+             * @type {string}
+             */
+            this._nativeLineHash = this.useNativeLines ? 'native-lines' : 'stroke-lines';
 
             /**
              * Pending tile jobs keyed by tile id.
@@ -205,6 +221,7 @@
                 bounds: options.bounds || null,
                 bbox,
                 style: options.style || null,
+                useNativeLines: options.useNativeLines === true,
                 aggregation: normalizeAggregationOptions(options.aggregation)
             };
 
@@ -336,6 +353,7 @@
                     bounds: bbox,
                     bbox,
                     style: null,
+                    useNativeLines: data.useNativeLines === true,
                     aggregation: normalizeAggregationOptions(data.aggregation)
                 };
             }
@@ -356,6 +374,7 @@
                 bounds: data.bounds || ((!hasExplicitWidth || !hasExplicitHeight) ? bbox : null),
                 bbox,
                 style: data.style || null,
+                useNativeLines: data.useNativeLines === true,
                 aggregation: normalizeAggregationOptions(data.aggregation)
             };
         }
@@ -382,7 +401,7 @@
          */
         getTileHashKey(level, x, y) {
             const sourceId = this._url || 'inline';
-            return `geojson:${sourceId}:${this._aggregationHash}:${level}:${x}:${y}`;
+            return `geojson:${sourceId}:${this._aggregationHash}:${this._nativeLineHash}:${level}:${x}:${y}`;
         }
 
         /**
@@ -487,6 +506,7 @@
                 bounds: this.bounds ? this.bounds.slice() : null,
                 bbox: this.bbox ? this.bbox.slice() : null,
                 style: this.style,
+                useNativeLines: this.useNativeLines,
                 aggregation: cloneAggregationOptions(this.aggregation)
             };
         }
@@ -580,6 +600,7 @@
                 width: this.dimensions.x,
                 height: this.dimensions.y,
                 style: this.style,
+                useNativeLines: this.useNativeLines,
                 aggregation: this.aggregation
             });
         }
@@ -616,6 +637,7 @@
                     job.finish({
                         fills: (tile.fills || []).map(packMesh),
                         lines: (tile.lines || []).map(packMesh),
+                        linePrimitives: (tile.linePrimitives || []).map(packMesh),
                         points: (tile.points || []).map(packMesh)
                     }, undefined, 'vector-mesh');
                 }
