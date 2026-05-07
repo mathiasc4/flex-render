@@ -1795,7 +1795,7 @@ function makePolygonMesh(coordinates, tile, tileDepth) {
         return null;
     }
 
-    return makeMesh(vertices, indices, STATE.style.fillColor || [0.1, 0.8, 0.25, 0.45]);
+    return makeMesh(vertices, indices, STATE.style.fillColor || [0.8, 0.8, 0.1, 0.5]);
 }
 
 /**

@@ -149,7 +149,10 @@ $('#image-options-container input.toggle').on('change', function() {
     const data = $(this).data();
 
     if (this.checked) {
-        addTileSource(data.image, this);
+        addTileSource(data.image, this).catch(error => {
+            console.error(`Failed to add tile source '${data.image}'.`, error);
+            $(this).prop("checked", false);
+        });
     } else {
         const item = $(this).data('item');
 
@@ -172,12 +175,16 @@ function updateTiledImage(tiledImage, data, value, item) {
     let field = data.field;
 
     if (field === "aggregation") {
-        updateGeoJSON10kAggregation(Boolean(value));
+        updateGeoJSON10kAggregation(Boolean(value)).catch(error => {
+            console.error(`Failed to update aggregation for '${data.image}'.`, error);
+        });
         return;
     }
 
     if (field === "useNativeLines") {
-        reloadTileSource(data.image);
+        reloadTileSource(data.image).catch(error => {
+            console.error(`Failed to reload tile source '${data.image}'.`, error);
+        });
         return;
     }
 
@@ -294,14 +301,18 @@ function getInsertionIndex(checkbox) {
     return items.indexOf(checkbox);
 }
 
-function getTileSourceForImage(image) {
+async function getTileSourceForImage(image) {
     const source = sources[image];
 
-    if (!source || image === "fabric") {
+    if (!source) {
         return source;
     }
 
     const useNativeLines = getUseNativeLinesEnabled(image);
+
+    if (image === "fabric") {
+        return source;
+    }
 
     if (image === GEOJSON_10K_SOURCE_KEY) {
         const aggregationEnabled = getGeoJSON10kAggregationEnabled();
@@ -316,6 +327,42 @@ function getTileSourceForImage(image) {
         };
     }
 
+    if (typeof source === "string") {
+        const response = await fetch(source);
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch ${source}: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (image === "mvt") {
+            const options = OpenSeadragon.MVTTileSource.prototype.configure({
+                ...data,
+                useNativeLines
+            }, source);
+
+            return new OpenSeadragon.MVTTileSource({
+                ...options,
+                useNativeLines
+            });
+        }
+
+        if (image === "geojson") {
+            const options = OpenSeadragon.GeoJSONTileSource.prototype.configure({
+                ...data,
+                useNativeLines
+            }, source);
+
+            return new OpenSeadragon.GeoJSONTileSource({
+                ...options,
+                useNativeLines
+            });
+        }
+
+        return source;
+    }
+
     return {
         ...source,
         useNativeLines
@@ -328,7 +375,7 @@ function getGeoJSON10kAggregationEnabled() {
     return input.length ? input.prop("checked") : true;
 }
 
-function updateGeoJSON10kAggregation(enabled) {
+async function updateGeoJSON10kAggregation(enabled) {
     const checkbox = $(`#image-options-container input.toggle[data-image="${GEOJSON_10K_SOURCE_KEY}"]`);
     const tiledImage = checkbox.data("item");
 
@@ -349,7 +396,11 @@ function updateGeoJSON10kAggregation(enabled) {
     viewer.world.removeItem(tiledImage);
     checkbox.data("item", null);
 
-    const tileSource = getTileSourceForImage(GEOJSON_10K_SOURCE_KEY);
+    const tileSource = await getTileSourceForImage(GEOJSON_10K_SOURCE_KEY);
+
+    if (!tileSource || !checkbox.prop("checked")) {
+        return;
+    }
 
     viewer.addTiledImage({
         tileSource,
@@ -383,10 +434,10 @@ function getUseNativeLinesEnabled(image) {
     return input.length ? input.prop("checked") : false;
 }
 
-function addTileSource(image, checkbox) {
-    const tileSource = getTileSourceForImage(image);
+async function addTileSource(image, checkbox) {
+    const tileSource = await getTileSourceForImage(image);
 
-    if (!tileSource) {
+    if (!tileSource || !$(checkbox).prop("checked")) {
         return;
     }
 
@@ -483,11 +534,17 @@ function getCompositeOperationOptions(){
     return $(elements);
 }
 
-function reloadTileSource(image) {
+async function reloadTileSource(image) {
     const checkbox = $(`#image-options-container input.toggle[data-image="${image}"]`);
     const tiledImage = checkbox.data("item");
 
     if (!tiledImage) {
+        return;
+    }
+
+    const tileSource = await getTileSourceForImage(image);
+
+    if (!tileSource || !checkbox.prop("checked") || checkbox.data("item") !== tiledImage) {
         return;
     }
 
@@ -503,12 +560,6 @@ function reloadTileSource(image) {
 
     viewer.world.removeItem(tiledImage);
     checkbox.data("item", null);
-
-    const tileSource = getTileSourceForImage(image);
-
-    if (!tileSource || !checkbox.prop("checked")) {
-        return;
-    }
 
     viewer.addTiledImage({
         tileSource,
