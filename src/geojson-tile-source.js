@@ -13,6 +13,24 @@
     });
 
     /**
+     * Options controlling per-tile annotation aggregation.
+     *
+     * When enabled, non-max-level tiles with more than threshold visible
+     * annotations are rendered as one cluster badge instead of rendering every
+     * annotation mesh in that tile.
+     *
+     * @typedef {object} GeoJSONTileAggregationOptions
+     * @property {boolean} [enabled=false] - Whether tile-level aggregation is enabled.
+     * @property {number} [threshold=50] - Aggregate when visible annotation count is greater than this value.
+     * @property {number} [badgeSize=56] - Cluster badge diameter in level pixels.
+     * @property {number[]} [badgeColor=[1, 0.65, 0.1, 0.85]] - Badge color as [r, g, b, a].
+     * @property {number[]} [labelColor=[0, 0, 0, 1]] - Count label color as [r, g, b, a].
+     * @property {number} [labelSize=24] - Count label height in level pixels.
+     * @property {number} [labelStrokeWidth=3] - Count label stroke width in level pixels.
+     * @property {number} [maxLabelValue=9999] - Maximum visible label value before using a plus suffix.
+     */
+
+    /**
      * Options used to construct a GeoJSON tile source.
      *
      * @typedef {object} GeoJSONTileSourceOptions
@@ -34,6 +52,7 @@
      *     to [0, 0, width, height]. Provide this only when GeoJSON coordinates need
      *     to be mapped from another coordinate rectangle into the overlay coordinate space.
      * @property {object} [style] - Optional source-level style descriptor.
+     * @property {GeoJSONTileAggregationOptions} [aggregation] - Optional per-tile aggregation settings.
      */
 
     /**
@@ -107,6 +126,21 @@
             this.style = normalized.style;
 
             /**
+             * Optional per-tile annotation aggregation settings.
+             *
+             * @type {GeoJSONTileAggregationOptions}
+             */
+            this.aggregation = cloneAggregationOptions(normalized.aggregation);
+
+            /**
+             * Stable aggregation identity included in tile cache keys.
+             *
+             * @private
+             * @type {string}
+             */
+            this._aggregationHash = getAggregationHash(this.aggregation);
+
+            /**
              * Pending tile jobs keyed by tile id.
              *
              * @private
@@ -170,7 +204,8 @@
                 projection: options.projection || $.GeoJSONTileSourceProjection.IMAGE,
                 bounds: options.bounds || null,
                 bbox,
-                style: options.style || null
+                style: options.style || null,
+                aggregation: normalizeAggregationOptions(options.aggregation)
             };
 
             if (typeof normalized.url !== 'string' || !normalized.url.trim()) {
@@ -300,7 +335,8 @@
                     projection: $.GeoJSONTileSourceProjection.IMAGE,
                     bounds: bbox,
                     bbox,
-                    style: null
+                    style: null,
+                    aggregation: normalizeAggregationOptions(data.aggregation)
                 };
             }
 
@@ -319,7 +355,8 @@
                 projection: data.projection || $.GeoJSONTileSourceProjection.IMAGE,
                 bounds: data.bounds || ((!hasExplicitWidth || !hasExplicitHeight) ? bbox : null),
                 bbox,
-                style: data.style || null
+                style: data.style || null,
+                aggregation: normalizeAggregationOptions(data.aggregation)
             };
         }
 
@@ -345,7 +382,7 @@
          */
         getTileHashKey(level, x, y) {
             const sourceId = this._url || 'inline';
-            return `geojson:${sourceId}:${level}:${x}:${y}`;
+            return `geojson:${sourceId}:${this._aggregationHash}:${level}:${x}:${y}`;
         }
 
         /**
@@ -449,7 +486,8 @@
                 projection: this.projection,
                 bounds: this.bounds ? this.bounds.slice() : null,
                 bbox: this.bbox ? this.bbox.slice() : null,
-                style: this.style
+                style: this.style,
+                aggregation: cloneAggregationOptions(this.aggregation)
             };
         }
 
@@ -541,7 +579,8 @@
                 bbox: this.bbox,
                 width: this.dimensions.x,
                 height: this.dimensions.y,
-                style: this.style
+                style: this.style,
+                aggregation: this.aggregation
             });
         }
 
@@ -687,6 +726,112 @@
             width: bbox[2] - bbox[0],
             height: bbox[3] - bbox[1]
         };
+    }
+
+    /**
+     * Normalize per-tile aggregation options.
+     *
+     * @param {*} options - Candidate aggregation options.
+     * @returns {GeoJSONTileAggregationOptions} Normalized aggregation options.
+     * @throws {Error} Thrown when aggregation options are invalid.
+     */
+    function normalizeAggregationOptions(options) {
+        const source = options || {};
+        const normalized = {
+            enabled: source.enabled === true,
+            threshold: (source.threshold !== undefined && source.threshold !== null) ? source.threshold : 50,
+            badgeSize: (source.badgeSize !== undefined && source.badgeSize !== null) ? source.badgeSize : 56,
+            badgeColor: source.badgeColor || [1, 0.65, 0.1, 0.85],
+            labelColor: source.labelColor || [0, 0, 0, 1],
+            labelSize: (source.labelSize !== undefined && source.labelSize !== null) ? source.labelSize : 24,
+            labelStrokeWidth: (source.labelStrokeWidth !== undefined && source.labelStrokeWidth !== null) ? source.labelStrokeWidth : 3,
+            maxLabelValue: (source.maxLabelValue !== undefined && source.maxLabelValue !== null) ? source.maxLabelValue : 9999
+        };
+
+        if (!Number.isFinite(normalized.threshold) || normalized.threshold < 0) {
+            throw new Error('GeoJSONTileSource: aggregation.threshold must be a non-negative finite number.');
+        }
+
+        if (!Number.isFinite(normalized.badgeSize) || normalized.badgeSize <= 0) {
+            throw new Error('GeoJSONTileSource: aggregation.badgeSize must be a positive finite number.');
+        }
+
+        if (!Number.isFinite(normalized.labelSize) || normalized.labelSize <= 0) {
+            throw new Error('GeoJSONTileSource: aggregation.labelSize must be a positive finite number.');
+        }
+
+        if (!Number.isFinite(normalized.labelStrokeWidth) || normalized.labelStrokeWidth <= 0) {
+            throw new Error('GeoJSONTileSource: aggregation.labelStrokeWidth must be a positive finite number.');
+        }
+
+        if (!Number.isFinite(normalized.maxLabelValue) || normalized.maxLabelValue < 1) {
+            throw new Error('GeoJSONTileSource: aggregation.maxLabelValue must be a positive finite number.');
+        }
+
+        normalized.badgeColor = normalizeColor(normalized.badgeColor, 'GeoJSONTileSource: aggregation.badgeColor');
+        normalized.labelColor = normalizeColor(normalized.labelColor, 'GeoJSONTileSource: aggregation.labelColor');
+        normalized.threshold = Math.floor(normalized.threshold);
+        normalized.maxLabelValue = Math.floor(normalized.maxLabelValue);
+
+        return normalized;
+    }
+
+    /**
+     * Normalize an RGBA color.
+     *
+     * @param {*} color - Candidate color.
+     * @param {string} label - Error label.
+     * @returns {number[]} Color as [r, g, b, a].
+     * @throws {Error} Thrown when color is invalid.
+     */
+    function normalizeColor(color, label) {
+        if (!Array.isArray(color) || color.length !== 4 || !color.every(Number.isFinite)) {
+            throw new Error(`${label} must be [r, g, b, a].`);
+        }
+
+        return color.slice();
+    }
+
+    /**
+     * Clone normalized aggregation options.
+     *
+     * @param {GeoJSONTileAggregationOptions} aggregation - Aggregation options.
+     * @returns {GeoJSONTileAggregationOptions} Cloned aggregation options.
+     */
+    function cloneAggregationOptions(aggregation) {
+        return {
+            enabled: aggregation.enabled,
+            threshold: aggregation.threshold,
+            badgeSize: aggregation.badgeSize,
+            badgeColor: aggregation.badgeColor.slice(),
+            labelColor: aggregation.labelColor.slice(),
+            labelSize: aggregation.labelSize,
+            labelStrokeWidth: aggregation.labelStrokeWidth,
+            maxLabelValue: aggregation.maxLabelValue
+        };
+    }
+
+    /**
+     * Return a stable string identity for aggregation-sensitive tile cache keys.
+     *
+     * @param {GeoJSONTileAggregationOptions} aggregation - Aggregation options.
+     * @returns {string} Stable aggregation key.
+     */
+    function getAggregationHash(aggregation) {
+        if (!aggregation.enabled) {
+            return 'aggregation:none';
+        }
+
+        return [
+            'aggregation',
+            aggregation.threshold,
+            aggregation.badgeSize,
+            aggregation.badgeColor.join(','),
+            aggregation.labelColor.join(','),
+            aggregation.labelSize,
+            aggregation.labelStrokeWidth,
+            aggregation.maxLabelValue
+        ].join(':');
     }
 
     /**

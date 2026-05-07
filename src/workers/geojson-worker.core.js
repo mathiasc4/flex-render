@@ -9,6 +9,7 @@
  * - triangulates Polygon rings with earcut, including holes;
  * - uses a top-level GeoJSON bbox as source bounds when provided by the tile source;
  * - performs geometry bbox filtering before exact per-tile clipping;
+ * - optionally aggregates dense non-max-level tiles into one count badge;
  * - emits FlexDrawer-compatible vector-mesh payloads with vec4 vertices.
  *
  * Vertex format:
@@ -34,7 +35,8 @@ let STATE = {
     bbox: null,
     width: 1,
     height: 1,
-    style: {}
+    style: {},
+    aggregation: null
 };
 
 /**
@@ -63,6 +65,25 @@ const QUADTREE_NODE_CAPACITY = 32;
  * @type {number}
  */
 const QUADTREE_MAX_DEPTH = 12;
+
+/**
+ * Seven-segment glyph definitions used for aggregate tile count labels.
+ *
+ * @type {object}
+ */
+const SEVEN_SEGMENT_GLYPHS = Object.freeze({
+    '0': ['top', 'upperRight', 'lowerRight', 'bottom', 'lowerLeft', 'upperLeft'],
+    '1': ['upperRight', 'lowerRight'],
+    '2': ['top', 'upperRight', 'middle', 'lowerLeft', 'bottom'],
+    '3': ['top', 'upperRight', 'middle', 'lowerRight', 'bottom'],
+    '4': ['upperLeft', 'middle', 'upperRight', 'lowerRight'],
+    '5': ['top', 'upperLeft', 'middle', 'lowerRight', 'bottom'],
+    '6': ['top', 'upperLeft', 'middle', 'lowerRight', 'lowerLeft', 'bottom'],
+    '7': ['top', 'upperRight', 'lowerRight'],
+    '8': ['top', 'upperRight', 'lowerRight', 'bottom', 'lowerLeft', 'upperLeft', 'middle'],
+    '9': ['top', 'upperRight', 'lowerRight', 'bottom', 'upperLeft', 'middle'],
+    '+': ['middle', 'verticalMiddle']
+});
 
 
 self.onmessage = function(event) {
@@ -119,7 +140,8 @@ async function configure(message) {
             projection,
             bounds,
             bbox,
-            style: (message.style !== null && message.style !== undefined) ? message.style : {}
+            style: (message.style !== null && message.style !== undefined) ? message.style : {},
+            aggregation: normalizeAggregationOptions(message.aggregation)
         };
 
         STATE.geometries = rawGeometries.map(projectGeometry).filter(Boolean);
@@ -165,6 +187,49 @@ function normalizeGeoJSONBBox(bbox, label) {
     }
 
     return [minX, minY, maxX, maxY];
+}
+
+/**
+ * Normalize per-tile aggregation options received from the tile source.
+ *
+ * @param {*} options - Candidate aggregation options.
+ * @returns {object} Normalized aggregation options.
+ */
+function normalizeAggregationOptions(options) {
+    const source = options || {};
+
+    return {
+        enabled: source.enabled === true,
+        threshold: Math.max(0, Math.floor((source.threshold !== undefined && source.threshold !== null) ? source.threshold : 50)),
+        badgeSize: positiveNumberOrDefault(source.badgeSize, 56),
+        badgeColor: colorOrDefault(source.badgeColor, [1, 0.65, 0.1, 0.85]),
+        labelColor: colorOrDefault(source.labelColor, [0, 0, 0, 1]),
+        labelSize: positiveNumberOrDefault(source.labelSize, 24),
+        labelStrokeWidth: positiveNumberOrDefault(source.labelStrokeWidth, 3),
+        maxLabelValue: Math.max(1, Math.floor((source.maxLabelValue !== undefined && source.maxLabelValue !== null) ? source.maxLabelValue : 9999))
+    };
+}
+
+/**
+ * Return a positive finite number or a fallback.
+ *
+ * @param {*} value - Candidate number.
+ * @param {number} fallback - Fallback value.
+ * @returns {number} Positive finite number.
+ */
+function positiveNumberOrDefault(value, fallback) {
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * Return an RGBA color or a fallback.
+ *
+ * @param {*} value - Candidate color.
+ * @param {number[]} fallback - Fallback color.
+ * @returns {number[]} Color as [r, g, b, a].
+ */
+function colorOrDefault(value, fallback) {
+    return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite) ? value.slice() : fallback.slice();
 }
 
 
@@ -1221,6 +1286,38 @@ function buildTile(tile) {
     const points = [];
 
     const transfers = [];
+    const visibleGeometries = getVisibleTileGeometries(tileBounds);
+
+    if (shouldAggregateTile(tile, visibleGeometries.length)) {
+        buildAggregateTile(tile, tileBounds, tileDepth, visibleGeometries.length, fills, lines, transfers);
+    } else {
+        buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, points, transfers);
+    }
+
+    self.postMessage({
+        type: 'tile',
+        key: tile.key,
+        ok: true,
+        data: {
+            fills,
+            lines,
+            points
+        }
+    }, transfers);
+}
+
+/**
+ * Return geometries that actually contribute to a tile.
+ *
+ * The candidate list comes from the quadtree when available. This function then
+ * applies the same geometry-specific inclusion and clipping checks used by the
+ * previous direct rendering path.
+ *
+ * @param {number[]} tileBounds - Tile image-space bounds.
+ * @returns {object[]} Visible tile geometry records.
+ */
+function getVisibleTileGeometries(tileBounds) {
+    const visible = [];
 
     // Candidate geometries are read from a static image-space quadtree when the
     // source is large enough to justify indexing. Small sources fall back to
@@ -1239,62 +1336,285 @@ function buildTile(tile) {
         }
 
         if (geometry.type === 'Point') {
-            if (!pointInBounds(geometry.coordinates, tileBounds)) {
-                continue;
-            }
-
-            const mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
-            if (mesh) {
-                points.push(mesh);
-                transfers.push(mesh.vertices, mesh.indices);
-
-                if (mesh.parameters) {
-                    transfers.push(mesh.parameters);
-                }
+            if (pointInBounds(geometry.coordinates, tileBounds)) {
+                visible.push({
+                    geometry
+                });
             }
         } else if (geometry.type === 'LineString') {
             const clippedLines = clipLineStringToBounds(geometry.coordinates, tileBounds);
 
-            for (const clippedLine of clippedLines) {
-                const mesh = makeLineMesh(clippedLine, tile, tileDepth);
-                if (mesh) {
-                    lines.push(mesh);
-                    transfers.push(mesh.vertices, mesh.indices);
-
-                    if (mesh.parameters) {
-                        transfers.push(mesh.parameters);
-                    }
-                }
+            if (clippedLines.length) {
+                visible.push({
+                    geometry,
+                    clippedLines
+                });
             }
         } else if (geometry.type === 'Polygon') {
             const clippedPolygon = clipPolygonToBounds(geometry.coordinates, tileBounds);
 
-            if (!clippedPolygon) {
-                continue;
-            }
-
-            const mesh = makePolygonMesh(clippedPolygon, tile, tileDepth);
-            if (mesh) {
-                fills.push(mesh);
-                transfers.push(mesh.vertices, mesh.indices);
-
-                if (mesh.parameters) {
-                    transfers.push(mesh.parameters);
-                }
+            if (clippedPolygon) {
+                visible.push({
+                    geometry,
+                    clippedPolygon
+                });
             }
         }
     }
 
-    self.postMessage({
-        type: 'tile',
-        key: tile.key,
-        ok: true,
-        data: {
-            fills,
-            lines,
-            points
+    return visible;
+}
+
+/**
+ * Test whether a tile should be rendered as one aggregate marker.
+ *
+ * Aggregation is disabled at max level so the deepest available level always
+ * renders the original annotation geometry.
+ *
+ * @param {object} tile - Tile request.
+ * @param {number} count - Visible annotation count.
+ * @returns {boolean} True when the tile should be aggregated.
+ */
+function shouldAggregateTile(tile, count) {
+    return !!(
+        STATE.aggregation &&
+        STATE.aggregation.enabled &&
+        tile.level < STATE.maxLevel &&
+        count > STATE.aggregation.threshold
+    );
+}
+
+/**
+ * Build normal annotation meshes for a tile.
+ *
+ * @param {object} tile - Tile request.
+ * @param {number} tileDepth - Packed tile-depth value.
+ * @param {object[]} visibleGeometries - Visible tile geometry records.
+ * @param {object[]} fills - Fill mesh output.
+ * @param {object[]} lines - Line mesh output.
+ * @param {object[]} points - Point mesh output.
+ * @param {ArrayBuffer[]} transfers - Transferable buffers.
+ * @returns {void}
+ */
+function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, points, transfers) {
+    for (const item of visibleGeometries) {
+        const geometry = item.geometry;
+
+        if (geometry.type === 'Point') {
+            const mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
+            pushMesh(points, transfers, mesh);
+        } else if (geometry.type === 'LineString') {
+            for (const clippedLine of item.clippedLines) {
+                const mesh = makeLineMesh(clippedLine, tile, tileDepth);
+                pushMesh(lines, transfers, mesh);
+            }
+        } else if (geometry.type === 'Polygon') {
+            const mesh = makePolygonMesh(item.clippedPolygon, tile, tileDepth);
+            pushMesh(fills, transfers, mesh);
         }
-    }, transfers);
+    }
+}
+
+/**
+ * Build one aggregate badge tile.
+ *
+ * @param {object} tile - Tile request.
+ * @param {number[]} tileBounds - Tile image-space bounds.
+ * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} count - Visible annotation count.
+ * @param {object[]} fills - Fill mesh output.
+ * @param {object[]} lines - Line mesh output.
+ * @param {ArrayBuffer[]} transfers - Transferable buffers.
+ * @returns {void}
+ */
+function buildAggregateTile(tile, tileBounds, tileDepth, count, fills, lines, transfers) {
+    const center = getBoundsCenter(tileBounds);
+    const badgeMesh = makeAggregateBadgeMesh(center, tile, tileDepth, count);
+
+    pushMesh(fills, transfers, badgeMesh);
+
+    for (const labelMesh of makeAggregateLabelMeshes(center, tile, tileDepth, count)) {
+        pushMesh(lines, transfers, labelMesh);
+    }
+}
+
+/**
+ * Push a mesh and its transferable buffers into tile output arrays.
+ *
+ * @param {object[]} target - Mesh target array.
+ * @param {ArrayBuffer[]} transfers - Transferable buffers.
+ * @param {?object} mesh - Mesh to push.
+ * @returns {void}
+ */
+function pushMesh(target, transfers, mesh) {
+    if (!mesh) {
+        return;
+    }
+
+    target.push(mesh);
+    transfers.push(mesh.vertices, mesh.indices);
+
+    if (mesh.parameters) {
+        transfers.push(mesh.parameters);
+    }
+}
+
+/**
+ * Return the center of image-space bounds.
+ *
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {number[]} Center point.
+ */
+function getBoundsCenter(bounds) {
+    return [
+        (bounds[0] + bounds[2]) / 2,
+        (bounds[1] + bounds[3]) / 2
+    ];
+}
+
+/**
+ * Create a filled octagonal aggregate badge mesh.
+ *
+ * The count is also stored as mesh parameters so future renderer or picking
+ * paths can inspect the exact aggregate count even when the visible label is
+ * capped.
+ *
+ * @param {number[]} center - Badge center in image coordinates.
+ * @param {object} tile - Tile request.
+ * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} count - Visible annotation count.
+ * @returns {object} Mesh object.
+ */
+function makeAggregateBadgeMesh(center, tile, tileDepth, count) {
+    const [x, y] = imageToTileUv(center, tile);
+    const rect = getTileLevelRect(tile.level, tile.x, tile.y);
+    const radiusX = (STATE.aggregation.badgeSize / 2) / rect.width;
+    const radiusY = (STATE.aggregation.badgeSize / 2) / rect.height;
+    const vertices = [
+        x, y, tileDepth, -1
+    ];
+    const indices = [];
+    const sides = 8;
+
+    for (let i = 0; i < sides; i += 1) {
+        const angle = -Math.PI / 2 + (i / sides) * Math.PI * 2;
+
+        vertices.push(
+            x + Math.cos(angle) * radiusX,
+            y + Math.sin(angle) * radiusY,
+            tileDepth,
+            -1
+        );
+    }
+
+    for (let i = 1; i <= sides; i += 1) {
+        indices.push(0, i, i === sides ? 1 : i + 1);
+    }
+
+    return makeMesh(vertices, indices, STATE.aggregation.badgeColor, [count]);
+}
+
+/**
+ * Create line meshes for an aggregate badge count label.
+ *
+ * @param {number[]} center - Label center in image coordinates.
+ * @param {object} tile - Tile request.
+ * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} count - Visible annotation count.
+ * @returns {object[]} Label line meshes.
+ */
+function makeAggregateLabelMeshes(center, tile, tileDepth, count) {
+    const label = formatAggregateLabel(count);
+    const scale = getLevelScale(tile.level);
+    const height = STATE.aggregation.labelSize / scale;
+    const width = height * 0.55;
+    const gap = height * 0.22;
+    const totalWidth = label.length * width + Math.max(0, label.length - 1) * gap;
+    const startX = center[0] - totalWidth / 2 + width / 2;
+    const meshes = [];
+
+    for (let index = 0; index < label.length; index += 1) {
+        const character = label[index];
+        const glyphCenter = [
+            startX + index * (width + gap),
+            center[1]
+        ];
+
+        for (const segment of getGlyphSegments(character, glyphCenter, width, height)) {
+            const mesh = makeLineMeshWithStyle(
+                segment,
+                tile,
+                tileDepth,
+                STATE.aggregation.labelStrokeWidth,
+                STATE.aggregation.labelColor
+            );
+
+            if (mesh) {
+                meshes.push(mesh);
+            }
+        }
+    }
+
+    return meshes;
+}
+
+/**
+ * Format an aggregate count label.
+ *
+ * @param {number} count - Visible annotation count.
+ * @returns {string} Label text.
+ */
+function formatAggregateLabel(count) {
+    if (count > STATE.aggregation.maxLabelValue) {
+        return `${STATE.aggregation.maxLabelValue}+`;
+    }
+
+    return String(count);
+}
+
+/**
+ * Return line segments for one seven-segment glyph.
+ *
+ * @param {string} character - Digit or plus sign.
+ * @param {number[]} center - Glyph center in image coordinates.
+ * @param {number} width - Glyph width in image coordinates.
+ * @param {number} height - Glyph height in image coordinates.
+ * @returns {number[][][]} Glyph line segments.
+ */
+function getGlyphSegments(character, center, width, height) {
+    const segments = SEVEN_SEGMENT_GLYPHS[character];
+
+    if (!segments) {
+        return [];
+    }
+
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+    const midY = center[1];
+
+    const points = {
+        topLeft: [center[0] - halfWidth, center[1] - halfHeight],
+        topRight: [center[0] + halfWidth, center[1] - halfHeight],
+        middleLeft: [center[0] - halfWidth, midY],
+        middleRight: [center[0] + halfWidth, midY],
+        bottomLeft: [center[0] - halfWidth, center[1] + halfHeight],
+        bottomRight: [center[0] + halfWidth, center[1] + halfHeight],
+        topMiddle: [center[0], center[1] - halfHeight * 0.65],
+        bottomMiddle: [center[0], center[1] + halfHeight * 0.65]
+    };
+
+    const segmentCoordinates = {
+        top: [points.topLeft, points.topRight],
+        upperRight: [points.topRight, points.middleRight],
+        lowerRight: [points.middleRight, points.bottomRight],
+        bottom: [points.bottomLeft, points.bottomRight],
+        lowerLeft: [points.middleLeft, points.bottomLeft],
+        upperLeft: [points.topLeft, points.middleLeft],
+        middle: [points.middleLeft, points.middleRight],
+        verticalMiddle: [points.topMiddle, points.bottomMiddle]
+    };
+
+    return segments.map(segment => segmentCoordinates[segment]);
 }
 
 /**
@@ -1331,13 +1651,33 @@ function makePointMesh(coordinate, tile, tileDepth) {
  * @returns {?object} Mesh object.
  */
 function makeLineMesh(coordinates, tile, tileDepth) {
+    return makeLineMeshWithStyle(
+        coordinates,
+        tile,
+        tileDepth,
+        (STATE.style.lineWidth !== undefined && STATE.style.lineWidth !== null) ? STATE.style.lineWidth : 4,
+        STATE.style.lineColor || [0.1, 0.45, 1, 1]
+    );
+}
+
+/**
+ * Create simple rectangular segment meshes for a styled line.
+ *
+ * @param {number[][]} coordinates - Image coordinates.
+ * @param {object} tile - Tile request.
+ * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} lineWidth - Line width in level pixels.
+ * @param {number[]} color - RGBA color.
+ * @returns {?object} Mesh object.
+ */
+function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
     if (!coordinates || coordinates.length < 2) {
         return null;
     }
 
     const vertices = [];
     const indices = [];
-    const width = tilePixelSizeToUv((STATE.style.lineWidth !== undefined && STATE.style.lineWidth !== null) ? STATE.style.lineWidth : 4, tile);
+    const width = tilePixelSizeToUv(lineWidth, tile);
     const half = width / 2;
 
     for (let i = 0; i < coordinates.length - 1; i++) {
@@ -1372,7 +1712,7 @@ function makeLineMesh(coordinates, tile, tileDepth) {
         return null;
     }
 
-    return makeMesh(vertices, indices, STATE.style.lineColor || [0.1, 0.45, 1, 1]);
+    return makeMesh(vertices, indices, color);
 }
 
 /**
@@ -1434,10 +1774,16 @@ function makePolygonMesh(coordinates, tile, tileDepth) {
  * @param {number[]} color - RGBA color.
  * @returns {object} Mesh object.
  */
-function makeMesh(vertices, indices, color) {
-    return {
+function makeMesh(vertices, indices, color, parameters) {
+    const mesh = {
         vertices: new Float32Array(vertices).buffer,
         indices: new Uint32Array(indices).buffer,
         color
     };
+
+    if (parameters) {
+        mesh.parameters = new Float32Array(parameters).buffer;
+    }
+
+    return mesh;
 }

@@ -6,8 +6,20 @@ const sources = {
         type: "geojson",
         url: "../data/geojson-performance-10k.geojson",
         projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
-        width: 4096,
-        height: 4096,
+        width: 4096 * 8,
+        height: 4096 * 8,
+        bounds: [0, 0, 4096, 4096],
+        maxLevel: 25,
+        aggregation: {
+            enabled: true,
+            threshold: 25,
+            badgeSize: 64,
+            badgeColor: [1, 0.6, 0.05, 0.9],
+            labelColor: [0, 0, 0, 1],
+            labelSize: 26,
+            labelStrokeWidth: 3,
+            maxLabelValue: 999
+        }
     }
 };
 
@@ -17,6 +29,8 @@ const labels = {
     geojson: "GeoJSON",
     geojson_10k: "GeoJSON 10k",
 };
+
+const GEOJSON_10K_SOURCE_KEY = "geojson_10k";
 
 const drawerOptions = {
     "flex-renderer": {
@@ -52,6 +66,10 @@ let viewer = window.viewer = OpenSeadragon({
 
 
 function createImageOptionsElement(key, label){
+    const aggregationControl = key === GEOJSON_10K_SOURCE_KEY
+        ? `<label>Aggregation: <input type="checkbox" data-image="" data-field="aggregation" checked></label>`
+        : "";
+
     return $(`<div class="image-options" data-image-row="">
         <span class="image-options-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
 
@@ -74,6 +92,7 @@ function createImageOptionsElement(key, label){
             <label>Composite: <select data-image="" data-field="composite"></select></label>
             <label>Wrap: <select data-image="" data-field="wrapping"></select></label>
             <label>Smoothing: <input type="checkbox" data-image="" data-field="smoothing" checked></label>
+            ${aggregationControl}
         </div>
     </div>`.replaceAll('data-image=""', `data-image="${key}"`).replace('__title__', label));
 }
@@ -123,7 +142,7 @@ $('#image-options-container input.toggle').on('change', function() {
 
 $('#image-options-container input:not(.toggle)').on('change', function() {
     const data = $(this).data();
-    const value = $(this).val();
+    const value = this.type === "checkbox" ? $(this).prop("checked") : $(this).val();
     const tiledImage = getTiledImageForSource(data.image);
 
     updateTiledImage(tiledImage, data, value, this);
@@ -135,6 +154,11 @@ function updateTiledImage(tiledImage, data, value, item) {
     }
 
     let field = data.field;
+
+    if (field === "aggregation") {
+        updateGeoJSON10kAggregation(Boolean(value));
+        return;
+    }
 
     if (field == 'x') {
         let bounds = tiledImage.getBoundsNoRotate();
@@ -219,7 +243,7 @@ function getOptionsForSource(image) {
         .reduce((acc, input) => {
             const field = $(input).data('field');
 
-            if (field) {
+            if (field && isTiledImageNumberOption(field)) {
                 acc[field] = Number(input.value);
             }
 
@@ -231,14 +255,95 @@ function getOptionsForSource(image) {
     return options;
 }
 
+function isTiledImageNumberOption(field) {
+    return field === "x" ||
+        field === "y" ||
+        field === "width" ||
+        field === "degrees" ||
+        field === "opacity";
+}
+
 function getInsertionIndex(checkbox) {
     const items = $('#image-options-container input.toggle:checked').toArray();
 
     return items.indexOf(checkbox);
 }
 
+function getTileSourceForImage(image) {
+    const source = sources[image];
+
+    if (!source || image !== GEOJSON_10K_SOURCE_KEY) {
+        return source;
+    }
+
+    const aggregationEnabled = getGeoJSON10kAggregationEnabled();
+
+    return {
+        ...source,
+        aggregation: {
+            ...source.aggregation,
+            enabled: aggregationEnabled
+        }
+    };
+}
+
+function getGeoJSON10kAggregationEnabled() {
+    const input = $(`#image-options-container input[data-image="${GEOJSON_10K_SOURCE_KEY}"][data-field=aggregation]`);
+
+    return input.length ? input.prop("checked") : true;
+}
+
+function updateGeoJSON10kAggregation(enabled) {
+    const checkbox = $(`#image-options-container input.toggle[data-image="${GEOJSON_10K_SOURCE_KEY}"]`);
+    const tiledImage = checkbox.data("item");
+
+    if (!tiledImage) {
+        return;
+    }
+
+    const oldIndex = viewer.world.getIndexOfItem(tiledImage);
+    const bounds = tiledImage.getBoundsNoRotate();
+    const opacity = tiledImage.opacity;
+    const degrees = tiledImage.getRotation ? tiledImage.getRotation() : 0;
+    const flipped = tiledImage.getFlip ? tiledImage.getFlip() : false;
+    const composite = tiledImage.compositeOperation;
+    const wrapHorizontal = tiledImage.wrapHorizontal;
+    const wrapVertical = tiledImage.wrapVertical;
+    const debugMode = tiledImage.debugMode === true;
+
+    viewer.world.removeItem(tiledImage);
+    checkbox.data("item", null);
+
+    const tileSource = getTileSourceForImage(GEOJSON_10K_SOURCE_KEY);
+
+    viewer.addTiledImage({
+        tileSource,
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        degrees,
+        opacity,
+        flipped,
+        index: oldIndex,
+        success: function(event) {
+            const item = event.item;
+
+            item.debugMode = debugMode;
+            item.wrapHorizontal = wrapHorizontal;
+            item.wrapVertical = wrapVertical;
+
+            if (composite !== undefined) {
+                item.setCompositeOperation(composite === "null" ? null : composite);
+            }
+
+            checkbox.data("item", item);
+            applySelectOptionsToTiledImage(GEOJSON_10K_SOURCE_KEY, item);
+        }
+    });
+}
+
 function addTileSource(image, checkbox) {
-    const tileSource = sources[image];
+    const tileSource = getTileSourceForImage(image);
 
     if (!tileSource) {
         return;
