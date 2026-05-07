@@ -17,6 +17,7 @@
      * @property {Uint32Array} indices - Indices into the vertex array.
      * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
      * @property {Float32Array} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     * @property {number} [lineWidth=1] - Native line width in pixels. Used only for `linePrimitives`.
      */
 
     /**
@@ -1214,7 +1215,9 @@
                                 tileInfo.vectors.lines.matrix = transformMatrix;
                             }
                             if (tileInfo.vectors.linePrimitives) {
-                                tileInfo.vectors.linePrimitives.matrix = transformMatrix;
+                                for (const lineBatch of tileInfo.vectors.linePrimitives) {
+                                    lineBatch.matrix = transformMatrix;
+                                }
                             }
                             if (tileInfo.vectors.points) {
                                 tileInfo.vectors.points.matrix = transformMatrix;
@@ -1687,9 +1690,11 @@
                     gl.deleteBuffer(data.vectors.lines.ibo);
                 }
                 if (data.vectors.linePrimitives) {
-                    gl.deleteBuffer(data.vectors.linePrimitives.vboPos);
-                    gl.deleteBuffer(data.vectors.linePrimitives.vboParam);
-                    gl.deleteBuffer(data.vectors.linePrimitives.ibo);
+                    for (const lineBatch of data.vectors.linePrimitives) {
+                        gl.deleteBuffer(lineBatch.vboPos);
+                        gl.deleteBuffer(lineBatch.vboParam);
+                        gl.deleteBuffer(lineBatch.ibo);
+                    }
                 }
                 if (data.vectors.points) {
                     gl.deleteBuffer(data.vectors.points.vboPos);
@@ -1856,7 +1861,10 @@
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
-                return { vboPos, vboParam, ibo, count: indices.length };
+                const firstMesh = meshes[0] || {};
+                const lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0 ? firstMesh.lineWidth : 1;
+
+                return { vboPos, vboParam, ibo, count: indices.length, lineWidth };
             };
 
             const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
@@ -1869,7 +1877,22 @@
                 tileInfo.vectors.lines = buildBatch(data.lines);
             }
             if (hasNativeLines) {
-                tileInfo.vectors.linePrimitives = buildBatch(data.linePrimitives);
+                const linePrimitiveGroups = new Map();
+
+                for (const mesh of data.linePrimitives) {
+                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
+                        ? mesh.lineWidth
+                        : 1;
+                    const key = String(lineWidth);
+
+                    if (!linePrimitiveGroups.has(key)) {
+                        linePrimitiveGroups.set(key, []);
+                    }
+
+                    linePrimitiveGroups.get(key).push(mesh);
+                }
+
+                tileInfo.vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map(buildBatch);
             }
             if (data.points && data.points.length) {
                 tileInfo.vectors.points = buildBatch(data.points);

@@ -888,7 +888,8 @@
             vertices: new Float32Array(mesh.vertices),
             indices: new Uint32Array(mesh.indices),
             color: mesh.color || [0, 1, 0, 1],
-            parameters: mesh.parameters ? new Float32Array(mesh.parameters) : undefined
+            parameters: mesh.parameters ? new Float32Array(mesh.parameters) : undefined,
+            lineWidth: Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0 ? mesh.lineWidth : undefined
         };
     }
 })(OpenSeadragon);

@@ -23,7 +23,7 @@
     /**
      * @typedef {Object} FPRenderPackage
      * @property {FPRenderPackageItem[]} tiles
-     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives, and points.
+     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
      * @property {Number[][]} stencilPolygons
      */
 

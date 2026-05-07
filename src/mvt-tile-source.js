@@ -236,6 +236,7 @@ function packMesh(m) {
         indices: new Uint32Array(m.indices),
         color: m.color || [1, 0, 0, 1],
         parameters: m.parameters ? new Float32Array(m.parameters) : undefined,
+        lineWidth: Number.isFinite(m.lineWidth) && m.lineWidth > 0 ? m.lineWidth : undefined,
     };
 }
 

@@ -1704,7 +1704,9 @@ function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
             return null;
         }
 
-        return makeMesh(vertices, indices, color);
+        const mesh = makeMesh(vertices, indices, color);
+        mesh.lineWidth = Number.isFinite(lineWidth) && lineWidth > 0 ? lineWidth : 1;
+        return mesh;
     }
 
     const vertices = [];

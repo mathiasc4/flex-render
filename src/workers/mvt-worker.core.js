@@ -118,7 +118,8 @@ self.onmessage = async (e) => {
                                 linePrimitives.push({
                                     vertices: verts.buffer,
                                     indices: idx.buffer,
-                                    color: fstyle.color
+                                    color: fstyle.color,
+                                    lineWidth: Number.isFinite(fstyle.widthPx) && fstyle.widthPx > 0 ? fstyle.widthPx : 1.0
                                 });
                             }
                         } else {
