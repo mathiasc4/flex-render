@@ -28,8 +28,8 @@
      *
      * @typedef {object} VectorMeshTile
      * @property {VectorMesh[]} [fills] - Polygon fill triangle meshes.
-     * @property {VectorMesh[]} [lines] - Stroke triangle meshes rendered with gl.TRIANGLES.
-     * @property {VectorMesh[]} [linePrimitives] - Native line segment meshes rendered with gl.LINES.
+     * @property {VectorMesh[]} [lines] - Stroke triangle meshes rendered with gl.TRIANGLES. Mutually exclusive with linePrimitives.
+     * @property {VectorMesh[]} [linePrimitives] - Native line segment meshes rendered with gl.LINES. Mutually exclusive with lines.
      * @property {VectorMesh[]} [points] - Point marker and icon quad meshes.
      */
 
@@ -1859,13 +1859,16 @@
                 return { vboPos, vboParam, ibo, count: indices.length };
             };
 
+            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
+            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
+
             if (data.fills && data.fills.length) {
                 tileInfo.vectors.fills = buildBatch(data.fills);
             }
-            if (data.lines && data.lines.length) {
+            if (hasMeshLines) {
                 tileInfo.vectors.lines = buildBatch(data.lines);
             }
-            if (data.linePrimitives && data.linePrimitives.length) {
+            if (hasNativeLines) {
                 tileInfo.vectors.linePrimitives = buildBatch(data.linePrimitives);
             }
             if (data.points && data.points.length) {
