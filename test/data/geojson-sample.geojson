@@ -4,61 +4,218 @@
   "features": [
     {
       "type": "Feature",
-      "id": "green-polygon",
+      "id": "simple-polygon",
       "properties": {
-        "name": "Demo polygon"
+        "name": "Simple polygon",
+        "purpose": "Basic Polygon support"
       },
       "geometry": {
         "type": "Polygon",
         "coordinates": [
           [
-            [700, 700],
-            [3100, 850],
-            [3350, 2500],
-            [2200, 3400],
-            [900, 2800],
-            [700, 700]
+            [300, 300],
+            [1050, 420],
+            [1200, 1050],
+            [650, 1300],
+            [250, 900],
+            [300, 300]
           ]
         ]
       }
     },
     {
       "type": "Feature",
-      "id": "blue-line",
+      "id": "concave-polygon",
       "properties": {
-        "name": "Demo line"
+        "name": "Concave polygon",
+        "purpose": "Tests earcut instead of triangle-fan polygon filling"
       },
       "geometry": {
-        "type": "LineString",
+        "type": "Polygon",
         "coordinates": [
-          [450, 3600],
-          [1200, 3000],
-          [2100, 3150],
-          [2900, 2400],
-          [3650, 2600]
+          [
+            [1450, 300],
+            [2500, 300],
+            [2500, 600],
+            [1900, 600],
+            [1900, 1250],
+            [1450, 1250],
+            [1450, 300]
+          ]
         ]
       }
     },
     {
       "type": "Feature",
-      "id": "red-point-a",
+      "id": "polygon-with-hole",
       "properties": {
-        "name": "Demo point A"
+        "name": "Polygon with hole",
+        "purpose": "Tests Polygon inner rings / earcut hole offsets"
       },
       "geometry": {
-        "type": "Point",
-        "coordinates": [1800, 1800]
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [2850, 300],
+            [3850, 300],
+            [3850, 1300],
+            [2850, 1300],
+            [2850, 300]
+          ],
+          [
+            [3150, 600],
+            [3550, 600],
+            [3550, 1000],
+            [3150, 1000],
+            [3150, 600]
+          ]
+        ]
       }
     },
     {
       "type": "Feature",
-      "id": "red-point-b",
+      "id": "simple-line",
       "properties": {
-        "name": "Demo point B"
+        "name": "Simple line",
+        "purpose": "Basic LineString support"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [250, 1850],
+          [700, 1500],
+          [1150, 1800],
+          [1500, 1450],
+          [1900, 1700]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multi-line",
+      "properties": {
+        "name": "MultiLineString",
+        "purpose": "Tests MultiLineString explosion into LineString records"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [2200, 1500],
+            [2700, 1800],
+            [3200, 1500]
+          ],
+          [
+            [2200, 1900],
+            [2700, 2200],
+            [3200, 1900],
+            [3700, 2200]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "simple-point",
+      "properties": {
+        "name": "Simple point",
+        "purpose": "Basic Point support"
       },
       "geometry": {
         "type": "Point",
-        "coordinates": [3000, 1200]
+        "coordinates": [650, 2300]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multi-point",
+      "properties": {
+        "name": "MultiPoint",
+        "purpose": "Tests MultiPoint explosion into Point records"
+      },
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [1100, 2300],
+          [1450, 2550],
+          [1800, 2300],
+          [2150, 2550]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multi-polygon",
+      "properties": {
+        "name": "MultiPolygon",
+        "purpose": "Tests MultiPolygon explosion into Polygon records"
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [300, 3000],
+              [900, 3000],
+              [900, 3600],
+              [300, 3600],
+              [300, 3000]
+            ]
+          ],
+          [
+            [
+              [1100, 3000],
+              [1800, 3000],
+              [1800, 3700],
+              [1100, 3700],
+              [1100, 3000]
+            ],
+            [
+              [1300, 3200],
+              [1600, 3200],
+              [1600, 3500],
+              [1300, 3500],
+              [1300, 3200]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "geometry-collection",
+      "properties": {
+        "name": "GeometryCollection",
+        "purpose": "Tests GeometryCollection expansion"
+      },
+      "geometry": {
+        "type": "GeometryCollection",
+        "geometries": [
+          {
+            "type": "Point",
+            "coordinates": [2400, 3250]
+          },
+          {
+            "type": "LineString",
+            "coordinates": [
+              [2250, 3650],
+              [2600, 3000],
+              [2950, 3650]
+            ]
+          },
+          {
+            "type": "Polygon",
+            "coordinates": [
+              [
+                [3150, 3000],
+                [3800, 3150],
+                [3600, 3700],
+                [3000, 3600],
+                [3150, 3000]
+              ]
+            ]
+          }
+        ]
       }
     }
   ]

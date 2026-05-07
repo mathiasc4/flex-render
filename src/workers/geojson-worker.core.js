@@ -5,8 +5,8 @@
  * - accepts standard GeoJSON Feature, FeatureCollection, raw Geometry, and GeometryCollection objects;
  * - explodes MultiPoint, MultiLineString, MultiPolygon, and GeometryCollection
  *   into simple Point, LineString, and Polygon records before projection;
- * - meshes Point, LineString, and Polygon exterior rings;
- * - currently ignores polygon holes during meshing;
+ * - meshes Point, LineString, and Polygon geometries;
+ * - triangulates Polygon rings with earcut, including holes;
  * - performs bbox filtering, not exact clipping;
  * - emits FlexDrawer-compatible vector-mesh payloads with vec4 vertices.
  *
@@ -57,6 +57,10 @@ self.onmessage = function(event) {
  */
 async function configure(message) {
     try {
+        if (!self.earcut) {
+            throw new Error('GeoJSON worker: missing earcut library.');
+        }
+
         const projection = message.projection || 'image';
         const bounds = message.bounds;
 
@@ -142,7 +146,7 @@ const GEOMETRY_TYPES = new Set([
  * - a simple geometry type or a GeometryCollection
  *
  * @param {object} geojson - GeoJSON object.
- * @returns {object[]} Simple feature records.
+ * @returns {object[]} Simple geometry records.
  * @throws {Error} Thrown when geojson is not a valid GeoJSON object.
  */
 function parseGeojson(geojson) {
@@ -169,7 +173,7 @@ function parseGeojson(geojson) {
  * Parse a standard GeoJSON FeatureCollection.
  *
  * @param {object} collection - FeatureCollection object.
- * @returns {object[]} Simple feature records.
+ * @returns {object[]} Simple geometry records.
  * @throws {Error} Thrown when collection is not a valid GeoJSON FeatureCollection.
  */
 function parseFeatureCollection(collection) {
@@ -218,7 +222,7 @@ function parseFeature(feature) {
 }
 
 /**
- * Convert a supported standard GeoJSON geometry into internal simple feature records.
+ * Convert a supported standard GeoJSON geometry into internal simple geometry records.
  *
  * Multi* geometries and GeometryCollection are exploded into simple records.
  * Polygon holes are preserved in the coordinate structure for now, but the
@@ -227,7 +231,7 @@ function parseFeature(feature) {
  * @param {object} geometry - GeoJSON geometry.
  * @param {object|null|undefined} properties - Feature properties.
  * @param {string|number|undefined} id - Feature id.
- * @returns {object[]} Internal simple feature records.
+ * @returns {object[]} Internal simple geometry records.
  * @throws {Error} Thrown when geometry is not a valid GeoJSON geometry object.
  */
 function parseGeometry(geometry, properties = undefined, id = undefined) {
@@ -378,7 +382,7 @@ function isPosition(coordinate) {
  * @param {*} coordinates - Geometry coordinates.
  * @param {object|null|undefined} properties - Feature properties.
  * @param {string|number|undefined} id - Feature id.
- * @returns {object} Internal feature record.
+ * @returns {object} Internal geometry record.
  */
 function createGeometryRecord(type, coordinates, properties, id) {
     return {
@@ -391,147 +395,26 @@ function createGeometryRecord(type, coordinates, properties, id) {
 
 
 /**
- * Build a tile after configuration completes.
- *
- * @param {object} message - Tile request.
- * @returns {Promise<void>} Resolves after response posting.
- */
-async function buildTileWhenReady(message) {
-    try {
-        if (STATE.configurePromise) {
-            await STATE.configurePromise;
-        }
-
-        if (!STATE.configured) {
-            throw new Error('GeoJSON worker: received tile request before configuration.');
-        }
-
-        buildTile(message);
-    } catch (error) {
-        self.postMessage({
-            type: 'tile',
-            key: message.key,
-            ok: false,
-            error: error.message || String(error)
-        });
-    }
-}
-
-/**
- * Build one vector-mesh tile.
- *
- * @param {object} tile - Tile request.
- * @returns {void}
- */
-function buildTile(tile) {
-    const tileBounds = getTileImageBounds(tile.level, tile.x, tile.y);
-    const tileDepth = getTileDepth(tile.level, tile.x, tile.y);
-
-    const fills = [];
-    const lines = [];
-    const points = [];
-
-    const transfers = [];
-
-    // TODO: Add a spatial index when feature counts become large. The current
-    // implementation scans every feature for every tile and filters by bbox, which
-    // is simple but O(tileCount * featureCount).
-    //
-    // TODO: Add geometry clipping before meshing. Right now, any feature whose bbox
-    // intersects a tile is emitted into that tile in full, so large features can
-    // produce tile-local coordinates outside [0, 1] and duplicate geometry across
-    // many tiles.
-    for (const geometry of STATE.geometries) {
-        if (!intersects(geometry.bbox, tileBounds)) {
-            continue;
-        }
-
-        let mesh = null;
-
-        if (geometry.type === 'Point') {
-            mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
-            if (mesh) {
-                points.push(mesh);
-            }
-        } else if (geometry.type === 'LineString') {
-            mesh = makeLineMesh(geometry.coordinates, tile, tileDepth);
-            if (mesh) {
-                lines.push(mesh);
-            }
-        } else if (geometry.type === 'Polygon') {
-            mesh = makePolygonMesh(geometry.coordinates, tile, tileDepth);
-            if (mesh) {
-                fills.push(mesh);
-            }
-        }
-
-        if (mesh) {
-            transfers.push(mesh.vertices, mesh.indices);
-
-            if (mesh.parameters) {
-                transfers.push(mesh.parameters);
-            }
-        }
-    }
-
-    self.postMessage({
-        type: 'tile',
-        key: tile.key,
-        ok: true,
-        data: {
-            fills,
-            lines,
-            points
-        }
-    }, transfers);
-}
-
-
-/**
  * Project one raw geometry into full-resolution image coordinates.
  *
- * @param {object} feature - Raw geometry.
+ * @param {object} geometry - Raw geometry.
  * @returns {?object} Projected geometry.
  */
-function projectGeometry(feature) {
+function projectGeometry(geometry) {
     let coordinates;
 
-    if (feature.type === 'Point') {
-        if (!isCoordinate(feature.coordinates)) {
+    switch (geometry.type) {
+        case 'Point':
+            coordinates = projectCoordinate(geometry.coordinates);
+            break;
+        case 'LineString':
+            coordinates = geometry.coordinates.map(projectCoordinate);
+            break;
+        case 'Polygon':
+            coordinates = geometry.coordinates.map(ring => ring.map(projectCoordinate));
+            break;
+        default:
             return null;
-        }
-
-        coordinates = projectCoordinate(feature.coordinates);
-    } else if (feature.type === 'LineString') {
-        if (!Array.isArray(feature.coordinates)) {
-            return null;
-        }
-
-        coordinates = feature.coordinates
-            .filter(isCoordinate)
-            .map(projectCoordinate);
-
-        if (coordinates.length < 2) {
-            return null;
-        }
-    } else if (feature.type === 'Polygon') {
-        if (!Array.isArray(feature.coordinates)) {
-            return null;
-        }
-
-        coordinates = feature.coordinates
-            .filter(Array.isArray)
-            .map(ring => ring
-                .filter(isCoordinate)
-                .map(projectCoordinate)
-            )
-            .filter(ring => ring.length >= 4);
-
-        if (!coordinates.length) {
-            return null;
-        }
-    } else {
-        return null;
     }
 
     const bbox = computeImageBounds(coordinates);
@@ -540,34 +423,12 @@ function projectGeometry(feature) {
     }
 
     return {
-        id: feature.id,
-        properties: feature.properties,
-        type: feature.type,
+        type: geometry.type,
         coordinates,
-        bbox
+        bbox,
+        properties: geometry.properties,
+        id: geometry.id
     };
-}
-
-/**
- * Test whether a value is a valid 2D coordinate.
- *
- * Extra coordinate dimensions are ignored.
- *
- * @param {*} coordinate - Candidate coordinate.
- * @returns {boolean} True when the value has finite x/y entries.
- */
-function isCoordinate(coordinate) {
-    return Array.isArray(coordinate) && coordinate.length >= 2 && Number.isFinite(coordinate[0]) && Number.isFinite(coordinate[1]);
-}
-
-/**
- * Test whether bounds contain finite values.
- *
- * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
- * @returns {boolean} True when all values are finite and ordered.
- */
-function isFiniteBounds(bounds) {
-    return Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[0] <= bounds[2] && bounds[1] <= bounds[3];
 }
 
 /**
@@ -599,6 +460,16 @@ function projectCoordinate(coordinate) {
         u * STATE.width,
         v * STATE.height
     ];
+}
+
+/**
+ * Test whether bounds contain finite values.
+ *
+ * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
+ * @returns {boolean} True when all values are finite and ordered.
+ */
+function isFiniteBounds(bounds) {
+    return Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[0] <= bounds[2] && bounds[1] <= bounds[3];
 }
 
 /**
@@ -782,6 +653,103 @@ function tilePixelSizeToUv(size, tile) {
     return size / denominator;
 }
 
+
+/**
+ * Build a tile after configuration completes.
+ *
+ * @param {object} message - Tile request.
+ * @returns {Promise<void>} Resolves after response posting.
+ */
+async function buildTileWhenReady(message) {
+    try {
+        if (STATE.configurePromise) {
+            await STATE.configurePromise;
+        }
+
+        if (!STATE.configured) {
+            throw new Error('GeoJSON worker: received tile request before configuration.');
+        }
+
+        buildTile(message);
+    } catch (error) {
+        self.postMessage({
+            type: 'tile',
+            key: message.key,
+            ok: false,
+            error: error.message || String(error)
+        });
+    }
+}
+
+/**
+ * Build one vector-mesh tile.
+ *
+ * @param {object} tile - Tile request.
+ * @returns {void}
+ */
+function buildTile(tile) {
+    const tileBounds = getTileImageBounds(tile.level, tile.x, tile.y);
+    const tileDepth = getTileDepth(tile.level, tile.x, tile.y);
+
+    const fills = [];
+    const lines = [];
+    const points = [];
+
+    const transfers = [];
+
+    // TODO: Add a spatial index when feature counts become large. The current
+    // implementation scans every feature for every tile and filters by bbox, which
+    // is simple but O(tileCount * featureCount).
+    //
+    // TODO: Add geometry clipping before meshing. Right now, any feature whose bbox
+    // intersects a tile is emitted into that tile in full, so large features can
+    // produce tile-local coordinates outside [0, 1] and duplicate geometry across
+    // many tiles.
+    for (const geometry of STATE.geometries) {
+        if (!intersects(geometry.bbox, tileBounds)) {
+            continue;
+        }
+
+        let mesh = null;
+
+        if (geometry.type === 'Point') {
+            mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
+            if (mesh) {
+                points.push(mesh);
+            }
+        } else if (geometry.type === 'LineString') {
+            mesh = makeLineMesh(geometry.coordinates, tile, tileDepth);
+            if (mesh) {
+                lines.push(mesh);
+            }
+        } else if (geometry.type === 'Polygon') {
+            mesh = makePolygonMesh(geometry.coordinates, tile, tileDepth);
+            if (mesh) {
+                fills.push(mesh);
+            }
+        }
+
+        if (mesh) {
+            transfers.push(mesh.vertices, mesh.indices);
+
+            if (mesh.parameters) {
+                transfers.push(mesh.parameters);
+            }
+        }
+    }
+
+    self.postMessage({
+        type: 'tile',
+        key: tile.key,
+        ok: true,
+        data: {
+            fills,
+            lines,
+            points
+        }
+    }, transfers);
+}
+
 /**
  * Create a square point marker mesh.
  *
@@ -861,11 +829,11 @@ function makeLineMesh(coordinates, tile, tileDepth) {
 }
 
 /**
- * Create a triangle-fan mesh for a simple polygon exterior ring.
+ * Create a triangulated mesh for a Polygon.
  *
- * TODO: Replace this with real polygon triangulation before using this worker
- * for arbitrary pathology annotations. Triangle fans only render convex
- * polygons correctly and do not support holes.
+ * Earcut supports concave polygons and holes. The first ring is treated as the
+ * exterior ring and all following rings are treated as holes, matching GeoJSON
+ * Polygon coordinate structure.
  *
  * @param {number[][][]} coordinates - Polygon image coordinates.
  * @param {object} tile - Tile request.
@@ -873,49 +841,42 @@ function makeLineMesh(coordinates, tile, tileDepth) {
  * @returns {?object} Mesh object.
  */
 function makePolygonMesh(coordinates, tile, tileDepth) {
-    if (!coordinates || !coordinates[0] || coordinates[0].length < 4) {
+    if (!self.earcut) {
+        throw new Error('GeoJSON worker: missing earcut library.');
+    }
+
+    if (coordinates.length === 0) {
         return null;
     }
 
-    const ring = removeClosingCoordinate(coordinates[0]);
-    if (ring.length < 3) {
-        return null;
-    }
-
+    const flat = [];
+    const holes = [];
     const vertices = [];
-    const indices = [];
+    let vertexCount = 0;
 
-    for (const coordinate of ring) {
-        const point = imageToTileUv(coordinate, tile);
-        vertices.push(point[0], point[1], tileDepth, -1);
+    for (let ringIndex = 0; ringIndex < coordinates.length; ringIndex += 1) {
+        const ring = coordinates[ringIndex].slice(0, -1);
+
+        if (ringIndex > 0) {
+            holes.push(vertexCount);
+        }
+
+        for (const coordinate of ring) {
+            const point = imageToTileUv(coordinate, tile);
+
+            flat.push(point[0], point[1]);
+            vertices.push(point[0], point[1], tileDepth, -1);
+            vertexCount += 1;
+        }
     }
 
-    for (let i = 1; i < ring.length - 1; i++) {
-        indices.push(0, i, i + 1);
+    const indices = self.earcut(flat, holes, 2);
+
+    if (!indices.length) {
+        return null;
     }
 
     return makeMesh(vertices, indices, STATE.style.fillColor || [0.1, 0.8, 0.25, 0.45]);
-}
-
-/**
- * Remove duplicate closing coordinate from a polygon ring.
- *
- * @param {number[][]} ring - Polygon ring.
- * @returns {number[][]} Ring without duplicate closing coordinate.
- */
-function removeClosingCoordinate(ring) {
-    if (ring.length < 2) {
-        return ring;
-    }
-
-    const first = ring[0];
-    const last = ring[ring.length - 1];
-
-    if (first[0] === last[0] && first[1] === last[1]) {
-        return ring.slice(0, -1);
-    }
-
-    return ring;
 }
 
 /**

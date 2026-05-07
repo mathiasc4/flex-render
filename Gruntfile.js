@@ -69,6 +69,7 @@ module.exports = function(grunt) {
             "src/workers/fabric-worker.core.js"
         ],
         geojsonWorkerDeps = [
+            "src/vendor/earcut.min.js",
             "src/workers/geojson-worker.core.js"
         ];
 
