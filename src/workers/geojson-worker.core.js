@@ -7,7 +7,8 @@
  *   into simple Point, LineString, and Polygon records before projection;
  * - meshes Point, LineString, and Polygon geometries;
  * - triangulates Polygon rings with earcut, including holes;
- * - performs bbox filtering, not exact clipping;
+ * - uses a top-level GeoJSON bbox as source bounds when provided by the tile source;
+ * - performs geometry bbox filtering before exact per-tile clipping;
  * - emits FlexDrawer-compatible vector-mesh payloads with vec4 vertices.
  *
  * Vertex format:
@@ -29,6 +30,7 @@ let STATE = {
     // contract so future projection modes can be added explicitly.
     projection: 'image',
     bounds: null,
+    bbox: null,
     width: 1,
     height: 1,
     style: {}
@@ -62,7 +64,6 @@ async function configure(message) {
         }
 
         const projection = message.projection || 'image';
-        const bounds = message.bounds;
 
         if (projection !== 'image') {
             throw new Error(
@@ -71,11 +72,9 @@ async function configure(message) {
             );
         }
 
-        if (!Array.isArray(bounds) || bounds.length !== 4) {
-            throw new Error('GeoJSON worker: bounds are required.');
-        }
-
         const data = await fetchGeoJSON(message.url);
+        const bounds = normalizeGeoJSONBBox(message.bounds || message.bbox || data.bbox, 'GeoJSON worker: bounds');
+        const bbox = data.bbox ? normalizeGeoJSONBBox(data.bbox, 'GeoJSON worker: GeoJSON bbox') : null;
 
         const rawGeometries = parseGeojson(data);
 
@@ -90,6 +89,7 @@ async function configure(message) {
             maxLevel: (message.maxLevel !== null && message.maxLevel !== undefined) ? message.maxLevel : 0,
             projection,
             bounds,
+            bbox,
             style: (message.style !== null && message.style !== undefined) ? message.style : {}
         };
 
@@ -101,6 +101,40 @@ async function configure(message) {
             error: error.message || String(error)
         });
     }
+}
+
+/**
+ * Normalize a GeoJSON bbox to the 2D bounds used by the worker.
+ *
+ * GeoJSON bbox is [minX, minY, maxX, maxY] for 2D coordinates and
+ * [minX, minY, minZ, maxX, maxY, maxZ] for 3D coordinates. The renderer is
+ * 2D, so z bounds are ignored.
+ *
+ * @param {*} bbox - Candidate GeoJSON bbox.
+ * @param {string} label - Error label used in validation messages.
+ * @returns {number[]} Bounds as [minX, minY, maxX, maxY].
+ * @throws {Error} Thrown when bbox cannot define positive 2D dimensions.
+ */
+function normalizeGeoJSONBBox(bbox, label) {
+    if (!Array.isArray(bbox) || bbox.length < 4 || bbox.length % 2 !== 0 || !bbox.every(Number.isFinite)) {
+        throw new Error(`${label} must be a GeoJSON bbox array with finite numeric values.`);
+    }
+
+    const dimensions = bbox.length / 2;
+    const minX = bbox[0];
+    const minY = bbox[1];
+    const maxX = bbox[dimensions];
+    const maxY = bbox[dimensions + 1];
+
+    if (minX >= maxX) {
+        throw new Error(`${label} minX must be smaller than maxX.`);
+    }
+
+    if (minY >= maxY) {
+        throw new Error(`${label} minY must be smaller than maxY.`);
+    }
+
+    return [minX, minY, maxX, maxY];
 }
 
 

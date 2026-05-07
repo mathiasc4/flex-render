@@ -1,13 +1,7 @@
 const sources = {
     mvt: "http://localhost:3000/osm-2020-02-10-v3.11_asia_japan",
     fabric: "../data/fabric.geometry.json",
-    geojson: {
-        type: "geojson",
-        url: "../data/geojson-sample.geojson",
-        projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
-        width: 4096,
-        height: 4096,
-    },
+    geojson: "../data/geojson-sample.geojson",
     geojson_10k: {
         type: "geojson",
         url: "../data/geojson-performance-10k.geojson",
