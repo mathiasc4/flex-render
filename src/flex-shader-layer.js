@@ -369,12 +369,33 @@
         }
 
         /**
+         * Instance-level source definition hook.
+         * Override when source requirements depend on current config/state.
+         *
+         * @returns {channelSettings[]}
+         */
+        getSourceDefinitions() {
+            return this.constructor.sources();
+        }
+
+        /**
          * Instance-level control definition hook.
          * Override when the available controls depend on current config/state.
+         *
          * @returns {object}
          */
         getControlDefinitions() {
             return $.extend(true, {}, this.constructor.defaultControls);
+        }
+
+        /**
+         * Return caller-provided parameters for one expanded control.
+         *
+         * @param {string} controlName - Expanded control name.
+         * @returns {*}
+         */
+        getControlParams(controlName) {
+            return this._customControls[controlName];
         }
 
         /**
@@ -452,7 +473,14 @@
                     continue;
                 }
 
-                const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this._customControls[controlName]);
+                const control = $.FlexRenderer.UIControls.build(
+                    this,
+                    controlName,
+                    controlConfig,
+                    this.id + '_' + controlName,
+                    this.getControlParams(controlName)
+                );
+
                 // enables iterating over the owned controls
                 this._controls[controlName] = control;
                 // simplify usage of controls (e.g. this.opacity instead of this._controls.opacity)
@@ -632,14 +660,15 @@
 
             // regex to compare with value used with use_channel, to check its correctness
             const channelPattern = new RegExp('[rgba]{1,4}');
+            const controlDefinitions = this.getControlDefinitions();
             this.__channels = [];
             this.__baseChannels = [];
 
             const parseChannel = (def, sourceDef, index) => {
                 const controlName = `use_channel${index}`;
-                const predefined = this.constructor.defaultControls[controlName];
+                const predefined = controlDefinitions[controlName];
                 const baseName = `use_channel_base${index}`;
-                const predefinedBase = this.constructor.defaultControls[baseName];
+                const predefinedBase = controlDefinitions[baseName];
 
                 let base = 0;
                 let channel;
@@ -706,7 +735,7 @@
                 this.__baseChannels[index] = base;
             };
 
-            const sources = this.constructor.sources();
+            const sources = this.getSourceDefinitions();
             for (let i = 0; i < sources.length; i++) {
                 parseChannel("r", sources[i], i);
             }
