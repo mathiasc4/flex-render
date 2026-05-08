@@ -23,7 +23,7 @@
 
             static docs() {
                 return {
-                    summary: "DAG-based modular shader layer.",
+                    summary: "DAG-based modular shader layer",
                     description: "Compiles a graph of typed ShaderModules into one ShaderLayer function body. The final graph output must be vec4.",
                     kind: "shader",
                     inputs: [{
@@ -32,7 +32,7 @@
                         description: "Sources consumed by graph sample nodes."
                     }],
                     config: {
-                        "params.graph": "Versioned module graph with nodes, typed edges, and one vec4 output port."
+                        "params.graph": "Module graph with nodes, typed edges, and one vec4 output port."
                     },
                     notes: [
                         "Graph nodes are compiled during shader/program rebuild, not during drawing.",
@@ -70,7 +70,7 @@
                                     alpha: "threshold.mask"
                                 },
                                 params: {
-                                    color: "#fff700"
+                                    color: "#00ffff"
                                 }
                             }
                         },
@@ -90,7 +90,7 @@
             }
 
             construct() {
-                this._moduleGraph = new $.FlexRenderer.ModuleGraph(
+                this._moduleGraph = new $.FlexRenderer.ShaderModuleGraph(
                     this,
                     this._readGraphConfig()
                 ).prepare();
@@ -126,8 +126,7 @@
             }
 
             getSourceDefinitions() {
-                return this._moduleGraph ?
-                    this._moduleGraph.getSourceDefinitions() : [];
+                return this._moduleGraph ? this._moduleGraph.getSourceDefinitions() : [];
             }
 
             getFragmentShaderDefinition() {

@@ -10,7 +10,7 @@
             }
 
             static description() {
-                return "Converts scalar value and alpha inputs into a vec4 color.";
+                return "Converts a scalar value and alpha inputs into a vec4 color.";
             }
 
             static inputs() {
@@ -31,7 +31,7 @@
                     color: {
                         default: {
                             type: "color",
-                            default: "#fff700",
+                            default: "#00ffff",
                             title: "Color"
                         },
                         accepts: (type) => type === "vec3"
@@ -50,7 +50,7 @@
                     ],
                     outputs: [{ name: "color", type: "vec4" }],
                     controls: [
-                        { name: "color", ui: "color", valueType: "vec3", default: "#fff700" }
+                        { name: "color", ui: "color", valueType: "vec3", default: "#00ffff" }
                     ]
                 };
             }

@@ -10,6 +10,14 @@ const IMAGE_SOURCES = [
         tileSource: "../data/iiif_2_0_sizes/info.json",
     },
     {
+        key: "a",
+        label: "A",
+        tileSource: {
+            type: "image",
+            url: "../data/A.png",
+        },
+    },
+    {
         key: "bblue",
         label: "Blue B",
         tileSource: {
@@ -21,19 +29,6 @@ const IMAGE_SOURCES = [
         key: "duomo",
         label: "Duomo",
         tileSource: "https://openseadragon.github.io/example-images/duomo/duomo.dzi",
-    },
-    {
-        key: "a",
-        label: "A",
-        tileSource: {
-            type: "image",
-            url: "../data/A.png",
-        },
-    },
-    {
-        key: "book",
-        label: "Book",
-        tileSource: "../data/iiif_1_0_files/info.json",
     },
 ];
 
@@ -65,8 +60,8 @@ const DEFAULT_MODULAR_GRAPH = {
                 alpha: "threshold.mask",
             },
             params: {
-                color: "#fff700",
-            },
+                color: "#00ffff",
+            }
         },
     },
     output: "colorize.color",
