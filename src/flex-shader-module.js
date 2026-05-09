@@ -601,8 +601,10 @@
      * Compiled graph output.
      *
      * @typedef {object} ShaderModuleGraphCompileResult
-     * @property {string} definitions - GLSL definitions emitted outside the generated function body.
-     * @property {string} execution - Statements and final return statement emitted into the generated function body.
+     * @property {string} definitions - GLSL definitions emitted outside the generated graph function.
+     * @property {string} functionName - GLSL-safe name of the generated graph function.
+     * @property {ShaderModuleValueType} returnType - Value type returned by the generated graph function.
+     * @property {string} execution - Statements and final return statement emitted into the generated graph function.
      */
 
     /**
@@ -787,27 +789,56 @@
         }
 
         /**
-         * Return GLSL definitions emitted by graph nodes.
+         * Return GLSL definitions emitted by graph nodes and the generated graph function.
          *
-         * This compiles the graph on first use and then returns the cached definitions.
+         * This compiles the graph on first use. The returned code belongs in shader
+         * definition scope, not inside a ShaderLayer execution body.
          *
-         * @returns {string} GLSL definitions emitted outside the generated function body.
+         * @returns {string} GLSL definitions and generated graph function.
          * @throws {Error} Thrown when graph compilation fails.
          */
         getFragmentShaderDefinition() {
-            return this._getCompiled().definitions;
+            const compiled = this._getCompiled();
+
+            return [
+                compiled.definitions,
+                `${compiled.returnType} ${compiled.functionName}() {
+${compiled.execution}
+}`
+            ].filter(Boolean).join("\n\n");
         }
 
         /**
-         * Return GLSL definitions emitted by graph nodes.
+         * Return the GLSL-safe generated graph function name.
          *
-         * This compiles the graph on first use and then returns the cached definitions.
+         * @returns {string} Generated graph function name.
+         * @throws {Error} Thrown when graph compilation fails.
+         */
+        getFunctionName() {
+            return this._getCompiled().functionName;
+        }
+
+        /**
+         * Return a GLSL call expression for the generated graph function.
          *
-         * @returns {string} GLSL definitions emitted outside the generated function body.
+         * @returns {string} Generated graph function call expression.
+         * @throws {Error} Thrown when graph compilation fails.
+         */
+        getFunctionCall() {
+            return `${this.getFunctionName()}()`;
+        }
+
+        /**
+         * Return a ShaderLayer execution body that directly returns the graph function call.
+         *
+         * This is valid only when the surrounding ShaderLayer function return type matches
+         * the graph return type.
+         *
+         * @returns {string} GLSL execution body.
          * @throws {Error} Thrown when graph compilation fails.
          */
         getFragmentShaderExecution() {
-            return this._getCompiled().execution;
+            return `return ${this.getFunctionCall()};`;
         }
 
         /**
@@ -864,7 +895,7 @@
         /**
          * Validate graph edges, check port types, detect cycles, and compute node order.
          *
-         * The final graph output must resolve to a vec4 output port.
+         * The final graph output must resolve to one supported non-void output port.
          *
          * @private
          * @returns {void}
@@ -952,8 +983,10 @@
                 throw new Error(`${this.errorPrefix()}: graph.output references unknown port '${this.config.output}'.`);
             }
 
-            if (outputDef.type !== "vec4") {
-                throw new Error(`${this.errorPrefix()}: graph.output must resolve to vec4, got ${outputDef.type}.`);
+            this.validateType(outputDef.type, "graph.output");
+
+            if (outputDef.type === "void") {
+                throw new Error(`${this.errorPrefix()}: graph.output must not resolve to void.`);
             }
 
             this.order = order;
@@ -1095,12 +1128,20 @@
             const outputRef = this._parseRef(this.config.output, "graph.output");
             const output = compiledOutputs[outputRef.nodeId] && compiledOutputs[outputRef.nodeId][outputRef.portName];
 
-            if (!output || output.type !== "vec4") {
-                throw new Error(`${this.errorPrefix()}: graph.output did not compile to vec4.`);
+            if (!output) {
+                throw new Error(`${this.errorPrefix()}: graph.output did not compile.`);
+            }
+
+            this.validateType(output.type, "graph.output");
+
+            if (output.type === "void") {
+                throw new Error(`${this.errorPrefix()}: graph.output compiled to void.`);
             }
 
             this._compiled = {
                 definitions: definitions.join("\n"),
+                functionName: $.FlexRenderer.sanitizeKey(`${this.owner.uid}_module_graph`),
+                returnType: output.type,
                 execution: `${statements.join("\n\n")}\n\nreturn ${output.expr};`
             };
 

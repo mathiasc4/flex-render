@@ -24,7 +24,7 @@
             static docs() {
                 return {
                     summary: "DAG-based modular shader layer",
-                    description: "Compiles a graph of typed ShaderModules into one ShaderLayer function body. The final graph output must be vec4.",
+                    description: "Compiles a graph of typed ShaderModules into a callable GLSL function. The base modular layer uses the function call as its ShaderLayer output.",
                     kind: "shader",
                     inputs: [{
                         index: 0,
@@ -32,11 +32,13 @@
                         description: "Sources consumed by graph sample nodes."
                     }],
                     config: {
-                        "params.graph": "Module graph with nodes, typed edges, and one vec4 output port."
+                        "params.graph": "Module graph with nodes, typed edges, and one non-void output port."
                     },
                     notes: [
                         "Graph nodes are compiled during shader/program rebuild, not during drawing.",
                         "Module controls are flattened into ShaderLayer controls using deterministic names.",
+                        "The module graph is emitted as a named GLSL function in the ShaderLayer definition block.",
+                        "getFragmentShaderExecution() can call executeModuleGraph() to reference the graph result.",
                         "Existing non-modular ShaderLayer configs remain valid."
                     ]
                 };
@@ -136,8 +138,17 @@
                 ].filter(Boolean).join("\n");
             }
 
+            /**
+             * Return a GLSL call expression for the compiled module graph function.
+             *
+             * @returns {string} GLSL function call expression.
+             */
+            executeModuleGraph() {
+                return this._moduleGraph.getFunctionCall();
+            }
+
             getFragmentShaderExecution() {
-                return this._moduleGraph.getFragmentShaderExecution();
+                return `return ${this.executeModuleGraph()};`;
             }
 
             _readGraphConfig() {
