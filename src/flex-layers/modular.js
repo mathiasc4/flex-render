@@ -92,10 +92,10 @@
             }
 
             construct() {
-                this._moduleGraph = new $.FlexRenderer.ShaderModuleGraph(
+                this._moduleGraph = $.FlexRenderer.ShaderModuleGraphBuilder.build(
                     this,
                     this._readGraphConfig()
-                ).prepare();
+                );
 
                 const resetOptions = $.extend(
                     true,

@@ -428,12 +428,12 @@ function analyzeGraphConfig(graph) {
         });
     }
 
-    const Graph = OpenSeadragon.FlexRenderer.ShaderModuleGraph;
-    if (!Graph || typeof Graph.analyze !== "function") {
+    const Analyzer = OpenSeadragon.FlexRenderer.ShaderModuleGraphAnalyzer;
+    if (!Analyzer || typeof Analyzer.analyze !== "function") {
         diagnostics.push({
             severity: "error",
             code: "graph-analyzer-unavailable",
-            message: "ShaderModuleGraph.analyze(...) is not available in the current FlexRenderer build.",
+            message: "ShaderModuleGraphAnalyzer.analyze(...) is not available in the current FlexRenderer build.",
             path: [],
             details: {}
         });
@@ -445,7 +445,7 @@ function analyzeGraphConfig(graph) {
         };
     }
 
-    const analysis = Graph.analyze(makeDraftModuleGraphOwner(), graph);
+    const analysis = Analyzer.analyze(makeDraftModuleGraphOwner(), graph);
     diagnostics.push(...analysis.diagnostics);
 
     return {
