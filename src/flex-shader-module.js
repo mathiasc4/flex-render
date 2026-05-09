@@ -88,6 +88,8 @@
      *
      * @typedef {object} ShaderModuleSourceRequirement
      * @property {number} index - Source slot index in the owning ShaderLayer.
+     * @property {number[]} [sampledChannels] - Zero-based logical channel indexes sampled from the source.
+     * @property {number} [requiredChannelCount=0] - Minimum logical channel count required by sampledChannels.
      * @property {function(number): boolean} acceptsChannelCount - Predicate that accepts compatible source channel counts.
      * @property {string} description - Human-readable source requirement description.
      */
@@ -639,6 +641,74 @@
      */
 
     /**
+     * Return sorted unique numeric channel indexes.
+     *
+     * @private
+     * @param {number[]} channels - Candidate channel indexes.
+     * @returns {number[]} Sorted unique channel indexes.
+     */
+    function uniqueSortedSourceChannels(channels) {
+        return Array.from(new Set((channels || []).filter(Number.isInteger))).sort((a, b) => a - b);
+    }
+
+    /**
+     * Merge one module source requirement into a mutable aggregate requirement.
+     *
+     * The current ShaderLayer channel setup still calls acceptsChannelCount with legacy
+     * swizzle width, not actual source metadata channel count. For that reason the merged
+     * acceptsChannelCount remains permissive while numeric channel requirements are exposed
+     * separately through sampledChannels and requiredChannelCount.
+     *
+     * @private
+     * @param {ShaderModuleSourceRequirement|undefined} current - Existing aggregate requirement.
+     * @param {ShaderModuleSourceRequirement} incoming - Incoming module requirement.
+     * @param {number} index - Normalized source slot index.
+     * @returns {ShaderModuleSourceRequirement} Merged source requirement.
+     */
+    function mergeSourceRequirement(current, incoming, index) {
+        const currentChannels = current && Array.isArray(current.sampledChannels) ?
+            current.sampledChannels : [];
+        const incomingChannels = Array.isArray(incoming.sampledChannels) ?
+            incoming.sampledChannels : [];
+
+        const sampledChannels = uniqueSortedSourceChannels(currentChannels.concat(incomingChannels));
+        const requiredChannelCount = Math.max(
+            current && Number.isInteger(current.requiredChannelCount) ? current.requiredChannelCount : 0,
+            Number.isInteger(incoming.requiredChannelCount) ? incoming.requiredChannelCount : 0,
+            sampledChannels.length ? Math.max(...sampledChannels) + 1 : 0
+        );
+
+        return {
+            index,
+            sampledChannels,
+            requiredChannelCount,
+            acceptsChannelCount: () => true,
+            description: buildMergedSourceDescription(index, sampledChannels, requiredChannelCount)
+        };
+    }
+
+    /**
+     * Build a human-readable merged source requirement description.
+     *
+     * @private
+     * @param {number} index - Source slot index.
+     * @param {number[]} sampledChannels - Sorted sampled channel indexes.
+     * @param {number} requiredChannelCount - Minimum required source channel count.
+     * @returns {string} Source requirement description.
+     */
+    function buildMergedSourceDescription(index, sampledChannels, requiredChannelCount) {
+        if (!sampledChannels.length) {
+            return `Modular graph source ${index}.`;
+        }
+
+        const channelWord = sampledChannels.length === 1 ? "channel" : "channels";
+        const countWord = requiredChannelCount === 1 ? "channel" : "channels";
+
+        return `Modular graph source ${index} samples ${channelWord} ${sampledChannels.join(", ")}. ` +
+            `Requires at least ${requiredChannelCount} ${countWord}.`;
+    }
+
+    /**
      * Typed DAG compiler used by ModularShaderLayer.
      *
      * ShaderModuleGraph validates a module graph, instantiates ShaderModule nodes, checks
@@ -1063,10 +1133,12 @@ ${compiled.execution}
         }
 
         /**
-         * Collect source requirements from all module nodes.
+         * Collect and merge source requirements from all module nodes.
          *
-         * Missing source slots between declared indexes are filled with permissive
-         * placeholder definitions so source indexes remain dense.
+         * Multiple nodes may sample different channels from the same source slot. The
+         * resulting source definition keeps the union of sampled channel indexes and the
+         * maximum required channel count. Missing source slots between declared indexes are
+         * filled with permissive placeholder definitions so source indexes remain dense.
          *
          * @private
          * @returns {void}
@@ -1081,17 +1153,20 @@ ${compiled.execution}
                 for (const req of requirements) {
                     const index = Math.max(0, Number.parseInt(req.index, 10) || 0);
 
-                    sources[index] = {
-                        acceptsChannelCount: req.acceptsChannelCount || (() => true),
-                        description: req.description || `Modular graph source ${index}`
-                    };
+                    sources[index] = mergeSourceRequirement(sources[index], req, index);
                 }
             }
 
-            this.sourceDefinitions = sources.map(source => source || {
-                acceptsChannelCount: () => true,
-                description: "Unused modular graph source slot."
-            });
+            this.sourceDefinitions = [];
+            for (let index = 0; index < sources.length; index++) {
+                this.sourceDefinitions[index] = sources[index] || {
+                    index,
+                    sampledChannels: [],
+                    requiredChannelCount: 0,
+                    acceptsChannelCount: () => true,
+                    description: `Unused modular graph source slot ${index}.`
+                };
+            }
         }
 
         /**

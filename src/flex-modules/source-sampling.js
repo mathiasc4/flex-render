@@ -48,6 +48,41 @@
         });
     }
 
+    /**
+     * Return sorted unique channel indexes.
+     *
+     * @private
+     * @param {number[]} channelIndexes - Channel indexes to normalize.
+     * @returns {number[]} Sorted unique channel indexes.
+     */
+    function uniqueSortedChannelIndexes(channelIndexes) {
+        return Array.from(new Set(channelIndexes)).sort((a, b) => a - b);
+    }
+
+    /**
+     * Return the minimum source channel count needed to sample the given channels.
+     *
+     * Channel indexes are zero-based, so channel 7 requires at least 8 channels.
+     *
+     * @private
+     * @param {number[]} channelIndexes - Channel indexes read by a module.
+     * @returns {number} Required channel count.
+     */
+    function getRequiredChannelCount(channelIndexes) {
+        return channelIndexes.length ? Math.max(...channelIndexes) + 1 : 0;
+    }
+
+    /**
+     * Format sampled channel indexes for diagnostics.
+     *
+     * @private
+     * @param {number[]} channelIndexes - Channel indexes to format.
+     * @returns {string} Human-readable channel list.
+     */
+    function formatChannelList(channelIndexes) {
+        return channelIndexes.join(", ");
+    }
+
     $.FlexRenderer.ShaderModuleMediator.registerModule(
         /**
          * Source module that samples one numeric channel from one source slot.
@@ -90,11 +125,16 @@
 
             getSourceRequirements() {
                 const sourceIndex = readNonNegativeIntegerParam(this, "sourceIndex", 0);
+                const channelIndex = readNonNegativeIntegerParam(this, "channelIndex", 0);
+                const sampledChannels = [channelIndex];
+                const requiredChannelCount = getRequiredChannelCount(sampledChannels);
 
                 return [{
                     index: sourceIndex,
+                    sampledChannels,
+                    requiredChannelCount,
                     acceptsChannelCount: () => true,
-                    description: `Source ${sourceIndex} sampled by numeric channel index.`
+                    description: `Source ${sourceIndex} sampled channel ${channelIndex}. Requires at least ${requiredChannelCount} channels.`
                 }];
             }
 
@@ -160,11 +200,15 @@
 
             getSourceRequirements() {
                 const sourceIndex = readNonNegativeIntegerParam(this, "sourceIndex", 0);
+                const sampledChannels = uniqueSortedChannelIndexes(readChannelIndexesParam(this));
+                const requiredChannelCount = getRequiredChannelCount(sampledChannels);
 
                 return [{
                     index: sourceIndex,
+                    sampledChannels,
+                    requiredChannelCount,
                     acceptsChannelCount: () => true,
-                    description: `Source ${sourceIndex} sampled by numeric channel indexes.`
+                    description: `Source ${sourceIndex} sampled channels ${formatChannelList(sampledChannels)}. Requires at least ${requiredChannelCount} channels.`
                 }];
             }
 
