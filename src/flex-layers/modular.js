@@ -47,7 +47,6 @@
             static exampleParams() {
                 return {
                     graph: {
-                        version: 1,
                         nodes: {
                             src: {
                                 type: "sample-source-channel",

@@ -111,7 +111,7 @@
      */
 
     /**
-     * Structured diagnostic emitted by ShaderModuleGraph analysis.
+     * Structured diagnostic emitted by ShaderModuleGraphAnalyzer.
      *
      * @typedef {object} ShaderModuleGraphDiagnostic
      * @property {"error"|"warning"|"info"} severity - Diagnostic severity.
@@ -170,8 +170,8 @@
      * @property {string} uid - Stable GLSL-safe module uid.
      * @property {ShaderLayer} owner - Owning ShaderLayer.
      * @property {object} config - Raw graph node config.
-     * @property {object} [config.params] - Node-local parameter values. ShaderModuleGraphAnalyzer reports malformed values; runtime construction remains permissive.
-     * @property {Object<string, string>} [config.inputs] - Input references keyed by input port name. ShaderModuleGraphAnalyzer reports malformed values and unknown keys; runtime construction remains permissive.
+     * @property {object} [config.params] - Node-local parameter values. ShaderModuleGraphAnalyzer reports malformed values; runtime building remains permissive.
+     * @property {Object<string, string>} [config.inputs] - Input references keyed by input port name. ShaderModuleGraphAnalyzer reports malformed values and unknown keys; runtime building remains permissive.
      */
 
     /**
@@ -184,7 +184,8 @@
      * This class is not meant to be instantiated directly. Register concrete module
      * classes through ShaderModuleMediator.registerModule(...). Concrete modules may
      * extend this class or provide the same static and instance contract expected by
-     * ShaderModuleMediator and ShaderModuleGraph.
+     * ShaderModuleMediator, ShaderModuleGraphAnalyzer, ShaderModuleGraphBuilder, and
+     * the runtime ShaderModuleGraph compiler.
      *
      * Required overrides:
      * - type()
@@ -212,9 +213,9 @@
         /**
          * Create a module node instance.
          *
-         * ShaderModuleGraph constructs one instance for each graph node. Module authors
-         * normally read node-local values through this.params and input edge references
-         * through this.inputRefs.
+         * ShaderModuleGraphAnalyzer and ShaderModuleGraphBuilder construct module
+         * instances for reachable graph nodes. Module authors normally read node-local
+         * values through this.params and input edge references through this.inputRefs.
          *
          * @param {string} nodeId - Node id from the graph config.
          * @param {ShaderModuleOptions} options - Module construction options.
@@ -328,8 +329,8 @@
          * Override: RECOMMENDED for modules that consume values from other nodes.
          * Leave empty only for source, constant, or root modules with no graph inputs.
          *
-         * ShaderModuleGraph uses these declarations to validate required edges, referenced
-         * output ports, and GLSL type compatibility before shader compilation.
+         * ShaderModuleGraphAnalyzer and ShaderModuleGraphBuilder use these declarations
+         * to validate required edges, referenced output ports, and GLSL type compatibility.
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Input port declarations keyed by port name.
          */
@@ -342,8 +343,9 @@
          *
          * Override: REQUIRED for normal value-producing modules.
          *
-         * ShaderModuleGraph uses these declarations to validate graph edges and final graph
-         * output type. Every declared output must be returned by compile(context).
+         * ShaderModuleGraphAnalyzer and ShaderModuleGraphBuilder use these declarations
+         * to validate graph edges and the final graph output type. Every declared output
+         * must be returned by compile(context).
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Output port declarations keyed by port name.
          */
@@ -356,8 +358,9 @@
          *
          * Override: OPTIONAL.
          *
-         * Use this for node parameters that should become renderer UI controls and GLSL uniforms.
-         * ShaderModuleGraph flattens these controls onto the owning ModularShaderLayer using deterministic names.
+         * Use this for node parameters that should become renderer UI controls and GLSL
+         * uniforms. ShaderModuleGraphAnalyzer and ShaderModuleGraphBuilder flatten these
+         * controls onto the owning ModularShaderLayer using deterministic names.
          *
          * @type {Object<string, object|boolean>}
          */
@@ -384,8 +387,9 @@
          *
          * Override: INFRASTRUCTURE. Do not override in normal modules.
          *
-         * This forwards to inputs() so ShaderModuleGraph can read input declarations from a
-         * module instance. Module authors should override inputs() instead.
+         * This forwards to inputs() so graph analysis, building, and compilation can read
+         * input declarations from a module instance. Module authors should override
+         * inputs() instead.
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Input port declarations keyed by port name.
          */
@@ -398,8 +402,9 @@
          *
          * Override: INFRASTRUCTURE. Do not override in normal modules.
          *
-         * This forwards to outputs() so ShaderModuleGraph can read output declarations from a
-         * module instance. Module authors should override outputs() instead.
+         * This forwards to outputs() so graph analysis, building, and compilation can read
+         * output declarations from a module instance. Module authors should override
+         * outputs() instead.
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Output port declarations keyed by port name.
          */
@@ -431,8 +436,8 @@
          * through the supplied context instead of throwing.
          *
          * This method participates in the editor-facing analyzer path. That path is
-         * intentionally stricter than runtime preparation: it reports malformed node
-         * params/inputs and unknown input keys as diagnostics. Runtime preparation remains
+         * intentionally stricter than runtime building: it reports malformed node
+         * params/inputs and unknown input keys as diagnostics. Runtime building remains
          * more permissive and only follows declared input ports on reachable nodes.
          *
          * @param {ShaderModuleAnalysisContext} context - Per-node analysis context.
@@ -512,9 +517,10 @@
          *
          * Override: REQUIRED.
          *
-         * ShaderModuleGraph calls this after validating and resolving the node's input edges.
-         * The returned outputs object must contain every port declared by outputs(), and
-         * each compiled output type must match its declared GLSL type.
+         * The runtime ShaderModuleGraph compiler calls this after ShaderModuleGraphBuilder
+         * validates and resolves the node's input edges. The returned outputs object must
+         * contain every port declared by outputs(), and each compiled output type must
+         * match its declared GLSL type.
          *
          * Use context.input(name[, fallback]) to read a connected input expression.
          * Use context.output(name, type) to allocate a deterministic GLSL variable name
@@ -640,7 +646,8 @@
      * Analysis helper passed to ShaderModule#analyze(...).
      *
      * Modules should use this context to report invalid intermediate state without
-     * throwing. The graph analyzer will include these diagnostics in its final result.
+     * throwing. The analyzer includes these diagnostics in its final result. This
+     * context is editor-facing and does not expose a runtime ShaderModuleGraph.
      *
      * @private
      */
@@ -648,13 +655,46 @@
         /**
          * Create a module analysis context.
          *
-         * @param {ShaderModuleGraph} graph - Graph being analyzed.
+         * @param {object} state - Analyzer-local graph state.
          * @param {ShaderModule} node - Module node being analyzed.
          * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Shared diagnostic target array.
          */
-        constructor(graph, node, diagnostics) {
-            this.graph = graph;
+        constructor(state, node, diagnostics) {
+            /**
+             * Analyzer-local graph state.
+             *
+             * @private
+             * @type {object}
+             */
+            this.state = state;
+
+            /**
+             * Owner used for this analysis pass.
+             *
+             * @type {ShaderLayer|object}
+             */
+            this.owner = state.owner;
+
+            /**
+             * Draft graph config being analyzed.
+             *
+             * @type {ShaderModuleGraphConfig}
+             */
+            this.config = state.config;
+
+            /**
+             * Module node being analyzed.
+             *
+             * @type {ShaderModule}
+             */
             this.node = node;
+
+            /**
+             * Shared diagnostic target array.
+             *
+             * @private
+             * @type {ShaderModuleGraphDiagnostic[]}
+             */
             this.diagnostics = diagnostics;
         }
 
@@ -729,10 +769,9 @@
     /**
      * Node-local parameter values for one ShaderModule graph node.
      *
-     * The shape is module-specific. ShaderModuleGraph does not interpret these keys as
-     * graph structure; it passes the object to the module instance as
-     * ShaderModule#params. Concrete modules may use this object for two kinds of
-     * values:
+     * The shape is module-specific. Graph analysis and runtime building do not interpret
+     * these keys as graph structure; they pass the object to the module instance as
+     * ShaderModule#params. Concrete modules may use this object for two kinds of values:
      *
      * - static compile-time parameters, such as sourceIndex, channelIndex, channelIndexes, or mode names;
      * - initial values for module-local UI controls declared through ShaderModule.defaultControls, such as threshold or color.
@@ -800,8 +839,9 @@
      * Raw config for a ShaderModule DAG.
      *
      * The executable graph is the dependency closure reachable from output.
-     * ShaderModuleGraphBuilder instantiates, validates, collects controls/sources,
-     * and compiles only reachable nodes. ShaderModuleGraphAnalyzer.analyze(...)
+     * ShaderModuleGraphBuilder instantiates, validates, and collects controls/sources
+     * only for reachable nodes. The runtime ShaderModuleGraph compiler then compiles
+     * that prepared reachable graph. ShaderModuleGraphAnalyzer.analyze(...)
      * reports unreachable nodes as warnings and reports additional editor-facing
      * diagnostics for malformed node params/inputs and unknown input keys.
      *
@@ -1266,7 +1306,7 @@
     /**
      * Report input references that are present in node config but not declared by the module.
      *
-     * This check is analyzer-only. Runtime graph preparation intentionally remains
+     * This check is analyzer-only. Runtime graph building intentionally remains
      * permissive and ignores unknown input keys.
      *
      * @private
@@ -1306,7 +1346,7 @@
     /**
      * Report malformed node-local params/inputs objects.
      *
-     * This check is analyzer-only. Runtime graph preparation intentionally remains
+     * This check is analyzer-only. Runtime graph building intentionally remains
      * permissive and lets ShaderModule construction fall back through its existing
      * config.params/config.inputs defaults.
      *
