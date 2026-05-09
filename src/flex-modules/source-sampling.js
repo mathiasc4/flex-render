@@ -83,6 +83,107 @@
         return channelIndexes.join(", ");
     }
 
+    /**
+     * Analyze a non-negative integer module parameter without throwing.
+     *
+     * @private
+     * @param {ShaderModuleAnalysisContext} context - Module analysis context.
+     * @param {ShaderModule} module - Module instance.
+     * @param {string} name - Parameter name.
+     * @param {number} defaultValue - Default value used when the parameter is absent.
+     * @returns {{ok: boolean, value: number}} Analysis result.
+     */
+    function analyzeNonNegativeIntegerParam(context, module, name, defaultValue) {
+        const raw = module.params[name];
+
+        if (raw === undefined || raw === null) { // eslint-disable-line eqeqeq
+            return {
+                ok: true,
+                value: defaultValue
+            };
+        }
+
+        const value = Number.parseInt(raw, 10);
+        if (!Number.isInteger(value) || value < 0 || String(value) !== String(raw).trim()) {
+            context.error({
+                code: "invalid-integer-param",
+                message: `${module.constructor.name}: params.${name} must be a non-negative integer.`,
+                path: context.paramPath(name),
+                details: {
+                    paramName: name,
+                    value: raw
+                }
+            });
+
+            return {
+                ok: false,
+                value: defaultValue
+            };
+        }
+
+        return {
+            ok: true,
+            value
+        };
+    }
+
+    /**
+     * Analyze params.channelIndexes without throwing.
+     *
+     * @private
+     * @param {ShaderModuleAnalysisContext} context - Module analysis context.
+     * @param {ShaderModule} module - Module instance.
+     * @returns {{ok: boolean, value: number[]}} Analysis result.
+     */
+    function analyzeChannelIndexesParam(context, module) {
+        const raw = module.params.channelIndexes;
+
+        if (!Array.isArray(raw) || raw.length < 1 || raw.length > 4) {
+            context.error({
+                code: "invalid-channel-indexes-param",
+                message: `${module.constructor.name}: params.channelIndexes must be an array with one to four non-negative integers.`,
+                path: context.paramPath("channelIndexes"),
+                details: {
+                    value: raw
+                }
+            });
+
+            return {
+                ok: false,
+                value: [0]
+            };
+        }
+
+        const values = [];
+        let ok = true;
+
+        raw.forEach((entry, index) => {
+            const value = Number.parseInt(entry, 10);
+            if (!Number.isInteger(value) || value < 0 || String(value) !== String(entry).trim()) {
+                ok = false;
+
+                context.error({
+                    code: "invalid-channel-index-param",
+                    message: `${module.constructor.name}: params.channelIndexes[${index}] must be a non-negative integer.`,
+                    path: context.paramPath("channelIndexes", index),
+                    details: {
+                        index,
+                        value: entry
+                    }
+                });
+
+                return;
+            }
+
+            values.push(value);
+        });
+
+        return {
+            ok,
+            value: values.length ? values : [0]
+        };
+    }
+
     $.FlexRenderer.ShaderModuleMediator.registerModule(
         /**
          * Source module that samples one numeric channel from one source slot.
@@ -136,6 +237,26 @@
                     acceptsChannelCount: () => true,
                     description: `Source ${sourceIndex} sampled channel ${channelIndex}. Requires at least ${requiredChannelCount} channels.`
                 }];
+            }
+
+            analyze(context) {
+                const sourceIndexResult = analyzeNonNegativeIntegerParam(context, this, "sourceIndex", 0);
+                const channelIndexResult = analyzeNonNegativeIntegerParam(context, this, "channelIndex", 0);
+                const sampledChannels = [channelIndexResult.value];
+                const requiredChannelCount = getRequiredChannelCount(sampledChannels);
+
+                return {
+                    inputDefinitions: {},
+                    outputDefinitions: this.constructor.outputs(),
+                    controlDefinitions: this.getControlDefinitions(),
+                    sourceRequirements: sourceIndexResult.ok && channelIndexResult.ok ? [{
+                        index: sourceIndexResult.value,
+                        sampledChannels,
+                        requiredChannelCount,
+                        acceptsChannelCount: () => true,
+                        description: `Source ${sourceIndexResult.value} sampled channel ${channelIndexResult.value}. Requires at least ${requiredChannelCount} channels.`
+                    }] : []
+                };
             }
 
             compile(context) {
@@ -210,6 +331,33 @@
                     acceptsChannelCount: () => true,
                     description: `Source ${sourceIndex} sampled channels ${formatChannelList(sampledChannels)}. Requires at least ${requiredChannelCount} channels.`
                 }];
+            }
+
+            analyze(context) {
+                const sourceIndexResult = analyzeNonNegativeIntegerParam(context, this, "sourceIndex", 0);
+                const channelIndexesResult = analyzeChannelIndexesParam(context, this);
+                const channelIndexes = channelIndexesResult.value;
+                const sampledChannels = uniqueSortedChannelIndexes(channelIndexes);
+                const requiredChannelCount = getRequiredChannelCount(sampledChannels);
+                const outputType = channelIndexes.length === 1 ? "float" : `vec${channelIndexes.length}`;
+
+                return {
+                    inputDefinitions: {},
+                    outputDefinitions: {
+                        value: {
+                            type: outputType,
+                            description: "Sampled source channel value."
+                        }
+                    },
+                    controlDefinitions: this.getControlDefinitions(),
+                    sourceRequirements: sourceIndexResult.ok && channelIndexesResult.ok ? [{
+                        index: sourceIndexResult.value,
+                        sampledChannels,
+                        requiredChannelCount,
+                        acceptsChannelCount: () => true,
+                        description: `Source ${sourceIndexResult.value} sampled channels ${formatChannelList(sampledChannels)}. Requires at least ${requiredChannelCount} channels.`
+                    }] : []
+                };
             }
 
             compile(context) {

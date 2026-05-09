@@ -128,7 +128,8 @@ let shaderLayerConfig = {
 let shaderLayerOrder = [MODULAR_SHADER_ID];
 
 let pendingGraphText = null;
-let modularConfigError = "";
+let modularConfigDiagnostics = [];
+let modularConfigAnalysis = null;
 
 function renderShaderLayerControls(shaderLayer, shaderConfig) {
     const container = document.getElementById("my-shader-ui-container");
@@ -258,9 +259,7 @@ function renderModularShaderConfigCard(shaderConfig) {
     const graphText = pendingGraphText !== null ?
         pendingGraphText : JSON.stringify(getGraphConfig(shaderConfig), null, 4);
 
-    const errorHtml = modularConfigError ? `
-        <div class="shader-config-error">${escapeHtml(modularConfigError)}</div>
-    ` : "";
+    const diagnosticsHtml = modularConfigDiagnostics.length ? renderGraphDiagnostics(modularConfigDiagnostics) : "";
 
     return `
         <ul class="shader-config-list">
@@ -301,7 +300,7 @@ function renderModularShaderConfigCard(shaderConfig) {
                                 spellcheck="false"
                             >${escapeHtml(graphText)}</textarea>
                         </label>
-                        ${errorHtml}
+                        ${diagnosticsHtml}
                     </div>
                 </div>
             </li>
@@ -338,87 +337,213 @@ function bindShaderConfigPanelEvents() {
         renderShaderConfigPanel();
     });
 
+    $(".shader-config-module-textarea").on("input", function() {
+        updateDraftGraphDiagnostics(this.value);
+    });
+
     $(".shader-config-module-textarea").on("change", function() {
-        updateModularGraphFromText(this.value);
+        commitModularGraphFromText(this.value);
     });
 
     $(".shader-config-module-textarea").on("keydown", function(event) {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
-            updateModularGraphFromText(this.value);
+            commitModularGraphFromText(this.value);
         }
     });
 }
 
-function updateModularGraphFromText(text) {
+function updateDraftGraphDiagnostics(text) {
+    pendingGraphText = text;
+
+    const result = analyzeGraphText(text);
+    modularConfigAnalysis = result.analysis;
+    modularConfigDiagnostics = result.diagnostics;
+
+    renderGraphDiagnosticsIntoPanel();
+}
+
+function commitModularGraphFromText(text) {
     const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
 
     pendingGraphText = text;
 
-    let parsed;
-    try {
-        parsed = JSON.parse(text);
-        validateGraphConfig(parsed);
-    } catch (error) {
-        modularConfigError = error && error.message ? error.message : String(error);
+    const result = analyzeGraphText(text);
+    modularConfigAnalysis = result.analysis;
+    modularConfigDiagnostics = result.diagnostics;
+
+    if (modularConfigDiagnostics.some((diagnostic) => diagnostic.severity === "error")) {
         renderShaderConfigPanel();
         return;
     }
 
     shaderConfig.params = shaderConfig.params || {};
-    shaderConfig.params.graph = parsed;
+    shaderConfig.params.graph = result.graph;
     shaderConfig.cache = {};
 
     pendingGraphText = null;
-    modularConfigError = "";
+    modularConfigDiagnostics = [];
+    modularConfigAnalysis = null;
 
     applyShaderLayerGuiConfig();
     renderShaderConfigPanel();
 }
 
-function validateGraphConfig(graph) {
-    if (!graph || typeof graph !== "object" || Array.isArray(graph)) {
-        throw new Error("Modular configuration must be a JSON object.");
+function analyzeGraphText(text) {
+    let graph;
+
+    try {
+        graph = JSON.parse(text);
+    } catch (error) {
+        return {
+            graph: null,
+            analysis: null,
+            diagnostics: [{
+                severity: "error",
+                code: "invalid-json",
+                message: error && error.message ? error.message : String(error),
+                path: [],
+                details: {}
+            }]
+        };
     }
 
-    if (graph.version !== undefined && graph.version !== 1) {
-        throw new Error(`Unsupported graph version '${graph.version}'.`);
+    return analyzeGraphConfig(graph);
+}
+
+function analyzeGraphConfig(graph) {
+    const diagnostics = [];
+
+    if (graph && typeof graph === "object" && !Array.isArray(graph) &&
+        graph.version !== undefined && graph.version !== 1) {
+        diagnostics.push({
+            severity: "error",
+            code: "unsupported-graph-version",
+            message: `Unsupported graph version '${graph.version}'.`,
+            path: ["version"],
+            details: {
+                version: graph.version,
+                supportedVersion: 1
+            }
+        });
     }
 
-    if (!graph.nodes || typeof graph.nodes !== "object" || Array.isArray(graph.nodes)) {
-        throw new Error("Modular configuration must contain a nodes object.");
+    const Graph = OpenSeadragon.FlexRenderer.ShaderModuleGraph;
+    if (!Graph || typeof Graph.analyze !== "function") {
+        diagnostics.push({
+            severity: "error",
+            code: "graph-analyzer-unavailable",
+            message: "ShaderModuleGraph.analyze(...) is not available in the current FlexRenderer build.",
+            path: [],
+            details: {}
+        });
+
+        return {
+            graph,
+            analysis: null,
+            diagnostics
+        };
     }
 
-    if (!graph.output || typeof graph.output !== "string") {
-        throw new Error("Modular configuration must contain an output string.");
+    const analysis = Graph.analyze(makeDraftModuleGraphOwner(), graph);
+    diagnostics.push(...analysis.diagnostics);
+
+    return {
+        graph,
+        analysis,
+        diagnostics
+    };
+}
+
+function makeDraftModuleGraphOwner() {
+    const liveLayer = viewer &&
+    viewer.drawer &&
+    viewer.drawer.flexRenderer &&
+    typeof viewer.drawer.flexRenderer.getShaderLayer === "function" ?
+        viewer.drawer.flexRenderer.getShaderLayer(MODULAR_SHADER_ID) :
+        null;
+
+    if (liveLayer) {
+        return liveLayer;
     }
 
-    for (const nodeId of Object.keys(graph.nodes)) {
-        const node = graph.nodes[nodeId];
-
-        if (!node || typeof node !== "object" || Array.isArray(node)) {
-            throw new Error(`Node '${nodeId}' must be an object.`);
+    return {
+        id: MODULAR_SHADER_ID,
+        uid: MODULAR_SHADER_ID,
+        constructor: {
+            type: () => "modular"
         }
+    };
+}
 
-        if (!node.type || typeof node.type !== "string") {
-            throw new Error(`Node '${nodeId}' must declare a string type.`);
-        }
+function renderGraphDiagnostics(diagnostics) {
+    const visibleDiagnostics = diagnostics.filter((diagnostic) =>
+        diagnostic && diagnostic.severity !== "info"
+    );
 
-        if (
-            OpenSeadragon.FlexRenderer.ShaderModuleMediator &&
-            !OpenSeadragon.FlexRenderer.ShaderModuleMediator.getClass(node.type)
-        ) {
-            throw new Error(`Node '${nodeId}' uses unknown module type '${node.type}'.`);
-        }
-
-        if (node.inputs !== undefined && (typeof node.inputs !== "object" || Array.isArray(node.inputs))) {
-            throw new Error(`Node '${nodeId}' inputs must be an object map.`);
-        }
-
-        if (node.params !== undefined && (typeof node.params !== "object" || Array.isArray(node.params))) {
-            throw new Error(`Node '${nodeId}' params must be an object.`);
-        }
+    if (!visibleDiagnostics.length) {
+        return "";
     }
+
+    const rows = visibleDiagnostics.map((diagnostic) => `
+        <li class="shader-config-diagnostics__item">
+            <span class="shader-config-diagnostics__code">${escapeHtml(diagnostic.code || "diagnostic")}</span>
+            ${renderDiagnosticPath(diagnostic)}
+            — ${escapeHtml(diagnostic.message || "Graph diagnostic.")}
+        </li>
+    `).join("");
+
+    return `
+        <div class="shader-config-diagnostics">
+            <div class="shader-config-diagnostics__title">
+                Graph configuration diagnostics
+            </div>
+            <ul class="shader-config-diagnostics__list">
+                ${rows}
+            </ul>
+        </div>
+    `;
+}
+
+function renderDiagnosticPath(diagnostic) {
+    if (!diagnostic || !Array.isArray(diagnostic.path) || !diagnostic.path.length) {
+        return "";
+    }
+
+    return `
+        <span class="shader-config-diagnostics__path">
+            [${escapeHtml(formatDiagnosticPath(diagnostic.path))}]
+        </span>
+    `;
+}
+
+function formatDiagnosticPath(path) {
+    return path.map((part) => {
+        if (typeof part === "number") {
+            return `[${part}]`;
+        }
+
+        return String(part);
+    }).join(".");
+}
+
+function renderGraphDiagnosticsIntoPanel() {
+    const modulePanel = document.querySelector(".shader-config-row__module");
+    if (!modulePanel) {
+        return;
+    }
+
+    const existing = modulePanel.querySelector(".shader-config-diagnostics");
+    if (existing) {
+        existing.remove();
+    }
+
+    const html = renderGraphDiagnostics(modularConfigDiagnostics);
+    if (!html) {
+        return;
+    }
+
+    modulePanel.insertAdjacentHTML("beforeend", html);
 }
 
 function getGraphConfig(shaderConfig) {

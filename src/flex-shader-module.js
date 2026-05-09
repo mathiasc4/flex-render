@@ -111,14 +111,63 @@
      */
 
     /**
+     * Structured diagnostic emitted by ShaderModuleGraph analysis.
+     *
+     * @typedef {object} ShaderModuleGraphDiagnostic
+     * @property {"error"|"warning"|"info"} severity - Diagnostic severity.
+     * @property {string} code - Stable machine-readable diagnostic code.
+     * @property {string} message - Human-readable diagnostic message.
+     * @property {Array<string|number>} path - JSON-style path inside params.graph.
+     * @property {string} [nodeId] - Related graph node id, when applicable.
+     * @property {string} [portName] - Related port name, when applicable.
+     * @property {string} [ref] - Related graph reference string, when applicable.
+     * @property {object} [details] - Additional JSON-compatible diagnostic data.
+     */
+
+    /**
+     * Non-throwing graph analysis result.
+     *
+     * @typedef {object} ShaderModuleGraphAnalysisResult
+     * @property {boolean} ok - True when no error-severity diagnostics were emitted.
+     * @property {ShaderModuleGraphDiagnostic[]} diagnostics - Structured diagnostics.
+     * @property {object} partial - Partial graph state useful for editor/debug UI.
+     * @property {Object<string, ShaderModule>} partial.nodes - Instantiated valid reachable nodes.
+     * @property {Object<string, object>} partial.nodeAnalyses - Per-node analysis data for reachable nodes.
+     * @property {string[]} partial.order - Best-effort topological order for reachable nodes.
+     * @property {string[]} partial.reachableNodeIds - Node ids reachable from graph.output.
+     * @property {string[]} partial.unreachableNodeIds - Node ids ignored because they are not reachable from graph.output.
+     * @property {Object<string, object|boolean>} partial.controlDefinitions - Flattened controls collected from reachable nodes.
+     * @property {Object<string, ShaderModuleGraphControlRef>} partial.controlMap - Flattened control ownership map for reachable nodes.
+     * @property {ShaderModuleSourceRequirement[]} partial.sourceDefinitions - Merged source definitions collected from reachable nodes.
+     * @property {?ShaderModuleGraphOutputRef} partial.outputRef - Parsed graph output reference, when valid.
+     */
+
+    /**
+     * Analysis result returned by ShaderModule#analyze(...).
+     *
+     * @typedef {object} ShaderModuleAnalysisResult
+     * @property {Object<string, ShaderModulePortDescriptor>} inputDefinitions - Input port declarations.
+     * @property {Object<string, ShaderModulePortDescriptor>} outputDefinitions - Output port declarations.
+     * @property {Object<string, object|boolean>} controlDefinitions - Module-local control declarations.
+     * @property {ShaderModuleSourceRequirement[]} sourceRequirements - Source requirements introduced by the module.
+     */
+
+    /**
      * Construction options passed to a ShaderModule node instance.
+     *
+     * Runtime ShaderModule construction is intentionally permissive for minor node
+     * config shape issues. Malformed config.params and config.inputs may be passed
+     * through as-is or fall back through the module constructor's defaulting behavior.
+     * Editor-facing callers should use ShaderModuleGraph.analyze(...) before committing
+     * draft graph configs when they need structured diagnostics for malformed params,
+     * malformed inputs, or unknown input keys.
      *
      * @typedef {object} ShaderModuleOptions
      * @property {string} uid - Stable GLSL-safe module uid.
      * @property {ShaderLayer} owner - Owning ShaderLayer.
      * @property {object} config - Raw graph node config.
-     * @property {object} [config.params] - Node-local parameter values.
-     * @property {Object<string, string>} [config.inputs] - Input references keyed by input port name.
+     * @property {object} [config.params] - Node-local parameter values. analyze() reports malformed values; runtime construction remains permissive.
+     * @property {Object<string, string>} [config.inputs] - Input references keyed by input port name. analyze() reports malformed values and unknown keys; runtime construction remains permissive.
      */
 
     /**
@@ -370,6 +419,31 @@
         }
 
         /**
+         * Analyze this module instance without compiling GLSL.
+         *
+         * The default implementation derives analysis metadata from the existing module
+         * declaration hooks. Modules with parameter-dependent outputs or source
+         * requirements should override this method and report parameter diagnostics
+         * through the supplied context instead of throwing.
+         *
+         * This method participates in the editor-facing analyzer path. That path is
+         * intentionally stricter than runtime preparation: it reports malformed node
+         * params/inputs and unknown input keys as diagnostics. Runtime preparation remains
+         * more permissive and only follows declared input ports on reachable nodes.
+         *
+         * @param {ShaderModuleAnalysisContext} context - Per-node analysis context.
+         * @returns {ShaderModuleAnalysisResult} Non-throwing module analysis data.
+         */
+        analyze(context) { // eslint-disable-line no-unused-vars
+            return {
+                inputDefinitions: this.getInputDefinitions(),
+                outputDefinitions: this.getOutputDefinitions(),
+                controlDefinitions: this.getControlDefinitions(),
+                sourceRequirements: this.getSourceRequirements()
+            };
+        }
+
+        /**
          * Return the owning ShaderLayer's flat control name for a module-local control.
          *
          * Override: INFRASTRUCTURE. Do not override in normal modules.
@@ -559,6 +633,88 @@
     }
 
     /**
+     * Analysis helper passed to ShaderModule#analyze(...).
+     *
+     * Modules should use this context to report invalid intermediate state without
+     * throwing. The graph analyzer will include these diagnostics in its final result.
+     *
+     * @private
+     */
+    class ShaderModuleAnalysisContext {
+        /**
+         * Create a module analysis context.
+         *
+         * @param {ShaderModuleGraph} graph - Graph being analyzed.
+         * @param {ShaderModule} node - Module node being analyzed.
+         * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Shared diagnostic target array.
+         */
+        constructor(graph, node, diagnostics) {
+            this.graph = graph;
+            this.node = node;
+            this.diagnostics = diagnostics;
+        }
+
+        /**
+         * Return a path below this graph node.
+         *
+         * @param {...(string|number)} parts - Additional path parts.
+         * @returns {Array<string|number>} JSON-style path.
+         */
+        path(...parts) {
+            return ["nodes", this.node.id].concat(parts);
+        }
+
+        /**
+         * Return a path below this graph node's params object.
+         *
+         * @param {...(string|number)} parts - Additional path parts.
+         * @returns {Array<string|number>} JSON-style path.
+         */
+        paramPath(...parts) {
+            return this.path("params", ...parts);
+        }
+
+        /**
+         * Add a diagnostic for this module.
+         *
+         * @param {object} diagnostic - Diagnostic fields.
+         * @returns {ShaderModuleGraphDiagnostic} Added diagnostic.
+         */
+        diagnostic(diagnostic) {
+            return addGraphDiagnostic(this.diagnostics, {
+                nodeId: this.node.id,
+                ...diagnostic
+            });
+        }
+
+        /**
+         * Add an error diagnostic for this module.
+         *
+         * @param {object} diagnostic - Diagnostic fields.
+         * @returns {ShaderModuleGraphDiagnostic} Added diagnostic.
+         */
+        error(diagnostic) {
+            return this.diagnostic({
+                severity: "error",
+                ...diagnostic
+            });
+        }
+
+        /**
+         * Add a warning diagnostic for this module.
+         *
+         * @param {object} diagnostic - Diagnostic fields.
+         * @returns {ShaderModuleGraphDiagnostic} Added diagnostic.
+         */
+        warning(diagnostic) {
+            return this.diagnostic({
+                severity: "warning",
+                ...diagnostic
+            });
+        }
+    }
+
+    /**
      * Parsed node output reference.
      *
      * @typedef {object} ShaderModuleGraphOutputRef
@@ -608,14 +764,28 @@
     /**
      * Raw config for one ShaderModule graph node.
      *
+     * ShaderModuleGraph.analyze(...) treats this shape as editor-facing schema and
+     * reports malformed inputs, malformed params, and unknown input keys as structured
+     * diagnostics. Runtime preparation is more permissive: only reachable nodes are
+     * instantiated and unknown extra input keys are ignored because only declared
+     * input ports are followed.
+     *
      * @typedef {object} ShaderModuleGraphNodeConfig
      * @property {string} type - Registered ShaderModule type.
      * @property {Object<string, string>} [inputs] - Input edge references keyed by input port name.
+     * Analyzer diagnostics require this to be an object map; runtime preparation ignores unknown keys.
      * @property {ShaderModuleNodeParams} [params] - Node-local parameter and control values.
+     * Analyzer diagnostics require this to be an object; runtime construction remains permissive.
      */
 
     /**
      * Raw config for a ShaderModule DAG.
+     *
+     * The executable graph is the dependency closure reachable from output. Runtime
+     * preparation instantiates, validates, collects controls/sources, and compiles only
+     * reachable nodes. ShaderModuleGraph.analyze(...) reports unreachable nodes as
+     * warnings and reports additional editor-facing diagnostics for malformed node
+     * params/inputs and unknown input keys.
      *
      * @typedef {object} ShaderModuleGraphConfig
      * @property {Object<string, ShaderModuleGraphNodeConfig>} nodes - Graph nodes keyed by node id.
@@ -709,12 +879,295 @@
     }
 
     /**
+     * Create a normalized graph diagnostic.
+     *
+     * @private
+     * @param {object} diagnostic - Diagnostic fields.
+     * @returns {ShaderModuleGraphDiagnostic} Normalized diagnostic.
+     */
+    function createGraphDiagnostic(diagnostic) {
+        return {
+            severity: diagnostic.severity || "error",
+            code: diagnostic.code || "graph-diagnostic",
+            message: diagnostic.message || "Shader module graph diagnostic.",
+            path: Array.isArray(diagnostic.path) ? diagnostic.path.slice() : [],
+            nodeId: diagnostic.nodeId,
+            portName: diagnostic.portName,
+            ref: diagnostic.ref,
+            details: diagnostic.details || {}
+        };
+    }
+
+    /**
+     * Add a graph diagnostic to an array.
+     *
+     * @private
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
+     * @param {object} diagnostic - Diagnostic fields.
+     * @returns {ShaderModuleGraphDiagnostic} Added diagnostic.
+     */
+    function addGraphDiagnostic(diagnostics, diagnostic) {
+        const normalized = createGraphDiagnostic(diagnostic);
+        diagnostics.push(normalized);
+        return normalized;
+    }
+
+    /**
+     * Return true when a diagnostic list contains at least one error.
+     *
+     * @private
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostics to inspect.
+     * @returns {boolean} True when at least one error exists.
+     */
+    function hasGraphErrors(diagnostics) {
+        return diagnostics.some(diagnostic => diagnostic.severity === "error");
+    }
+
+    /**
+     * Return a safe suggestion for an invalid graph key.
+     *
+     * @private
+     * @param {*} key - Candidate key.
+     * @returns {string} Suggested GLSL-safe key.
+     */
+    function suggestGraphKey(key) {
+        let out = String(key || "").replace(/[^0-9a-zA-Z_]/g, "");
+        out = out.replace(/_+/g, "_").replace(/^_+/, "");
+        return out || "node";
+    }
+
+    /**
+     * Return true when value is a non-array object.
+     *
+     * @private
+     * @param {*} value - Candidate value.
+     * @returns {boolean} True when value is a plain object-like config value.
+     */
+    function isGraphObject(value) {
+        return !!value && typeof value === "object" && !Array.isArray(value);
+    }
+
+    /**
+     * Parse a graph reference without throwing.
+     *
+     * @private
+     * @param {*} ref - Candidate reference.
+     * @param {string} label - Human-readable label.
+     * @param {Array<string|number>} path - JSON path to the reference.
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
+     * @param {object} [extra={}] - Additional diagnostic fields.
+     * @returns {?ShaderModuleGraphOutputRef} Parsed reference, or null when invalid.
+     */
+    function parseGraphRefForAnalysis(ref, label, path, diagnostics, extra = {}) {
+        if (typeof ref !== "string") {
+            addGraphDiagnostic(diagnostics, {
+                severity: "error",
+                code: "invalid-reference-type",
+                message: `${label} must be a string reference.`,
+                path,
+                details: {
+                    actualType: Array.isArray(ref) ? "array" : typeof ref
+                },
+                ...extra
+            });
+            return null;
+        }
+
+        const match = /^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/.exec(ref);
+        if (!match) {
+            addGraphDiagnostic(diagnostics, {
+                severity: "error",
+                code: "invalid-reference-syntax",
+                message: `${label} must use 'nodeId.portName' syntax.`,
+                path,
+                ref,
+                details: {
+                    expected: "nodeId.portName"
+                },
+                ...extra
+            });
+            return null;
+        }
+
+        return {
+            nodeId: match[1],
+            portName: match[2]
+        };
+    }
+
+    /**
+     * Validate a graph value type without throwing.
+     *
+     * @private
+     * @param {*} type - Candidate value type.
+     * @param {string} label - Human-readable label.
+     * @param {Array<string|number>} path - JSON path to the type.
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
+     * @param {object} [extra={}] - Additional diagnostic fields.
+     * @returns {boolean} True when valid.
+     */
+    function validateGraphValueTypeForAnalysis(type, label, path, diagnostics, extra = {}) {
+        if (VALID_TYPES.has(type)) {
+            return true;
+        }
+
+        addGraphDiagnostic(diagnostics, {
+            severity: "error",
+            code: "unsupported-value-type",
+            message: `${label} has unsupported value type '${type}'.`,
+            path,
+            details: {
+                type,
+                validTypes: Array.from(VALID_TYPES)
+            },
+            ...extra
+        });
+        return false;
+    }
+
+    /**
+     * Validate a module port declaration map without throwing.
+     *
+     * @private
+     * @param {*} definitions - Candidate port declarations.
+     * @param {"input"|"output"} kind - Port kind.
+     * @param {string} nodeId - Owning node id.
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
+     * @returns {Object<string, ShaderModulePortDescriptor>} Valid object-like declaration map.
+     */
+    function validatePortDefinitionsForAnalysis(definitions, kind, nodeId, diagnostics) {
+        if (!isGraphObject(definitions)) {
+            addGraphDiagnostic(diagnostics, {
+                severity: "error",
+                code: `invalid-${kind}-definitions`,
+                message: `Node '${nodeId}' ${kind} definitions must be an object map.`,
+                path: ["nodes", nodeId],
+                nodeId
+            });
+            return {};
+        }
+
+        for (const portName of Object.keys(definitions)) {
+            const port = definitions[portName];
+
+            if (!isGraphObject(port)) {
+                addGraphDiagnostic(diagnostics, {
+                    severity: "error",
+                    code: `invalid-${kind}-port`,
+                    message: `Node '${nodeId}' ${kind} '${portName}' must be an object descriptor.`,
+                    path: ["nodes", nodeId],
+                    nodeId,
+                    portName
+                });
+                continue;
+            }
+
+            validateGraphValueTypeForAnalysis(
+                port.type,
+                `node '${nodeId}' ${kind} '${portName}'`,
+                ["nodes", nodeId],
+                diagnostics,
+                { nodeId, portName }
+            );
+        }
+
+        return definitions;
+    }
+
+    /**
+     * Report input references that are present in node config but not declared by the module.
+     *
+     * This check is analyzer-only. Runtime graph preparation intentionally remains
+     * permissive and ignores unknown input keys.
+     *
+     * @private
+     * @param {*} inputRefs - Raw node input reference map.
+     * @param {Object<string, ShaderModulePortDescriptor>} inputDefinitions - Declared input ports.
+     * @param {string} nodeId - Owning node id.
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
+     * @returns {void}
+     */
+    function reportUnknownInputRefsForAnalysis(inputRefs, inputDefinitions, nodeId, diagnostics) {
+        if (!isGraphObject(inputRefs)) {
+            return;
+        }
+
+        const definitions = inputDefinitions || {};
+        const declaredInputs = Object.keys(definitions);
+
+        for (const inputName of Object.keys(inputRefs)) {
+            if (Object.prototype.hasOwnProperty.call(definitions, inputName)) {
+                continue;
+            }
+
+            addGraphDiagnostic(diagnostics, {
+                severity: "error",
+                code: "unknown-input-port",
+                message: `Node '${nodeId}' has unknown input '${inputName}'.`,
+                path: ["nodes", nodeId, "inputs", inputName],
+                nodeId,
+                portName: inputName,
+                details: {
+                    declaredInputs
+                }
+            });
+        }
+    }
+
+    /**
+     * Report malformed node-local params/inputs objects.
+     *
+     * This check is analyzer-only. Runtime graph preparation intentionally remains
+     * permissive and lets ShaderModule construction fall back through its existing
+     * config.params/config.inputs defaults.
+     *
+     * @private
+     * @param {object} nodeConfig - Raw graph node config.
+     * @param {string} nodeId - Owning node id.
+     * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
+     * @returns {void}
+     */
+    function reportInvalidNodeShapeForAnalysis(nodeConfig, nodeId, diagnostics) {
+        if (nodeConfig.params !== undefined && !isGraphObject(nodeConfig.params)) {
+            addGraphDiagnostic(diagnostics, {
+                severity: "error",
+                code: "invalid-node-params",
+                message: `Node '${nodeId}' params must be an object.`,
+                path: ["nodes", nodeId, "params"],
+                nodeId,
+                details: {
+                    actualType: Array.isArray(nodeConfig.params) ? "array" : typeof nodeConfig.params
+                }
+            });
+        }
+
+        if (nodeConfig.inputs !== undefined && !isGraphObject(nodeConfig.inputs)) {
+            addGraphDiagnostic(diagnostics, {
+                severity: "error",
+                code: "invalid-node-inputs",
+                message: `Node '${nodeId}' inputs must be an object map.`,
+                path: ["nodes", nodeId, "inputs"],
+                nodeId,
+                details: {
+                    actualType: Array.isArray(nodeConfig.inputs) ? "array" : typeof nodeConfig.inputs
+                }
+            });
+        }
+    }
+
+    /**
      * Typed DAG compiler used by ModularShaderLayer.
      *
      * ShaderModuleGraph validates a module graph, instantiates ShaderModule nodes, checks
      * port types, topologically sorts nodes, collects source/control declarations,
      * and emits GLSL code that can be inserted into a ShaderLayer fragment-shader
      * function body.
+     *
+     * Runtime preparation operates on the reachable subgraph rooted at graph.output and
+     * remains permissive for minor non-critical node shape issues. The non-throwing
+     * analyze() path is editor-facing and intentionally stricter: it reports malformed
+     * node params/inputs, unknown input keys, and unreachable nodes as structured
+     * diagnostics before a draft graph is committed.
      *
      * This class is renderer-internal infrastructure. Module authors normally work
      * with ShaderModule and ShaderModuleNodeCompileContext, not with ShaderModuleGraph directly.
@@ -783,17 +1236,575 @@
              * @type {?ShaderModuleGraphCompileResult}
              */
             this._compiled = null;
+
+            /**
+             * Last non-throwing graph analysis result.
+             *
+             * @private
+             * @type {?ShaderModuleGraphAnalysisResult}
+             */
+            this._analysis = null;
         }
 
         /**
-         * Validate graph shape, instantiate nodes, sort the DAG, and collect exposed
-         * controls and source requirements.
+         * Analyze a module graph without throwing or compiling GLSL.
+         *
+         * This is intended for editors and visual graph tooling. It reports invalid
+         * intermediate states as structured diagnostics and returns partial graph state.
+         *
+         * This editor-facing analyzer is intentionally stricter than runtime prepare().
+         * It reports malformed node params/inputs and unknown input keys as diagnostics,
+         * while runtime graph construction remains permissive for those non-critical
+         * shape issues.
+         *
+         * @param {ShaderLayer|object} owner - Owning ShaderLayer or lightweight owner-like object.
+         * @param {ShaderModuleGraphConfig} graphConfig - Draft graph configuration.
+         * @returns {ShaderModuleGraphAnalysisResult} Structured analysis result.
+         */
+        static analyze(owner, graphConfig) {
+            return new $.FlexRenderer.ShaderModuleGraph(owner, graphConfig).analyze();
+        }
+
+        /**
+         * Analyze this graph without throwing or compiling GLSL.
+         *
+         * This editor-facing path is intentionally stricter than runtime prepare().
+         * It emits diagnostics for malformed node params/inputs and unknown input keys,
+         * but does not change the runtime compiler's permissive handling of those cases.
+         *
+         * @returns {ShaderModuleGraphAnalysisResult} Structured analysis result.
+         */
+        analyze() {
+            const diagnostics = [];
+            const nodeAnalyses = {};
+            let outputRef = null;
+
+            const reachableNodeIds = new Set();
+            const visitingReachability = {};
+            const visitedReachability = {};
+
+            this.nodes = {};
+            this.order = [];
+            this.controlMap = {};
+            this.controlDefinitions = {};
+            this.sourceDefinitions = [];
+            this._compiled = null;
+            this._analysis = null;
+
+            const result = () => {
+                const allNodeIds = isGraphObject(this.config && this.config.nodes) ?
+                    Object.keys(this.config.nodes) : [];
+                const reachable = Array.from(reachableNodeIds);
+                const unreachable = allNodeIds.filter(nodeId => !reachableNodeIds.has(nodeId));
+
+                this._analysis = {
+                    ok: !hasGraphErrors(diagnostics),
+                    diagnostics,
+                    partial: {
+                        nodes: $.extend(true, {}, this.nodes),
+                        nodeAnalyses,
+                        order: this.order.slice(),
+                        reachableNodeIds: reachable,
+                        unreachableNodeIds: unreachable,
+                        controlDefinitions: $.extend(true, {}, this.controlDefinitions),
+                        controlMap: $.extend(true, {}, this.controlMap),
+                        sourceDefinitions: this.sourceDefinitions.slice(),
+                        outputRef
+                    }
+                };
+
+                return this._analysis;
+            };
+
+            if (!isGraphObject(this.config)) {
+                addGraphDiagnostic(diagnostics, {
+                    severity: "error",
+                    code: "invalid-graph",
+                    message: "params.graph must be an object.",
+                    path: []
+                });
+                return result();
+            }
+
+            if (!isGraphObject(this.config.nodes)) {
+                addGraphDiagnostic(diagnostics, {
+                    severity: "error",
+                    code: "invalid-nodes",
+                    message: "graph.nodes must be an object map.",
+                    path: ["nodes"]
+                });
+                return result();
+            }
+
+            if (typeof this.config.output !== "string") {
+                addGraphDiagnostic(diagnostics, {
+                    severity: "error",
+                    code: "invalid-output-reference",
+                    message: "graph.output must be a node output reference string.",
+                    path: ["output"]
+                });
+            } else {
+                outputRef = parseGraphRefForAnalysis(
+                    this.config.output,
+                    "graph.output",
+                    ["output"],
+                    diagnostics
+                );
+            }
+
+            const analyzeReachableNode = (nodeId) => {
+                if (visitedReachability[nodeId]) {
+                    return;
+                }
+
+                if (visitingReachability[nodeId]) {
+                    return;
+                }
+
+                reachableNodeIds.add(nodeId);
+                visitingReachability[nodeId] = true;
+
+                const nodePath = ["nodes", nodeId];
+
+                if (!$.FlexRenderer.idPattern.test(nodeId)) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "invalid-node-id",
+                        message: `Node id '${nodeId}' is not GLSL-safe. Use '${suggestGraphKey(nodeId)}' or another stable id.`,
+                        path: nodePath,
+                        nodeId,
+                        details: {
+                            suggestedId: suggestGraphKey(nodeId)
+                        }
+                    });
+
+                    visitingReachability[nodeId] = false;
+                    visitedReachability[nodeId] = true;
+                    return;
+                }
+
+                if (!Object.prototype.hasOwnProperty.call(this.config.nodes, nodeId)) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "unknown-reachable-node",
+                        message: `Reachable node '${nodeId}' does not exist in graph.nodes.`,
+                        path: nodePath,
+                        nodeId
+                    });
+
+                    visitingReachability[nodeId] = false;
+                    visitedReachability[nodeId] = true;
+                    return;
+                }
+
+                const nodeConfig = this.config.nodes[nodeId];
+
+                if (!isGraphObject(nodeConfig)) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "invalid-node-config",
+                        message: `Node '${nodeId}' must be an object.`,
+                        path: nodePath,
+                        nodeId
+                    });
+
+                    visitingReachability[nodeId] = false;
+                    visitedReachability[nodeId] = true;
+                    return;
+                }
+
+                reportInvalidNodeShapeForAnalysis(nodeConfig, nodeId, diagnostics);
+
+                if (typeof nodeConfig.type !== "string" || !nodeConfig.type) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "invalid-module-type",
+                        message: `Node '${nodeId}' must declare a non-empty string type.`,
+                        path: nodePath.concat(["type"]),
+                        nodeId
+                    });
+
+                    visitingReachability[nodeId] = false;
+                    visitedReachability[nodeId] = true;
+                    return;
+                }
+
+                const ModuleClass = $.FlexRenderer.ShaderModuleMediator.getClass(nodeConfig.type);
+                if (!ModuleClass) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "unknown-module-type",
+                        message: `Unknown module type '${nodeConfig.type}' for node '${nodeId}'.`,
+                        path: nodePath.concat(["type"]),
+                        nodeId,
+                        details: {
+                            moduleType: nodeConfig.type,
+                            availableTypes: $.FlexRenderer.ShaderModuleMediator.availableTypes()
+                        }
+                    });
+
+                    visitingReachability[nodeId] = false;
+                    visitedReachability[nodeId] = true;
+                    return;
+                }
+
+                const node = new ModuleClass(nodeId, {
+                    uid: $.FlexRenderer.sanitizeKey(`${this.owner.uid || "draft"}_${nodeId}`),
+                    owner: this.owner,
+                    config: nodeConfig
+                });
+
+                this.nodes[nodeId] = node;
+
+                const context = new ShaderModuleAnalysisContext(this, node, diagnostics);
+                const analysis = node.analyze(context) || {};
+
+                const inputDefinitions = validatePortDefinitionsForAnalysis(
+                    analysis.inputDefinitions || {},
+                    "input",
+                    nodeId,
+                    diagnostics
+                );
+
+                const outputDefinitions = validatePortDefinitionsForAnalysis(
+                    analysis.outputDefinitions || {},
+                    "output",
+                    nodeId,
+                    diagnostics
+                );
+
+                nodeAnalyses[nodeId] = {
+                    inputDefinitions,
+                    outputDefinitions,
+                    controlDefinitions: isGraphObject(analysis.controlDefinitions) ? analysis.controlDefinitions : {},
+                    sourceRequirements: Array.isArray(analysis.sourceRequirements) ? analysis.sourceRequirements : []
+                };
+
+                const inputRefs = node.inputRefs || {};
+                reportUnknownInputRefsForAnalysis(inputRefs, inputDefinitions, nodeId, diagnostics);
+
+                for (const inputName of Object.keys(inputDefinitions)) {
+                    const ref = inputRefs[inputName];
+
+                    if (!ref) {
+                        continue;
+                    }
+
+                    const parsed = parseGraphRefForAnalysis(
+                        ref,
+                        `node '${nodeId}' input '${inputName}'`,
+                        ["nodes", nodeId, "inputs", inputName],
+                        diagnostics,
+                        {
+                            nodeId,
+                            portName: inputName
+                        }
+                    );
+
+                    if (parsed) {
+                        analyzeReachableNode(parsed.nodeId);
+                    }
+                }
+
+                visitingReachability[nodeId] = false;
+                visitedReachability[nodeId] = true;
+            };
+
+            if (outputRef) {
+                analyzeReachableNode(outputRef.nodeId);
+
+                for (const nodeId of Object.keys(this.config.nodes)) {
+                    if (reachableNodeIds.has(nodeId)) {
+                        continue;
+                    }
+
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "warning",
+                        code: "unreachable-node",
+                        message: `Node '${nodeId}' is not reachable from graph.output and will not affect the compiled shader.`,
+                        path: ["nodes", nodeId],
+                        nodeId
+                    });
+                }
+            }
+
+            const visited = {};
+            const visiting = {};
+            const order = [];
+
+            const visit = (nodeId, stack = []) => {
+                if (visited[nodeId]) {
+                    return;
+                }
+
+                if (visiting[nodeId]) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "graph-cycle",
+                        message: `Graph cycle detected at node '${nodeId}'.`,
+                        path: ["nodes", nodeId],
+                        nodeId,
+                        details: {
+                            cycle: stack.concat([nodeId])
+                        }
+                    });
+                    return;
+                }
+
+                const nodeAnalysis = nodeAnalyses[nodeId];
+                if (!nodeAnalysis) {
+                    return;
+                }
+
+                visiting[nodeId] = true;
+
+                const inputDefs = nodeAnalysis.inputDefinitions;
+                const inputRefs = (this.nodes[nodeId] && this.nodes[nodeId].inputRefs) || {};
+
+                for (const inputName of Object.keys(inputDefs)) {
+                    const inputDef = inputDefs[inputName] || {};
+                    const ref = inputRefs[inputName];
+
+                    if (!ref) {
+                        if (inputDef.required) {
+                            addGraphDiagnostic(diagnostics, {
+                                severity: "error",
+                                code: "missing-required-input",
+                                message: `Node '${nodeId}' missing required input '${inputName}'.`,
+                                path: ["nodes", nodeId, "inputs", inputName],
+                                nodeId,
+                                portName: inputName
+                            });
+                        }
+                        continue;
+                    }
+
+                    const parsed = parseGraphRefForAnalysis(
+                        ref,
+                        `node '${nodeId}' input '${inputName}'`,
+                        ["nodes", nodeId, "inputs", inputName],
+                        diagnostics,
+                        {
+                            nodeId,
+                            portName: inputName
+                        }
+                    );
+
+                    if (!parsed) {
+                        continue;
+                    }
+
+                    if (!reachableNodeIds.has(parsed.nodeId)) {
+                        continue;
+                    }
+
+                    const sourceAnalysis = nodeAnalyses[parsed.nodeId];
+                    if (!sourceAnalysis) {
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "unknown-input-node",
+                            message: `Node '${nodeId}' input '${inputName}' references unknown node '${parsed.nodeId}'.`,
+                            path: ["nodes", nodeId, "inputs", inputName],
+                            nodeId,
+                            portName: inputName,
+                            ref
+                        });
+                        continue;
+                    }
+
+                    const outputDef = sourceAnalysis.outputDefinitions[parsed.portName];
+                    if (!outputDef) {
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "unknown-output-port",
+                            message: `Node '${nodeId}' input '${inputName}' references unknown output '${ref}'.`,
+                            path: ["nodes", nodeId, "inputs", inputName],
+                            nodeId,
+                            portName: inputName,
+                            ref
+                        });
+                        continue;
+                    }
+
+                    if (inputDef.type !== outputDef.type) {
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "type-mismatch",
+                            message: `Node '${nodeId}' input '${inputName}' expects ${inputDef.type} but '${ref}' outputs ${outputDef.type}.`,
+                            path: ["nodes", nodeId, "inputs", inputName],
+                            nodeId,
+                            portName: inputName,
+                            ref,
+                            details: {
+                                expected: inputDef.type,
+                                actual: outputDef.type
+                            }
+                        });
+                    }
+
+                    visit(parsed.nodeId, stack.concat([nodeId]));
+                }
+
+                visiting[nodeId] = false;
+                visited[nodeId] = true;
+                order.push(nodeId);
+            };
+
+            if (outputRef && reachableNodeIds.has(outputRef.nodeId)) {
+                visit(outputRef.nodeId);
+            }
+
+            this.order = order;
+
+            if (outputRef) {
+                const outputNodeAnalysis = nodeAnalyses[outputRef.nodeId];
+
+                if (!outputNodeAnalysis) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "unknown-output-node",
+                        message: `graph.output references unknown node '${outputRef.nodeId}'.`,
+                        path: ["output"],
+                        ref: this.config.output
+                    });
+                } else {
+                    const outputDef = outputNodeAnalysis.outputDefinitions[outputRef.portName];
+
+                    if (!outputDef) {
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "unknown-graph-output-port",
+                            message: `graph.output references unknown port '${this.config.output}'.`,
+                            path: ["output"],
+                            ref: this.config.output
+                        });
+                    } else if (outputDef.type === "void") {
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "void-graph-output",
+                            message: "graph.output must not resolve to void.",
+                            path: ["output"],
+                            ref: this.config.output
+                        });
+                    }
+                }
+            }
+
+            for (const nodeId of Object.keys(nodeAnalyses)) {
+                if (!reachableNodeIds.has(nodeId)) {
+                    continue;
+                }
+
+                const nodeAnalysis = nodeAnalyses[nodeId];
+                const defs = nodeAnalysis.controlDefinitions;
+
+                if (!isGraphObject(defs)) {
+                    addGraphDiagnostic(diagnostics, {
+                        severity: "error",
+                        code: "invalid-control-definitions",
+                        message: `Node '${nodeId}' control definitions must be an object map.`,
+                        path: ["nodes", nodeId],
+                        nodeId
+                    });
+                    continue;
+                }
+
+                for (const localName of Object.keys(defs)) {
+                    const node = this.nodes[nodeId];
+                    const flatName = localName.startsWith("use_") ?
+                        localName : node.getControlName(localName);
+
+                    if (this.controlDefinitions[flatName]) {
+                        if (flatName.startsWith("use_")) {
+                            continue;
+                        }
+
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "duplicate-module-control",
+                            message: `Duplicate module control '${flatName}'.`,
+                            path: ["nodes", nodeId],
+                            nodeId,
+                            details: {
+                                flatName,
+                                localName
+                            }
+                        });
+                        continue;
+                    }
+
+                    this.controlDefinitions[flatName] = $.extend(true, {}, defs[localName]);
+                    this.controlMap[flatName] = {
+                        nodeId,
+                        localName
+                    };
+                }
+            }
+
+            const sources = [];
+            for (const nodeId of Object.keys(nodeAnalyses)) {
+                if (!reachableNodeIds.has(nodeId)) {
+                    continue;
+                }
+
+                const requirements = nodeAnalyses[nodeId].sourceRequirements;
+
+                for (const req of requirements) {
+                    const rawIndex = Number.parseInt(req && req.index, 10);
+                    if (!Number.isInteger(rawIndex) || rawIndex < 0) {
+                        addGraphDiagnostic(diagnostics, {
+                            severity: "error",
+                            code: "invalid-source-index",
+                            message: `Node '${nodeId}' declared an invalid source requirement index.`,
+                            path: ["nodes", nodeId],
+                            nodeId,
+                            details: {
+                                index: req && req.index
+                            }
+                        });
+                        continue;
+                    }
+
+                    sources[rawIndex] = mergeSourceRequirement(sources[rawIndex], req, rawIndex);
+                }
+            }
+
+            this.sourceDefinitions = [];
+            for (let index = 0; index < sources.length; index++) {
+                this.sourceDefinitions[index] = sources[index] || {
+                    index,
+                    sampledChannels: [],
+                    requiredChannelCount: 0,
+                    acceptsChannelCount: () => true,
+                    description: `Unused modular graph source slot ${index}.`
+                };
+            }
+
+            return result();
+        }
+
+        /**
+         * Return the last graph analysis result, running analysis when needed.
+         *
+         * @returns {ShaderModuleGraphAnalysisResult} Structured analysis result.
+         */
+        getAnalysis() {
+            return this._analysis || this.analyze();
+        }
+
+        /**
+         * Validate graph shape, instantiate reachable nodes, sort the reachable DAG, and
+         * collect exposed controls and source requirements.
          *
          * Call this before asking the graph for control definitions, source definitions,
          * or generated GLSL.
          *
+         * Runtime preparation is intentionally more permissive than analyze() for minor
+         * node config shape issues such as malformed params/inputs or unknown input keys.
+         * Editors should call analyze() before committing draft graph configs.
+         *
          * @returns {ShaderModuleGraph} This graph, for chaining.
-         * @throws {Error} Thrown when the graph config is invalid.
+         * @throws {Error} Thrown when the reachable runtime graph config is invalid.
          */
         prepare() {
             this._validateShape();
@@ -964,20 +1975,49 @@ ${compiled.execution}
         }
 
         /**
-         * Instantiate ShaderModule nodes from graph node configs.
+         * Instantiate ShaderModule nodes reachable from graph.output.
+         *
+         * Unreachable graph nodes are ignored by the runtime compiler. Only declared input
+         * ports are followed, so unknown extra input keys remain runtime-permissive.
          *
          * @private
          * @returns {void}
-         * @throws {Error} Thrown when a node id is not GLSL-safe or a module type is unknown.
+         * @throws {Error} Thrown when a reachable node id is not GLSL-safe, a reachable
+         * module type is unknown, or a reachable input reference is invalid.
          */
         _instantiateNodes() {
-            for (const nodeId of Object.keys(this.config.nodes)) {
+            this.nodes = {};
+
+            const outputRef = this._parseRef(this.config.output, "graph.output");
+            const visited = {};
+            const visiting = {};
+
+            const instantiateReachable = (nodeId) => {
+                if (visited[nodeId]) {
+                    return;
+                }
+
+                if (visiting[nodeId]) {
+                    return;
+                }
+
+                visiting[nodeId] = true;
+
                 const sanitized = $.FlexRenderer.sanitizeKey(nodeId);
                 if (sanitized !== nodeId) {
                     throw new Error(`${this.errorPrefix()}: node id '${nodeId}' is not GLSL-safe. Use '${sanitized}' or another stable id.`);
                 }
 
-                const nodeConfig = this.config.nodes[nodeId] || {};
+                if (!Object.prototype.hasOwnProperty.call(this.config.nodes, nodeId)) {
+                    throw new Error(`${this.errorPrefix()}: unknown node '${nodeId}'.`);
+                }
+
+                const nodeConfig = this.config.nodes[nodeId];
+
+                if (!nodeConfig || typeof nodeConfig !== "object" || Array.isArray(nodeConfig)) {
+                    throw new Error(`${this.errorPrefix()}: node '${nodeId}' must be an object.`);
+                }
+
                 const moduleType = nodeConfig.type;
                 const ModuleClass = $.FlexRenderer.ShaderModuleMediator.getClass(moduleType);
 
@@ -985,12 +2025,33 @@ ${compiled.execution}
                     throw new Error(`${this.errorPrefix()}: unknown module type '${moduleType}' for node '${nodeId}'.`);
                 }
 
-                this.nodes[nodeId] = new ModuleClass(nodeId, {
+                const node = new ModuleClass(nodeId, {
                     uid: $.FlexRenderer.sanitizeKey(`${this.owner.uid}_${nodeId}`),
                     owner: this.owner,
                     config: nodeConfig
                 });
-            }
+
+                this.nodes[nodeId] = node;
+
+                const inputDefs = node.getInputDefinitions();
+                const inputRefs = node.inputRefs || {};
+
+                for (const inputName of Object.keys(inputDefs)) {
+                    const ref = inputRefs[inputName];
+
+                    if (!ref) {
+                        continue;
+                    }
+
+                    const parsed = this._parseRef(ref, `node '${nodeId}' input '${inputName}'`);
+                    instantiateReachable(parsed.nodeId);
+                }
+
+                visiting[nodeId] = false;
+                visited[nodeId] = true;
+            };
+
+            instantiateReachable(outputRef.nodeId);
         }
 
         /**
@@ -1069,11 +2130,8 @@ ${compiled.execution}
                 order.push(nodeId);
             };
 
-            for (const nodeId of Object.keys(this.nodes)) {
-                visit(nodeId);
-            }
-
             const outputRef = this._parseRef(this.config.output, "graph.output");
+            visit(outputRef.nodeId);
             const outputNode = this.nodes[outputRef.nodeId];
             if (!outputNode) {
                 throw new Error(`${this.errorPrefix()}: graph.output references unknown node '${outputRef.nodeId}'.`);
