@@ -9,21 +9,12 @@ const sources = {
         extent: 4096
     },
     fabric: "../data/fabric.geometry.json",
-    geojson: {
-        type: "geojson",
-        url: "../data/geojson-sample.geojson",
-        projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
-        width: 4096,
-        height: 4096,
-        bounds: [0, 0, 4096, 4096]
-    },
+    geojson: "../data/geojson-sample.geojson",
     geojson_10k: {
         type: "geojson",
         url: "../data/geojson-performance-10k.geojson",
-        projection: OpenSeadragon.GeoJSONTileSourceProjection.IMAGE,
         width: 4096 * 8,
         height: 4096 * 8,
-        bounds: [0, 0, 4096, 4096],
         maxLevel: 25,
         aggregation: {
             enabled: true,
@@ -68,6 +59,7 @@ let viewer = window.viewer = OpenSeadragon({
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
     maxZoomPixelRatio: 100,
+    minPixelRatio: 1.2,
     smoothTileEdgesMinZoom: 1.1,
     crossOriginPolicy: 'Anonymous',
     ajaxWithCredentials: false,

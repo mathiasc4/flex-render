@@ -1,16 +1,14 @@
 (function($) {
     /**
-     * Supported GeoJSON coordinate interpretation modes.
+     * Options controlling annotation style.
      *
-     * @readonly
-     * @enum {string}
+     * @typedef {object} GeoJSONStyleOptions
+     * @property {number} [pointSize=4] - Point size in pixels.
+     * @property {number[]} [pointColor=[1, 0.2, 0.2, 1]] - Point color as [r, g, b, a].
+     * @property {number} [lineWidth=2] - Line width in pixels.
+     * @property {number[]} [lineColor=[0.2, 1, 0.2, 1]] - Line color as [r, g, b, a].
+     * @property {number[]} [fillColor=[0.2, 0.2, 1, 0.6]] - Fill color as [r, g, b, a].
      */
-    $.GeoJSONTileSourceProjection = Object.freeze({
-        /** GeoJSON coordinates are already in OpenSeadragon image coordinates. */
-        IMAGE: 'image'
-
-        // TODO: add other projection options as necessary.
-    });
 
     /**
      * Options controlling per-tile annotation aggregation.
@@ -19,13 +17,13 @@
      * annotations are rendered as one cluster badge instead of rendering every
      * annotation mesh in that tile.
      *
-     * @typedef {object} GeoJSONTileAggregationOptions
+     * @typedef {object} GeoJSONAggregationOptions
      * @property {boolean} [enabled=false] - Whether tile-level aggregation is enabled.
      * @property {number} [threshold=50] - Aggregate when visible annotation count is greater than this value.
      * @property {number} [badgeSize=56] - Cluster badge diameter in level pixels.
-     * @property {number[]} [badgeColor=[1, 0.65, 0.1, 0.85]] - Badge color as [r, g, b, a].
+     * @property {number[]} [badgeColor=[1, 0.5, 0, 1]] - Badge color as [r, g, b, a].
      * @property {number[]} [labelColor=[0, 0, 0, 1]] - Count label color as [r, g, b, a].
-     * @property {number} [labelSize=24] - Count label height in level pixels.
+     * @property {number} [labelSize=24] - Count label size in level pixels.
      * @property {number} [labelStrokeWidth=3] - Count label stroke width in level pixels.
      * @property {number} [maxLabelValue=9999] - Maximum visible label value before using a plus suffix.
      */
@@ -35,32 +33,43 @@
      *
      * @typedef {object} GeoJSONTileSourceOptions
      * @property {string} url - Source URL used to fetch or identify the GeoJSON.
+     * @property {number[]} [bbox] - Optional GeoJSON top-level bbox. This is the source
+     *     coordinate extent as [minX, minY, maxX, maxY] or a valid GeoJSON 3D bbox.
+     *     When supplied together with width and height, coordinates are mapped from bbox into
+     *     those destination dimensions.
      * @property {number} [width] - Full-resolution overlay width in OpenSeadragon image coordinates.
-     *     For pathology WSI overlays, this should match the full-resolution slide width.
-     *     If omitted, it can be inferred from bbox when bbox is present.
+     *     If omitted, it is inferred from bbox as maxX - minX. When supplied together
+     *     with bbox, it is the destination width that the bbox coordinate range is
+     *     mapped onto.
      * @property {number} [height] - Full-resolution overlay height in OpenSeadragon image coordinates.
-     *     For pathology WSI overlays, this should match the full-resolution slide height.
-     *     If omitted, it can be inferred from bbox when bbox is present.
-     * @property {number[]} [bbox] - Optional GeoJSON top-level bbox. When width and height
-     *     are omitted, width and height are inferred as maxX - minX and maxY - minY.
+     *     If omitted, it is inferred from bbox as maxY - minY. When supplied together
+     *     with bbox, it is the destination height that the bbox coordinate range is
+     *     mapped onto.
      * @property {number} [tileSize=512] - Logical tile size used by OpenSeadragon.
      * @property {number} [minLevel=0] - Minimum pyramid level.
      * @property {number} [maxLevel] - Maximum pyramid level. Defaults to ceil(log2(max(width, height))).
-     * @property {GeoJSONTileSourceProjection} [projection=OpenSeadragon.GeoJSONTileSourceProjection.IMAGE] - Coordinate interpretation mode.
-     * @property {number[]} [bounds] - Optional source coordinate bounds as [minX, minY, maxX, maxY].
-     *     Defaults to bbox when dimensions are inferred from bbox; otherwise defaults
-     *     to [0, 0, width, height]. Provide this only when GeoJSON coordinates need
-     *     to be mapped from another coordinate rectangle into the overlay coordinate space.
-     * @property {object} [style] - Optional source-level style descriptor.
-     * @property {boolean} [useNativeLines=false] - Whether LineString geometries are rendered as gl.LINES instead of stroke-triangle meshes.
-     * @property {GeoJSONTileAggregationOptions} [aggregation] - Optional per-tile aggregation settings.
+     * @property {GeoJSONStyleOptions} [style] - Optional style descriptor.
+     * @property {boolean} [useNativeLines=false] - Whether LineString geometries are processed into gl.LINES primitives of stroke-triangle meshes.
+     * @property {GeoJSONAggregationOptions} [aggregation] - Optional per-tile aggregation settings.
      */
+
+    const GEOJSON_ROOT_TYPES = new Set([
+        'FeatureCollection',
+        'Feature',
+        'Point',
+        'MultiPoint',
+        'LineString',
+        'MultiLineString',
+        'Polygon',
+        'MultiPolygon',
+        'GeometryCollection'
+    ]);
 
     /**
      * Tile source for GeoJSON-backed vector tiles.
      *
      * This class is intentionally only the OpenSeadragon TileSource boundary.
-     * GeoJSON parsing, projection, clipping, simplification, and meshing should
+     * GeoJSON parsing, bbox normalization, clipping, simplification, and meshing should
      * live in worker/helper code, not in FlexRenderer.
      */
     $.GeoJSONTileSource = class extends $.TileSource {
@@ -90,26 +99,6 @@
             this._url = normalized.url;
 
             /**
-             * Coordinate interpretation mode for this source.
-             *
-             * @type {GeoJSONTileSourceProjection}
-             */
-            this.projection = normalized.projection;
-
-            /**
-             * Source coordinate bounds used to map GeoJSON coordinates into the overlay
-             * image space.
-             *
-             * Defaults to [0, 0, width, height]. For pathology image-space annotations,
-             * this should usually be omitted by the caller. Non-default bounds should be
-             * used only when the GeoJSON coordinates are in a different coordinate
-             * rectangle that must be mapped onto the overlay image space.
-             *
-             * @type {number[]}
-             */
-            this.bounds = normalized.bounds;
-
-            /**
              * GeoJSON source bbox used to infer dimensions, if supplied.
              *
              * The bbox is normalized to 2D [minX, minY, maxX, maxY] form even
@@ -117,7 +106,15 @@
              *
              * @type {?number[]}
              */
-            this.bbox = normalized.bbox ? normalized.bbox.slice() : null;
+            this.bbox = normalized.bbox;
+
+            /**
+             * The provided tile size, store because OpenSeadragon overwrites this.tileSize.
+             *
+             * @type {number}
+             * @private
+             */
+            this._tileSize = normalized.tileSize;
 
             /**
              * Optional source-level styling configuration.
@@ -136,25 +133,9 @@
             /**
              * Optional per-tile annotation aggregation settings.
              *
-             * @type {GeoJSONTileAggregationOptions}
+             * @type {GeoJSONAggregationOptions}
              */
-            this.aggregation = cloneAggregationOptions(normalized.aggregation);
-
-            /**
-             * Stable aggregation identity included in tile cache keys.
-             *
-             * @private
-             * @type {string}
-             */
-            this._aggregationHash = getAggregationHash(this.aggregation);
-
-            /**
-             * Stable native-line rendering identity included in tile cache keys.
-             *
-             * @private
-             * @type {string}
-             */
-            this._nativeLineHash = this.useNativeLines ? 'native-lines' : 'stroke-lines';
+            this.aggregation = normalized.aggregation;
 
             /**
              * Pending tile jobs keyed by tile id.
@@ -205,22 +186,21 @@
          * @throws {Error} Thrown when required coordinate or tiling options are invalid.
          */
         static normalizeOptions(options = {}) {
-            const bbox = options.bbox ? normalizeGeoJSONBBox(options.bbox, 'GeoJSONTileSource: bbox') : null;
+            const bbox = options.bbox ? normalizeGeoJSONBBox(options.bbox) : null;
+            const inferredDimensions = bbox ? getBBoxDimensions(bbox) : null;
             const hasExplicitWidth = options.width !== null && options.width !== undefined;
             const hasExplicitHeight = options.height !== null && options.height !== undefined;
-            const inferredDimensions = bbox ? getBBoxDimensions(bbox) : null;
+            const hasExplicitDimensions = hasExplicitWidth && hasExplicitHeight;
 
             const normalized = {
                 url: options.url,
-                width: hasExplicitWidth ? options.width : (inferredDimensions ? inferredDimensions.width : undefined),
-                height: hasExplicitHeight ? options.height : (inferredDimensions ? inferredDimensions.height : undefined),
+                bbox,
+                width: hasExplicitDimensions ? options.width : (inferredDimensions ? inferredDimensions.width : undefined),
+                height: hasExplicitDimensions ? options.height : (inferredDimensions ? inferredDimensions.height : undefined),
                 tileSize: (options.tileSize !== null && options.tileSize !== undefined) ? options.tileSize : 512,
                 minLevel: (options.minLevel !== null && options.minLevel !== undefined) ? options.minLevel : 0,
                 maxLevel: options.maxLevel,
-                projection: options.projection || $.GeoJSONTileSourceProjection.IMAGE,
-                bounds: options.bounds || null,
-                bbox,
-                style: options.style || null,
+                style: normalizeStyleOptions(options.style),
                 useNativeLines: options.useNativeLines === true,
                 aggregation: normalizeAggregationOptions(options.aggregation)
             };
@@ -230,6 +210,8 @@
             }
 
             normalized.url = resolveUrl(normalized.url);
+
+            // we cannot fetch the GeoJSON itself here, if neither the bbox nor width and height are provided, we throw.
 
             if (!Number.isFinite(normalized.width) || normalized.width <= 0) {
                 throw new Error(
@@ -254,32 +236,12 @@
             }
 
             if (normalized.maxLevel === undefined || normalized.maxLevel === null) {
-                normalized.maxLevel = Math.ceil(
-                    Math.log2(Math.max(normalized.width, normalized.height))
-                );
+                normalized.maxLevel = Math.ceil(Math.log2(Math.max(normalized.width, normalized.height)));
             }
 
             if (!Number.isInteger(normalized.maxLevel) || normalized.maxLevel < normalized.minLevel) {
                 throw new Error('GeoJSONTileSource: maxLevel must be an integer greater than or equal to minLevel.');
             }
-
-            const allowedProjections = Object.values($.GeoJSONTileSourceProjection);
-            if (!allowedProjections.includes(normalized.projection)) {
-                throw new Error(
-                    `GeoJSONTileSource: unsupported projection '${normalized.projection}'. ` +
-                    `Expected one of: ${allowedProjections.join(', ')}.`
-                );
-            }
-
-            if (normalized.bounds) {
-                normalized.bounds = normalized.bounds.slice();
-            } else if (bbox && (!hasExplicitWidth || !hasExplicitHeight)) {
-                normalized.bounds = bbox.slice();
-            } else {
-                normalized.bounds = [0, 0, normalized.width, normalized.height];
-            }
-
-            normalized.bounds = normalizeGeoJSONBBox(normalized.bounds, 'GeoJSONTileSource: bounds');
 
             return normalized;
         }
@@ -287,96 +249,66 @@
         /**
          * Determine whether the supplied metadata can configure a GeoJSON tile source.
          *
-         * Raw GeoJSON alone is not enough for automatic TileSource configuration,
-         * because this source needs the dimensions of the destination overlay coordinate
-         * space. For pathology WSI overlays, width and height must match the
-         * full-resolution slide dimensions.
-         *
-         * Supported metadata should use the wrapper form:
-         *
-         * {
-         *     type: 'geojson',
-         *     url: 'annotations.geojson',
-         *     width: slideFullResolutionWidth,
-         *     height: slideFullResolutionHeight
-         * }
-         *
-         * Raw GeoJSON is intentionally not accepted. This source requires WSI
-         * image-space width and height, and GeoJSON fetching/parsing is owned by
-         * the worker.
-         *
-         * @param {object} data - Parsed metadata or inline source object.
-         * @param {string} url - Metadata URL, if available.
-         * @returns {boolean} True when this source can configure the input.
+         * @param {object} data - Supplied metadata.
+         * @param {string} _url - URL the metadata was loaded from, if any.
+         * @returns {boolean} True when the metadata is likely to configure a GeoJSONTileSource.
          */
-        supports(data, url) {
-            if (!data || typeof data !== 'object') {
+        supports(data, _url) {
+            if (!data || typeof data !== 'object' || Array.isArray(data)) {
                 return false;
             }
 
-            if (isGeoJSONRoot(data)) {
-                return typeof url === 'string' && !!url.trim() && isValidGeoJSONBBox(data.bbox);
+            if (GEOJSON_ROOT_TYPES.has(data.type) && data.bbox) {
+                return true;
             }
 
-            if (data.type !== 'geojson') {
-                return false;
+            if (data.type === 'geojson') {
+                return true;
             }
 
-            if (typeof data.url !== 'string' || !data.url.trim()) {
-                return false;
+            if (typeof data.url === 'string' && data.url.endsWith('.geojson')) {
+                return true;
             }
 
-            return (Number.isFinite(data.width) && data.width > 0 && Number.isFinite(data.height) && data.height > 0) || isValidGeoJSONBBox(data.bbox);
+            return false;
         }
 
         /**
-         * Convert GeoJSON metadata into constructor options.
+         * Validate and convert supplied metadata into constructor options for a GeoJSONTileSource.
          *
-         * @param {object} data - GeoJSON TileSource wrapper options.
-         * @param {string} dataUrl - URL the metadata was loaded from, if any.
+         * @param {object} data - Supplied metadata.
+         * @param {string} url - URL the metadata was loaded from, if any.
          * @param {string} _postData - POST data passed during metadata loading, if any.
          * @returns {GeoJSONTileSourceOptions} Constructor options.
          */
-        configure(data = {}, dataUrl, _postData) {
-            if (isGeoJSONRoot(data)) {
-                const bbox = normalizeGeoJSONBBox(data.bbox, 'GeoJSONTileSource: GeoJSON bbox');
-                const dimensions = getBBoxDimensions(bbox);
+        configure(data, url, _postData) {
+            if (!data || typeof data !== 'object' || Array.isArray(data)) {
+                throw new Error(`GeoJSONTileSource: invalid metadata from ${url}.`);
+            }
 
+            if (data.type === 'geojson') {
                 return {
-                    url: resolveUrl(dataUrl),
-                    width: dimensions.width,
-                    height: dimensions.height,
-                    tileSize: 512,
-                    minLevel: 0,
-                    maxLevel: undefined,
-                    projection: $.GeoJSONTileSourceProjection.IMAGE,
-                    bounds: bbox,
-                    bbox,
-                    style: null,
-                    useNativeLines: data.useNativeLines === true,
-                    aggregation: normalizeAggregationOptions(data.aggregation)
+                    url: resolveUrl(data.url, url),
+                    bbox: data.bbox,
+                    width: data.width,
+                    height: data.height,
+                    tileSize: data.tileSize,
+                    minLevel: data.minLevel,
+                    maxLevel: data.maxLevel,
+                    style: data.style,
+                    useNativeLines: data.useNativeLines,
+                    aggregation: data.aggregation
                 };
             }
 
-            const bbox = data.bbox ? normalizeGeoJSONBBox(data.bbox, 'GeoJSONTileSource: bbox') : null;
-            const dimensions = bbox ? getBBoxDimensions(bbox) : null;
-            const hasExplicitWidth = data.width !== null && data.width !== undefined;
-            const hasExplicitHeight = data.height !== null && data.height !== undefined;
+            if (GEOJSON_ROOT_TYPES.has(data.type)) {
+                return {
+                    url: resolveUrl(url),
+                    bbox: data.bbox,
+                };
+            }
 
-            return {
-                url: resolveUrl(data.url, dataUrl),
-                width: hasExplicitWidth ? data.width : (dimensions ? dimensions.width : undefined),
-                height: hasExplicitHeight ? data.height : (dimensions ? dimensions.height : undefined),
-                tileSize: (data.tileSize !== undefined && data.tileSize !== null) ? data.tileSize : 512,
-                minLevel: (data.minLevel !== undefined && data.minLevel !== null) ? data.minLevel : 0,
-                maxLevel: data.maxLevel,
-                projection: data.projection || $.GeoJSONTileSourceProjection.IMAGE,
-                bounds: data.bounds || ((!hasExplicitWidth || !hasExplicitHeight) ? bbox : null),
-                bbox,
-                style: data.style || null,
-                useNativeLines: data.useNativeLines === true,
-                aggregation: normalizeAggregationOptions(data.aggregation)
-            };
+            throw new Error(`GeoJSONTileSource: invalid metadata from ${url}.`);
         }
 
         /**
@@ -401,16 +333,7 @@
          */
         getTileHashKey(level, x, y) {
             const sourceId = this._url || 'inline';
-            return `geojson:${sourceId}:${this._aggregationHash}:${this._nativeLineHash}:${level}:${x}:${y}`;
-        }
-
-        /**
-         * GeoJSON vector tiles are transparent overlays.
-         *
-         * @returns {boolean} Always true.
-         */
-        hasTransparency() {
-            return true;
+            return `geojson:${sourceId}:${level}:${x}:${y}`;
         }
 
         /**
@@ -499,15 +422,13 @@
                     width: this.dimensions.x,
                     height: this.dimensions.y
                 },
-                tileSize: this.tileSize,
+                tileSize: this._tileSize,
                 minLevel: this.minLevel,
                 maxLevel: this.maxLevel,
-                projection: this.projection,
-                bounds: this.bounds ? this.bounds.slice() : null,
                 bbox: this.bbox ? this.bbox.slice() : null,
                 style: this.style,
                 useNativeLines: this.useNativeLines,
-                aggregation: cloneAggregationOptions(this.aggregation)
+                aggregation: this.aggregation
             };
         }
 
@@ -591,11 +512,9 @@
             this._worker.postMessage({
                 type: 'config',
                 url: this._url,
-                tileSize: this.tileSize,
+                tileSize: this._tileSize,
                 minLevel: this.minLevel,
                 maxLevel: this.maxLevel,
-                projection: this.projection,
-                bounds: this.bounds,
                 bbox: this.bbox,
                 width: this.dimensions.x,
                 height: this.dimensions.y,
@@ -666,58 +585,20 @@
         }
     };
 
-    const GEOJSON_ROOT_TYPES = new Set([
-        'FeatureCollection',
-        'Feature',
-        'Point',
-        'MultiPoint',
-        'LineString',
-        'MultiLineString',
-        'Polygon',
-        'MultiPolygon',
-        'GeometryCollection'
-    ]);
-
     /**
-     * Test whether a parsed object is a standard GeoJSON root object.
-     *
-     * @param {*} data - Candidate parsed metadata.
-     * @returns {boolean} True when the object looks like standard GeoJSON.
-     */
-    function isGeoJSONRoot(data) {
-        return !!(data && typeof data === 'object' && !Array.isArray(data) && GEOJSON_ROOT_TYPES.has(data.type));
-    }
-
-    /**
-     * Test whether a value is a valid GeoJSON bbox usable by the 2D renderer.
-     *
-     * @param {*} bbox - Candidate bbox.
-     * @returns {boolean} True when bbox can be normalized to [minX, minY, maxX, maxY].
-     */
-    function isValidGeoJSONBBox(bbox) {
-        try {
-            normalizeGeoJSONBBox(bbox, 'GeoJSONTileSource: bbox');
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    /**
-     * Normalize a GeoJSON bbox to the 2D bounds used by this tile source.
+     * Normalize a GeoJSON bbox.
      *
      * GeoJSON bbox is [minX, minY, maxX, maxY] for 2D coordinates and
      * [minX, minY, minZ, maxX, maxY, maxZ] for 3D coordinates. The renderer is
      * 2D, so z bounds are ignored.
      *
      * @param {*} bbox - Candidate GeoJSON bbox.
-     * @param {string} label - Error label used in validation messages.
      * @returns {number[]} Bounds as [minX, minY, maxX, maxY].
-     * @throws {Error} Thrown when bbox cannot define positive 2D dimensions.
+     * @throws {Error} Thrown when bbox is not a valid GeoJSON bbox.
      */
-    function normalizeGeoJSONBBox(bbox, label) {
-        if (!Array.isArray(bbox) || bbox.length < 4 || bbox.length % 2 !== 0 || !bbox.every(Number.isFinite)) {
-            throw new Error(`${label} must be a GeoJSON bbox array with finite numeric values.`);
+    function normalizeGeoJSONBBox(bbox) {
+        if (!Array.isArray(bbox) || !(bbox.length === 4 || bbox.length === 6) || !bbox.every(Number.isFinite)) {
+            throw new Error('GeoJSONTileSource: GeoJSON bbox must be an array with 4 (or 6) finite numeric values.');
         }
 
         const dimensions = bbox.length / 2;
@@ -727,11 +608,11 @@
         const maxY = bbox[dimensions + 1];
 
         if (minX >= maxX) {
-            throw new Error(`${label} minX must be smaller than maxX.`);
+            throw new Error(`GeoJSONTileSource: GeoJSON minX must be smaller than maxX.`);
         }
 
         if (minY >= maxY) {
-            throw new Error(`${label} minY must be smaller than maxY.`);
+            throw new Error(`GeoJSONTileSource: GeoJSON minY must be smaller than maxY.`);
         }
 
         return [minX, minY, maxX, maxY];
@@ -751,14 +632,48 @@
     }
 
     /**
+     * Normalize style options.
+     *
+     * @param {*} options - Candidate style options.
+     * @returns {GeoJSONStyleOptions} Normalized style options.
+     * @throws {Error} Thrown when style options are invalid.
+     */
+    function normalizeStyleOptions(options) {
+        const source = options || {};
+
+        const normalized = {
+            pointSize: (source.pointSize !== undefined && source.pointSize !== null) ? source.pointSize : 4,
+            pointColor: source.pointColor || [1, 0.2, 0.2, 1],
+            lineWidth: (source.lineWidth !== undefined && source.lineWidth !== null) ? source.lineWidth : 2,
+            lineColor: source.lineColor || [0.2, 1, 0.2, 1],
+            fillColor: source.fillColor || [0.2, 0.2, 1, 0.6],
+        };
+
+        if (!Number.isFinite(normalized.pointSize) || normalized.pointSize < 0) {
+            throw new Error('GeoJSONTileSource: style.pointSize must be a non-negative finite number.');
+        }
+
+        if (!Number.isFinite(normalized.lineWidth) || normalized.lineWidth < 0) {
+            throw new Error('GeoJSONTileSource: style.lineWidth must be a non-negative finite number.');
+        }
+
+        normalized.pointColor = normalizeColor(normalized.pointColor, 'GeoJSONTileSource: style.pointColor');
+        normalized.lineColor = normalizeColor(normalized.lineColor, 'GeoJSONTileSource: style.lineColor');
+        normalized.fillColor = normalizeColor(normalized.fillColor, 'GeoJSONTileSource: style.fillColor');
+
+        return normalized;
+    }
+
+    /**
      * Normalize per-tile aggregation options.
      *
      * @param {*} options - Candidate aggregation options.
-     * @returns {GeoJSONTileAggregationOptions} Normalized aggregation options.
+     * @returns {GeoJSONAggregationOptions} Normalized aggregation options.
      * @throws {Error} Thrown when aggregation options are invalid.
      */
     function normalizeAggregationOptions(options) {
         const source = options || {};
+
         const normalized = {
             enabled: source.enabled === true,
             threshold: (source.threshold !== undefined && source.threshold !== null) ? source.threshold : 50,
@@ -774,20 +689,20 @@
             throw new Error('GeoJSONTileSource: aggregation.threshold must be a non-negative finite number.');
         }
 
-        if (!Number.isFinite(normalized.badgeSize) || normalized.badgeSize <= 0) {
-            throw new Error('GeoJSONTileSource: aggregation.badgeSize must be a positive finite number.');
+        if (!Number.isFinite(normalized.badgeSize) || normalized.badgeSize < 0) {
+            throw new Error('GeoJSONTileSource: aggregation.badgeSize must be a non-negative finite number.');
         }
 
-        if (!Number.isFinite(normalized.labelSize) || normalized.labelSize <= 0) {
-            throw new Error('GeoJSONTileSource: aggregation.labelSize must be a positive finite number.');
+        if (!Number.isFinite(normalized.labelSize) || normalized.labelSize < 0) {
+            throw new Error('GeoJSONTileSource: aggregation.labelSize must be a non-negative finite number.');
         }
 
-        if (!Number.isFinite(normalized.labelStrokeWidth) || normalized.labelStrokeWidth <= 0) {
-            throw new Error('GeoJSONTileSource: aggregation.labelStrokeWidth must be a positive finite number.');
+        if (!Number.isFinite(normalized.labelStrokeWidth) || normalized.labelStrokeWidth < 0) {
+            throw new Error('GeoJSONTileSource: aggregation.labelStrokeWidth must be a non-negative finite number.');
         }
 
         if (!Number.isFinite(normalized.maxLabelValue) || normalized.maxLabelValue < 1) {
-            throw new Error('GeoJSONTileSource: aggregation.maxLabelValue must be a positive finite number.');
+            throw new Error('GeoJSONTileSource: aggregation.maxLabelValue must be at least 1.');
         }
 
         normalized.badgeColor = normalizeColor(normalized.badgeColor, 'GeoJSONTileSource: aggregation.badgeColor');
@@ -811,49 +726,7 @@
             throw new Error(`${label} must be [r, g, b, a].`);
         }
 
-        return color.slice();
-    }
-
-    /**
-     * Clone normalized aggregation options.
-     *
-     * @param {GeoJSONTileAggregationOptions} aggregation - Aggregation options.
-     * @returns {GeoJSONTileAggregationOptions} Cloned aggregation options.
-     */
-    function cloneAggregationOptions(aggregation) {
-        return {
-            enabled: aggregation.enabled,
-            threshold: aggregation.threshold,
-            badgeSize: aggregation.badgeSize,
-            badgeColor: aggregation.badgeColor.slice(),
-            labelColor: aggregation.labelColor.slice(),
-            labelSize: aggregation.labelSize,
-            labelStrokeWidth: aggregation.labelStrokeWidth,
-            maxLabelValue: aggregation.maxLabelValue
-        };
-    }
-
-    /**
-     * Return a stable string identity for aggregation-sensitive tile cache keys.
-     *
-     * @param {GeoJSONTileAggregationOptions} aggregation - Aggregation options.
-     * @returns {string} Stable aggregation key.
-     */
-    function getAggregationHash(aggregation) {
-        if (!aggregation.enabled) {
-            return 'aggregation:none';
-        }
-
-        return [
-            'aggregation',
-            aggregation.threshold,
-            aggregation.badgeSize,
-            aggregation.badgeColor.join(','),
-            aggregation.labelColor.join(','),
-            aggregation.labelSize,
-            aggregation.labelStrokeWidth,
-            aggregation.maxLabelValue
-        ].join(':');
+        return color;
     }
 
     /**

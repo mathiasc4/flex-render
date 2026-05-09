@@ -4,21 +4,21 @@
  * Debug-first implementation:
  * - accepts standard GeoJSON Feature, FeatureCollection, raw Geometry, and GeometryCollection objects;
  * - explodes MultiPoint, MultiLineString, MultiPolygon, and GeometryCollection
- *   into simple Point, LineString, and Polygon records before projection;
+ *   into simple Point, LineString, and Polygon records before coordinate normalization;
  * - meshes Point, LineString, and Polygon geometries;
  * - can emit LineString geometries as native gl.LINES payloads;
  * - triangulates Polygon rings with earcut, including holes;
- * - uses a top-level GeoJSON bbox as source bounds when provided by the tile source;
+ * - uses a top-level GeoJSON bbox as the source coordinate extent;
  * - performs geometry bbox filtering before exact per-tile clipping;
  * - optionally aggregates dense non-max-level tiles into one count badge;
  * - emits FlexDrawer-compatible vector-mesh payloads with vec4 vertices.
  *
  * Vertex format:
- *   [x, y, tileDepth, textureId]
+ *   [x, y, depth, textureId]
  *
  * where x/y are normalized tile-local coordinates in [0, 1] when inside the
- * tile, tileDepth follows the MVT worker convention, and textureId is -1 for
- * non-icon geometry.
+ * tile, depth follows the MVT worker convention, and textureId is -1 for
+ * non-textured geometry.
  */
 
 let STATE = {
@@ -29,10 +29,6 @@ let STATE = {
     tileSize: 512,
     minLevel: 0,
     maxLevel: 0,
-    // Currently only "image" is supported. This field is kept in the worker
-    // contract so future projection modes can be added explicitly.
-    projection: 'image',
-    bounds: null,
     bbox: null,
     width: 1,
     height: 1,
@@ -41,32 +37,6 @@ let STATE = {
     aggregation: null
 };
 
-/**
- * Minimum projected geometry count before a spatial index is built.
- *
- * Small sources are usually faster to scan directly because the quadtree has
- * build cost and adds extra traversal during tile generation.
- *
- * @type {number}
- */
-const SPATIAL_INDEX_MIN_GEOMETRIES = 256;
-
-/**
- * Maximum number of geometries stored in one quadtree node before subdivision.
- *
- * @type {number}
- */
-const QUADTREE_NODE_CAPACITY = 32;
-
-/**
- * Maximum quadtree depth.
- *
- * This prevents excessive subdivision for highly clustered or nearly identical
- * bboxes.
- *
- * @type {number}
- */
-const QUADTREE_MAX_DEPTH = 12;
 
 /**
  * Seven-segment glyph definitions used for aggregate tile count labels.
@@ -91,13 +61,21 @@ const SEVEN_SEGMENT_GLYPHS = Object.freeze({
 self.onmessage = function(event) {
     const message = event.data || {};
 
-    if (message.type === 'config') {
-        STATE.configurePromise = configure(message);
-        return;
-    }
+    switch (message.type) {
+        case 'config':
+            STATE.configurePromise = configure(message);
+            break;
 
-    if (message.type === 'tile') {
-        buildTileWhenReady(message);
+        case 'tile':
+            buildTileWhenReady(message);
+            break;
+
+        default:
+            self.postMessage({
+                type: 'error',
+                ok: false,
+                error: `GeoJson worker: unsupported message type ${message.type}`
+            });
     }
 };
 
@@ -114,40 +92,25 @@ async function configure(message) {
             throw new Error('GeoJSON worker: missing earcut library.');
         }
 
-        const projection = message.projection || 'image';
-
-        if (projection !== 'image') {
-            throw new Error(
-                `GeoJSON worker: unsupported projection '${projection}'. ` +
-                'Only image-space coordinates are currently supported.'
-            );
-        }
-
         const data = await fetchGeoJSON(message.url);
-        const bounds = normalizeGeoJSONBBox(message.bounds || message.bbox || data.bbox, 'GeoJSON worker: bounds');
-        const bbox = data.bbox ? normalizeGeoJSONBBox(data.bbox, 'GeoJSON worker: GeoJSON bbox') : null;
-
-        const rawGeometries = parseGeojson(data);
 
         STATE = {
             configured: true,
             configurePromise: null,
             geometries: [],
             spatialIndex: null,
-            width: (message.width !== null && message.width !== undefined) ? message.width : 1,
-            height: (message.height !== null && message.height !== undefined) ? message.height : 1,
-            tileSize: (message.tileSize !== null && message.tileSize !== undefined) ? message.tileSize : 512,
-            minLevel: (message.minLevel !== null && message.minLevel !== undefined) ? message.minLevel : 0,
-            maxLevel: (message.maxLevel !== null && message.maxLevel !== undefined) ? message.maxLevel : 0,
-            projection,
-            bounds,
-            bbox,
-            style: (message.style !== null && message.style !== undefined) ? message.style : {},
+            bbox: message.bbox || data.bbox,
+            width: message.width,
+            height: message.height,
+            tileSize: message.tileSize,
+            minLevel: message.minLevel,
+            maxLevel: message.maxLevel,
+            style: message.style,
             useNativeLines: message.useNativeLines === true,
-            aggregation: normalizeAggregationOptions(message.aggregation)
+            aggregation: message.aggregation
         };
 
-        STATE.geometries = rawGeometries.map(projectGeometry).filter(Boolean);
+        STATE.geometries = parseGeojson(data);
         STATE.spatialIndex = createSpatialIndex(STATE.geometries);
     } catch (error) {
         self.postMessage({
@@ -156,83 +119,6 @@ async function configure(message) {
             error: error.message || String(error)
         });
     }
-}
-
-/**
- * Normalize a GeoJSON bbox to the 2D bounds used by the worker.
- *
- * GeoJSON bbox is [minX, minY, maxX, maxY] for 2D coordinates and
- * [minX, minY, minZ, maxX, maxY, maxZ] for 3D coordinates. The renderer is
- * 2D, so z bounds are ignored.
- *
- * @param {*} bbox - Candidate GeoJSON bbox.
- * @param {string} label - Error label used in validation messages.
- * @returns {number[]} Bounds as [minX, minY, maxX, maxY].
- * @throws {Error} Thrown when bbox cannot define positive 2D dimensions.
- */
-function normalizeGeoJSONBBox(bbox, label) {
-    if (!Array.isArray(bbox) || bbox.length < 4 || bbox.length % 2 !== 0 || !bbox.every(Number.isFinite)) {
-        throw new Error(`${label} must be a GeoJSON bbox array with finite numeric values.`);
-    }
-
-    const dimensions = bbox.length / 2;
-    const minX = bbox[0];
-    const minY = bbox[1];
-    const maxX = bbox[dimensions];
-    const maxY = bbox[dimensions + 1];
-
-    if (minX >= maxX) {
-        throw new Error(`${label} minX must be smaller than maxX.`);
-    }
-
-    if (minY >= maxY) {
-        throw new Error(`${label} minY must be smaller than maxY.`);
-    }
-
-    return [minX, minY, maxX, maxY];
-}
-
-/**
- * Normalize per-tile aggregation options received from the tile source.
- *
- * @param {*} options - Candidate aggregation options.
- * @returns {object} Normalized aggregation options.
- */
-function normalizeAggregationOptions(options) {
-    const source = options || {};
-
-    return {
-        enabled: source.enabled === true,
-        threshold: Math.max(0, Math.floor((source.threshold !== undefined && source.threshold !== null) ? source.threshold : 50)),
-        badgeSize: positiveNumberOrDefault(source.badgeSize, 56),
-        badgeColor: colorOrDefault(source.badgeColor, [1, 0.65, 0.1, 0.85]),
-        labelColor: colorOrDefault(source.labelColor, [0, 0, 0, 1]),
-        labelSize: positiveNumberOrDefault(source.labelSize, 24),
-        labelStrokeWidth: positiveNumberOrDefault(source.labelStrokeWidth, 3),
-        maxLabelValue: Math.max(1, Math.floor((source.maxLabelValue !== undefined && source.maxLabelValue !== null) ? source.maxLabelValue : 9999))
-    };
-}
-
-/**
- * Return a positive finite number or a fallback.
- *
- * @param {*} value - Candidate number.
- * @param {number} fallback - Fallback value.
- * @returns {number} Positive finite number.
- */
-function positiveNumberOrDefault(value, fallback) {
-    return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-/**
- * Return an RGBA color or a fallback.
- *
- * @param {*} value - Candidate color.
- * @param {number[]} fallback - Fallback color.
- * @returns {number[]} Color as [r, g, b, a].
- */
-function colorOrDefault(value, fallback) {
-    return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite) ? value.slice() : fallback.slice();
 }
 
 
@@ -255,6 +141,7 @@ async function fetchGeoJSON(url) {
     return response.json();
 }
 
+
 const GEOMETRY_TYPES = new Set([
     "Point",
     "MultiPoint",
@@ -264,6 +151,15 @@ const GEOMETRY_TYPES = new Set([
     "MultiPolygon",
     "GeometryCollection"
 ]);
+
+/**
+ * @typedef {object} SimpleGeoJSONGeometry
+ * @property {'Point'|'LineString'|'Polygon'} type - Simple geometry type.
+ * @property {*} coordinates - Geometry coordinates in full-resolution image coordinates.
+ * @property {number[]} bbox - The geometry's bbox in full-resolution image coordinates.
+ * @property {object|null|undefined} properties - Feature properties.
+ * @property {string|number|undefined} id - Feature id.
+ */
 
 /**
  * Extract simple GeoJSON geometry records from a GeoJSON object.
@@ -278,7 +174,7 @@ const GEOMETRY_TYPES = new Set([
  * - a simple geometry type or a GeometryCollection
  *
  * @param {object} geojson - GeoJSON object.
- * @returns {object[]} Simple geometry records.
+ * @returns {SimpleGeoJSONGeometry[]} Simple geometry records.
  * @throws {Error} Thrown when geojson is not a valid GeoJSON object.
  */
 function parseGeojson(geojson) {
@@ -305,7 +201,7 @@ function parseGeojson(geojson) {
  * Parse a standard GeoJSON FeatureCollection.
  *
  * @param {object} collection - FeatureCollection object.
- * @returns {object[]} Simple geometry records.
+ * @returns {SimpleGeoJSONGeometry[]} Simple geometry records.
  * @throws {Error} Thrown when collection is not a valid GeoJSON FeatureCollection.
  */
 function parseFeatureCollection(collection) {
@@ -328,7 +224,7 @@ function parseFeatureCollection(collection) {
  * Parse a standard GeoJSON Feature.
  *
  * @param {object} feature - Feature object.
- * @returns {object[]} Simple feature records.
+ * @returns {SimpleGeoJSONGeometry[]} Simple feature records.
  * @throws {Error} Thrown when feature is not a valid GeoJSON Feature.
  */
 function parseFeature(feature) {
@@ -363,7 +259,7 @@ function parseFeature(feature) {
  * @param {object} geometry - GeoJSON geometry.
  * @param {object|null|undefined} properties - Feature properties.
  * @param {string|number|undefined} id - Feature id.
- * @returns {object[]} Internal simple geometry records.
+ * @returns {SimpleGeoJSONGeometry[]} Internal simple geometry records.
  * @throws {Error} Thrown when geometry is not a valid GeoJSON geometry object.
  */
 function parseGeometry(geometry, properties = undefined, id = undefined) {
@@ -374,15 +270,15 @@ function parseGeometry(geometry, properties = undefined, id = undefined) {
     switch (geometry.type) {
         case 'Point':
             validatePointCoordinates(geometry.coordinates);
-            return [ createGeometryRecord('Point', geometry.coordinates, properties, id) ];
+            return [ createGeometryRecord('Point', geometry.coordinates, properties, id) ].filter(Boolean);
 
         case 'LineString':
             validateLineStringCoordinates(geometry.coordinates);
-            return [ createGeometryRecord('LineString', geometry.coordinates, properties, id) ];
+            return [ createGeometryRecord('LineString', geometry.coordinates, properties, id) ].filter(Boolean);
 
         case 'Polygon':
             validatePolygonCoordinates(geometry.coordinates);
-            return [ createGeometryRecord('Polygon', geometry.coordinates, properties, id) ];
+            return [ createGeometryRecord('Polygon', geometry.coordinates, properties, id) ].filter(Boolean);
 
         case 'MultiPoint':
             if (!Array.isArray(geometry.coordinates)) {
@@ -391,7 +287,7 @@ function parseGeometry(geometry, properties = undefined, id = undefined) {
 
             geometry.coordinates.forEach(validatePointCoordinates);
 
-            return geometry.coordinates.map(coordinate => createGeometryRecord('Point', coordinate, properties, id));
+            return geometry.coordinates.map(coordinate => createGeometryRecord('Point', coordinate, properties, id)).filter(Boolean);
 
         case 'MultiLineString':
             if (!Array.isArray(geometry.coordinates)) {
@@ -400,7 +296,7 @@ function parseGeometry(geometry, properties = undefined, id = undefined) {
 
             geometry.coordinates.forEach(validateLineStringCoordinates);
 
-            return geometry.coordinates.map(line => createGeometryRecord('LineString', line, properties, id));
+            return geometry.coordinates.map(line => createGeometryRecord('LineString', line, properties, id)).filter(Boolean);
 
         case 'MultiPolygon':
             if (!Array.isArray(geometry.coordinates)) {
@@ -409,14 +305,14 @@ function parseGeometry(geometry, properties = undefined, id = undefined) {
 
             geometry.coordinates.forEach(validatePolygonCoordinates);
 
-            return geometry.coordinates.map(polygon => createGeometryRecord('Polygon', polygon, properties, id));
+            return geometry.coordinates.map(polygon => createGeometryRecord('Polygon', polygon, properties, id)).filter(Boolean);
 
         case 'GeometryCollection':
             if (!Array.isArray(geometry.geometries)) {
                 throw new Error('GeoJSON worker: GeometryCollection.geometries must be an array of geometry objects.');
             }
 
-            return geometry.geometries.flatMap(child => parseGeometry(child, properties, id));
+            return geometry.geometries.flatMap(child => parseGeometry(child, properties, id)).filter(Boolean);
 
         default:
             throw new Error('GeoJSON worker: unsupported or missing GeoJSON geometry type.');
@@ -435,7 +331,7 @@ function parseGeometry(geometry, properties = undefined, id = undefined) {
  * @throws {Error} Thrown when coordinates are not valid GeoJSON Point coordinates.
  */
 function validatePointCoordinates(coordinates) {
-    if (!isPosition(coordinates)) {
+    if (!isCoordinates(coordinates)) {
         throw new Error('GeoJSON worker: Point.coordinates must be a GeoJSON position: an array of at least two finite numbers.');
     }
 }
@@ -451,7 +347,7 @@ function validatePointCoordinates(coordinates) {
  * @throws {Error} Thrown when coordinates are not valid GeoJSON LineString coordinates.
  */
 function validateLineStringCoordinates(coordinates) {
-    if (!Array.isArray(coordinates) || coordinates.length < 2 || !coordinates.every(isPosition)) {
+    if (!Array.isArray(coordinates) || coordinates.length < 2 || !coordinates.every(isCoordinates)) {
         throw new Error('GeoJSON worker: LineString.coordinates must be an array containing at least two GeoJSON positions.');
     }
 }
@@ -471,6 +367,112 @@ function validatePolygonCoordinates(coordinates) {
     }
 }
 
+/**
+ * Create one simple internal geometry record in full-resolution image coordinates.
+ *
+ * The geometry record's coordinates are projected into full-resolution image space
+ * and the bbox is calculated to save on extra processing time.
+ *
+ * @param {'Point'|'LineString'|'Polygon'} type - Simple geometry type.
+ * @param {*} coordinates - Geometry coordinates.
+ * @param {object|null|undefined} properties - Feature properties.
+ * @param {string|number|undefined} id - Feature id.
+ * @returns {SimpleGeoJSONGeometry|null} Internal geometry record.
+ */
+function createGeometryRecord(type, coordinates, properties, id) {
+    switch (type) {
+        case 'Point':
+            coordinates = projectCoordinates(coordinates);
+            break;
+        case 'LineString':
+            coordinates = coordinates.map(projectCoordinates);
+            break;
+        case 'Polygon':
+            coordinates = coordinates.map(ring => ring.map(projectCoordinates));
+            break;
+        default:
+            return null;
+    }
+
+    const bbox = computeImageSpaceBbox(coordinates);
+
+    return {
+        type,
+        coordinates,
+        bbox,
+        properties,
+        id
+    };
+}
+
+/**
+ * Convert one source coordinates into full-resolution image coordinates.
+ *
+ * Source coordinates are linearly mapped from the GeoJSON bbox into the
+ * tile source width and height. With bbox [0, 0, width, height], coordinates
+ * are preserved. With explicit width and height, the bbox coordinates range is
+ * rescaled into those destination dimensions.
+ *
+ * @param {number[]} coordinates - Raw source coordinates.
+ * @returns {number[]} Image coordinates.
+ */
+function projectCoordinates(coordinates) {
+    // GeoJSON coordinates may contain z or other extra dimensions. Rendering is 2D.
+    const [x, y] = coordinates;
+    const [minX, minY, maxX, maxY] = STATE.bbox;
+
+    const u = (x - minX) / (maxX - minX);
+    const v = (y - minY) / (maxY - minY);
+
+    return [
+        u * STATE.width,
+        v * STATE.height
+    ];
+}
+
+/**
+ * Compute image-space bbox for coordinates.
+ *
+ * @param {*} coordinates - Point, line, or polygon coordinates.
+ * @returns {number[]} Bbox as [minX, minY, maxX, maxY].
+ */
+function computeImageSpaceBbox(coordinates) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    forEachCoordinates(coordinates, (coordinate) => {
+        minX = Math.min(minX, coordinate[0]);
+        minY = Math.min(minY, coordinate[1]);
+        maxX = Math.max(maxX, coordinate[0]);
+        maxY = Math.max(maxY, coordinate[1]);
+    });
+
+    return [minX, minY, maxX, maxY];
+}
+
+/**
+ * Visit every coordinates in a supported coordinates structure.
+ *
+ * @param {*} coordinates - Coordinates structure.
+ * @param {function(number[]): void} visitor - Coordinates visitor.
+ * @returns {void}
+ */
+function forEachCoordinates(coordinates, visitor) {
+    if (!Array.isArray(coordinates)) {
+        return;
+    }
+
+    if (isCoordinates(coordinates)) {
+        visitor(coordinates);
+        return;
+    }
+
+    for (const child of coordinates) {
+        forEachCoordinates(child, visitor);
+    }
+}
 
 /**
  * Test whether a value is a valid GeoJSON linear ring.
@@ -483,7 +485,7 @@ function validatePolygonCoordinates(coordinates) {
  * @returns {boolean} True when coordinates form a valid linear ring.
  */
 function isLinearRing(coordinates) {
-    if (Array.isArray(coordinates) && coordinates.length >= 4 && coordinates.every(isPosition)) {
+    if (Array.isArray(coordinates) && coordinates.length >= 4 && coordinates.every(isCoordinates)) {
         const first = coordinates[0];
         const last = coordinates[coordinates.length - 1];
 
@@ -503,151 +505,45 @@ function isLinearRing(coordinates) {
  * @param {*} coordinate - Candidate position.
  * @returns {boolean} True when coordinate is a valid position.
  */
-function isPosition(coordinate) {
+function isCoordinates(coordinate) {
     return Array.isArray(coordinate) && coordinate.length >= 2 && coordinate.every(Number.isFinite);
 }
 
-/**
- * Create one simple internal geometry record.
- *
- * @param {'Point'|'LineString'|'Polygon'} type - Simple geometry type.
- * @param {*} coordinates - Geometry coordinates.
- * @param {object|null|undefined} properties - Feature properties.
- * @param {string|number|undefined} id - Feature id.
- * @returns {object} Internal geometry record.
- */
-function createGeometryRecord(type, coordinates, properties, id) {
-    return {
-        type,
-        coordinates,
-        properties,
-        id
-    };
-}
-
 
 /**
- * Project one raw geometry into full-resolution image coordinates.
+ * Minimum projected geometry count before a spatial index is built.
  *
- * @param {object} geometry - Raw geometry.
- * @returns {?object} Projected geometry.
+ * Small sources are usually faster to scan directly because the quadtree has
+ * build cost and adds extra traversal during tile generation.
+ *
+ * @type {number}
  */
-function projectGeometry(geometry) {
-    let coordinates;
-
-    switch (geometry.type) {
-        case 'Point':
-            coordinates = projectCoordinate(geometry.coordinates);
-            break;
-        case 'LineString':
-            coordinates = geometry.coordinates.map(projectCoordinate);
-            break;
-        case 'Polygon':
-            coordinates = geometry.coordinates.map(ring => ring.map(projectCoordinate));
-            break;
-        default:
-            return null;
-    }
-
-    const bbox = computeImageBounds(coordinates);
-    if (!isFiniteBounds(bbox)) {
-        return null;
-    }
-
-    return {
-        type: geometry.type,
-        coordinates,
-        bbox,
-        properties: geometry.properties,
-        id: geometry.id
-    };
-}
+const SPATIAL_INDEX_MIN_GEOMETRIES = 256;
 
 /**
- * Convert one source coordinate into full-resolution image coordinates.
+ * Maximum number of geometries stored in one quadtree node before subdivision.
  *
- * The current implementation supports image-space coordinates only. With the
- * default bounds [0, 0, width, height], this preserves existing pathology
- * annotation coordinates.
- *
- * Projection is kept in STATE as part of the worker configuration contract so
- * future projection modes can be added explicitly. Do not add implicit behavior
- * here for unsupported projections.
- *
- * TODO: Add explicit projection handling here if future use cases need
- * longitude/latitude, Web Mercator, or other non-image coordinate systems.
- *
- * @param {number[]} coordinate - Raw source coordinate.
- * @returns {number[]} Image coordinate.
+ * @type {number}
  */
-function projectCoordinate(coordinate) {
-    // GeoJSON coordinates may contain z or other extra dimensions. Rendering is 2D.
-    const [x, y] = coordinate;
-    const [minX, minY, maxX, maxY] = STATE.bounds;
-
-    const u = (x - minX) / (maxX - minX);
-    const v = (y - minY) / (maxY - minY);
-
-    return [
-        u * STATE.width,
-        v * STATE.height
-    ];
-}
+const QUADTREE_NODE_CAPACITY = 32;
 
 /**
- * Test whether bounds contain finite values.
+ * Maximum quadtree depth.
  *
- * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
- * @returns {boolean} True when all values are finite and ordered.
+ * This prevents excessive subdivision for highly clustered or nearly identical
+ * bboxes.
+ *
+ * @type {number}
  */
-function isFiniteBounds(bounds) {
-    return Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[0] <= bounds[2] && bounds[1] <= bounds[3];
-}
+const QUADTREE_MAX_DEPTH = 16;
 
 /**
- * Compute image-space bounds for coordinates.
- *
- * @param {*} coordinates - Point, line, or polygon coordinates.
- * @returns {number[]} Bounds as [minX, minY, maxX, maxY].
+ * @typedef {object} QuadtreeNode
+ * @property {number} depth - The depth of the quadtree node.
+ * @property {number[]} bounds - The bounds of the quadtree node as [minX, minY, maxX, maxY].
+ * @property {SimpleGeoJSONGeometry[]} geometries - The geometries assigned to this node.
+ * @property {QuadtreeNode[]|null} children - The children nodes of this node or null if it is a leaf node.
  */
-function computeImageBounds(coordinates) {
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-
-    forEachCoordinate(coordinates, (coordinate) => {
-        minX = Math.min(minX, coordinate[0]);
-        minY = Math.min(minY, coordinate[1]);
-        maxX = Math.max(maxX, coordinate[0]);
-        maxY = Math.max(maxY, coordinate[1]);
-    });
-
-    return [minX, minY, maxX, maxY];
-}
-
-/**
- * Visit every coordinate in a supported coordinate structure.
- *
- * @param {*} coordinates - Coordinate structure.
- * @param {function(number[]): void} visitor - Coordinate visitor.
- * @returns {void}
- */
-function forEachCoordinate(coordinates, visitor) {
-    if (!Array.isArray(coordinates)) {
-        return;
-    }
-
-    if (typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
-        visitor(coordinates);
-        return;
-    }
-
-    for (const child of coordinates) {
-        forEachCoordinate(child, visitor);
-    }
-}
-
 
 /**
  * Create a static quadtree spatial index for projected geometries.
@@ -657,8 +553,8 @@ function forEachCoordinate(coordinates, visitor) {
  * conservative: a geometry is pushed into a child only when its bbox is fully
  * contained by that child; otherwise it remains in the current node.
  *
- * @param {object[]} geometries - Projected geometry records.
- * @returns {?object} Quadtree root node, or null when direct scanning is preferable.
+ * @param {SimpleGeoJSONGeometry[]} geometries - Projected geometry records.
+ * @returns {QuadtreeNode|null} Quadtree root node, or null when direct scanning is preferable.
  */
 function createSpatialIndex(geometries) {
     if (!Array.isArray(geometries) || geometries.length < SPATIAL_INDEX_MIN_GEOMETRIES) {
@@ -679,7 +575,7 @@ function createSpatialIndex(geometries) {
  *
  * @param {number[]} bounds - Node bounds as [minX, minY, maxX, maxY].
  * @param {number} depth - Node depth.
- * @returns {{bounds: number[], depth: number, geometries: object[], children: ?object[]}} Quadtree node.
+ * @returns {QuadtreeNode} Quadtree node.
  */
 function createQuadtreeNode(bounds, depth) {
     return {
@@ -693,8 +589,8 @@ function createQuadtreeNode(bounds, depth) {
 /**
  * Insert one geometry into a quadtree node.
  *
- * @param {object} node - Quadtree node.
- * @param {object} geometry - Projected geometry record.
+ * @param {QuadtreeNode} node - Quadtree node.
+ * @param {SimpleGeoJSONGeometry} geometry - Projected geometry record.
  * @returns {void}
  */
 function insertIntoQuadtree(node, geometry) {
@@ -721,7 +617,7 @@ function insertIntoQuadtree(node, geometry) {
  * parent node. This avoids duplicating large lines and polygons across many
  * descendants.
  *
- * @param {object} node - Quadtree node.
+ * @param {QuadtreeNode} node - Quadtree node.
  * @returns {void}
  */
 function subdivideQuadtreeNode(node) {
@@ -765,7 +661,7 @@ function subdivideQuadtreeNode(node) {
  *
  * @param {object[]} children - Quadtree child nodes.
  * @param {number[]} bbox - Geometry bbox as [minX, minY, maxX, maxY].
- * @returns {?object} Containing child node, or null when no single child contains the bbox.
+ * @returns {QuadtreeNode|null} Containing child node, or null when no single child contains the bbox.
  */
 function findContainingChild(children, bbox) {
     for (const child of children) {
@@ -778,13 +674,24 @@ function findContainingChild(children, bbox) {
 }
 
 /**
+ * Test whether outer bounds fully contain inner bounds.
+ *
+ * @param {number[]} outer - Outer bounds as [minX, minY, maxX, maxY].
+ * @param {number[]} inner - Inner bounds as [minX, minY, maxX, maxY].
+ * @returns {boolean} True when inner is fully inside outer.
+ */
+function containsBounds(outer, inner) {
+    return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
+}
+
+/**
  * Return candidate geometries for a tile.
  *
  * If no spatial index is available, this returns the full geometry list and
  * preserves the previous direct-scan behavior.
  *
  * @param {number[]} tileBounds - Tile image-space bounds.
- * @returns {object[]} Candidate geometry records.
+ * @returns {SimpleGeoJSONGeometry[]} Candidate geometry records.
  */
 function getTileCandidateGeometries(tileBounds) {
     if (!STATE.spatialIndex) {
@@ -798,47 +705,29 @@ function getTileCandidateGeometries(tileBounds) {
 }
 
 /**
- * Query a quadtree node for geometries whose node may intersect the query.
+ * Query a quadtree node for geometries whose quadtree may intersect the query.
  *
- * This function intentionally does not test each geometry bbox. buildTile()
- * still performs the existing geometry-level intersects() check so candidate
- * filtering stays centralized and behavior remains unchanged.
- *
- * @param {object} node - Quadtree node.
- * @param {number[]} queryBounds - Query bounds as [minX, minY, maxX, maxY].
- * @param {object[]} results - Mutable result list.
+ * @param {object} quadtree - Quadtree to query.
+ * @param {number[]} bbox - Query bounds as [minX, minY, maxX, maxY].
+ * @param {SimpleGeoJSONGeometry[]} results - Mutable result list.
  * @returns {void}
  */
-function queryQuadtree(node, queryBounds, results) {
-    if (!intersects(node.bounds, queryBounds)) {
+function queryQuadtree(quadtree, bbox, results) {
+    if (!intersects(bbox, quadtree.bounds)) {
         return;
     }
 
-    for (const geometry of node.geometries) {
+    for (const geometry of quadtree.geometries) {
         results.push(geometry);
     }
 
-    if (!node.children) {
+    if (!quadtree.children) {
         return;
     }
 
-    for (const child of node.children) {
-        queryQuadtree(child, queryBounds, results);
+    for (const child of quadtree.children) {
+        queryQuadtree(child, bbox, results);
     }
-}
-
-/**
- * Test whether outer bounds fully contain inner bounds.
- *
- * @param {number[]} outer - Outer bounds as [minX, minY, maxX, maxY].
- * @param {number[]} inner - Inner bounds as [minX, minY, maxX, maxY].
- * @returns {boolean} True when inner is fully inside outer.
- */
-function containsBounds(outer, inner) {
-    return inner[0] >= outer[0] &&
-        inner[1] >= outer[1] &&
-        inner[2] <= outer[2] &&
-        inner[3] <= outer[3];
 }
 
 
@@ -862,31 +751,6 @@ function getTileImageBounds(level, x, y) {
         rect.top / scale,
         rect.right / scale,
         rect.bottom / scale
-    ];
-}
-
-/**
- * Return the OpenSeadragon pyramid scale for a level.
- *
- * @param {number} level - OSD level.
- * @returns {number} Level scale.
- */
-function getLevelScale(level) {
-    return 1 / Math.pow(2, STATE.maxLevel - level);
-}
-
-/**
- * Return the image dimensions at one pyramid level.
- *
- * @param {number} level - OSD level.
- * @returns {number[]} Level dimensions as [width, height].
- */
-function getLevelDimensions(level) {
-    const scale = getLevelScale(level);
-
-    return [
-        Math.max(1, Math.ceil(STATE.width * scale)),
-        Math.max(1, Math.ceil(STATE.height * scale))
     ];
 }
 
@@ -916,6 +780,31 @@ function getTileLevelRect(level, x, y) {
         width: Math.max(1, right - left),
         height: Math.max(1, bottom - top)
     };
+}
+
+/**
+ * Return the image dimensions at one pyramid level.
+ *
+ * @param {number} level - OSD level.
+ * @returns {number[]} Level dimensions as [width, height].
+ */
+function getLevelDimensions(level) {
+    const scale = getLevelScale(level);
+
+    return [
+        Math.max(1, Math.ceil(STATE.width * scale)),
+        Math.max(1, Math.ceil(STATE.height * scale))
+    ];
+}
+
+/**
+ * Return the OpenSeadragon pyramid scale for a level.
+ *
+ * @param {number} level - OSD level.
+ * @returns {number} Level scale.
+ */
+function getLevelScale(level) {
+    return 1 / Math.pow(2, STATE.maxLevel - level);
 }
 
 /**
@@ -949,10 +838,7 @@ function intersects(a, b) {
  * @returns {boolean} True when the point is inside or on the bounds edge.
  */
 function pointInBounds(point, bounds) {
-    return point[0] >= bounds[0] &&
-        point[0] <= bounds[2] &&
-        point[1] >= bounds[1] &&
-        point[1] <= bounds[3];
+    return point[0] >= bounds[0] && point[0] <= bounds[2] && point[1] >= bounds[1] && point[1] <= bounds[3];
 }
 
 /**
@@ -1260,7 +1146,7 @@ async function buildTileWhenReady(message) {
         }
 
         if (!STATE.configured) {
-            throw new Error('GeoJSON worker: received tile request before configuration.');
+            throw new Error('GeoJSON worker: received tile request before valid configuration.');
         }
 
         buildTile(message);
@@ -1282,32 +1168,30 @@ async function buildTileWhenReady(message) {
  */
 function buildTile(tile) {
     const tileBounds = getTileImageBounds(tile.level, tile.x, tile.y);
-    const tileDepth = getTileDepth(tile.level, tile.x, tile.y);
+    const depth = getTileDepth(tile.level, tile.x, tile.y);
 
-    const fills = [];
-    const lines = [];
-    const linePrimitives = [];
-    const points = [];
+    const output = {
+        fills: [],
+        lines: [],
+        linePrimitives: [],
+        points: []
+    };
 
     const transfers = [];
+
     const visibleGeometries = getVisibleTileGeometries(tileBounds);
 
     if (shouldAggregateTile(tile, visibleGeometries.length)) {
-        buildAggregateTile(tile, tileBounds, tileDepth, visibleGeometries.length, fills, lines, linePrimitives, transfers);
+        buildAggregateTile(tile, depth, visibleGeometries.length, output, transfers);
     } else {
-        buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, linePrimitives, points, transfers);
+        buildGeometryTile(tile, depth, visibleGeometries, output, transfers);
     }
 
     self.postMessage({
         type: 'tile',
         key: tile.key,
         ok: true,
-        data: {
-            fills,
-            lines,
-            linePrimitives,
-            points
-        }
+        data: output
     }, transfers);
 }
 
@@ -1319,7 +1203,7 @@ function buildTile(tile) {
  * previous direct rendering path.
  *
  * @param {number[]} tileBounds - Tile image-space bounds.
- * @returns {object[]} Visible tile geometry records.
+ * @returns {object[]} Array of objects containing the full visible geometries and their clipped variants.
  */
 function getVisibleTileGeometries(tileBounds) {
     const visible = [];
@@ -1381,44 +1265,46 @@ function getVisibleTileGeometries(tileBounds) {
  * @returns {boolean} True when the tile should be aggregated.
  */
 function shouldAggregateTile(tile, count) {
-    return !!(
-        STATE.aggregation &&
-        STATE.aggregation.enabled &&
-        tile.level < STATE.maxLevel &&
-        count > STATE.aggregation.threshold
-    );
+    return !!(STATE.aggregation && STATE.aggregation.enabled && tile.level < STATE.maxLevel && count > STATE.aggregation.threshold);
 }
 
 /**
  * Build normal annotation meshes for a tile.
  *
  * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
- * @param {object[]} visibleGeometries - Visible tile geometry records.
- * @param {object[]} fills - Fill mesh output.
- * @param {object[]} lines - Line mesh output.
- * @param {object[]} linePrimitives - Native line primitive output.
- * @param {object[]} points - Point mesh output.
+ * @param {number} depth - Depth value.
+ * @param {object[]} visibleGeometries - Array of objects containing the full visible geometries and their clipped variants.
+ * @param {object} output - Mesh output object.
  * @param {ArrayBuffer[]} transfers - Transferable buffers.
  * @returns {void}
  */
-function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, linePrimitives, points, transfers) {
+function buildGeometryTile(tile, depth, visibleGeometries, output, transfers) {
     for (const item of visibleGeometries) {
         const geometry = item.geometry;
 
-        if (geometry.type === 'Point') {
-            const mesh = makePointMesh(geometry.coordinates, tile, tileDepth);
-            pushMesh(points, transfers, mesh);
-        } else if (geometry.type === 'LineString') {
-            const target = STATE.useNativeLines ? linePrimitives : lines;
-
-            for (const clippedLine of item.clippedLines) {
-                const mesh = makeLineMesh(clippedLine, tile, tileDepth);
-                pushMesh(target, transfers, mesh);
+        switch (geometry.type) {
+            case 'Point': {
+                const mesh = makePointMesh(geometry.coordinates, tile, depth, STATE.style.pointSize, STATE.style.pointColor);
+                pushMesh(output.points, transfers, mesh);
+                break;
             }
-        } else if (geometry.type === 'Polygon') {
-            const mesh = makePolygonMesh(item.clippedPolygon, tile, tileDepth);
-            pushMesh(fills, transfers, mesh);
+
+            case 'LineString': {
+                const target = STATE.useNativeLines ? output.linePrimitives : output.lines;
+
+                for (const clippedLine of item.clippedLines) {
+                    const mesh = makeLineMesh(clippedLine, tile, depth, STATE.style.lineWidth, STATE.style.lineColor);
+                    pushMesh(target, transfers, mesh);
+                }
+
+                break;
+            }
+
+            case 'Polygon': {
+                const mesh = makePolygonMesh(item.clippedPolygon, tile, depth, STATE.style.fillColor);
+                pushMesh(output.fills, transfers, mesh);
+                break;
+            }
         }
     }
 }
@@ -1427,82 +1313,42 @@ function buildGeometryTile(tile, tileDepth, visibleGeometries, fills, lines, lin
  * Build one aggregate badge tile.
  *
  * @param {object} tile - Tile request.
- * @param {number[]} tileBounds - Tile image-space bounds.
- * @param {number} tileDepth - Packed tile-depth value.
- * @param {number} count - Visible annotation count.
- * @param {object[]} fills - Fill mesh output.
- * @param {object[]} lines - Stroke-triangle line mesh output.
- * @param {object[]} linePrimitives - Native line primitive output.
+ * @param {number} depth - Depth value.
+ * @param {number} count - Visible geometry count.
+ * @param {object} output - Mesh output object.
  * @param {ArrayBuffer[]} transfers - Transferable buffers.
  * @returns {void}
  */
-function buildAggregateTile(tile, tileBounds, tileDepth, count, fills, lines, linePrimitives, transfers) {
-    const center = getBoundsCenter(tileBounds);
-    const badgeMesh = makeAggregateBadgeMesh(center, tile, tileDepth, count);
+function buildAggregateTile(tile, depth, count, output, transfers) {
+    const tileBounds = getTileImageBounds(tile.level, tile.x, tile.y);
+    const center = [ (tileBounds[0] + tileBounds[2]) / 2, (tileBounds[1] + tileBounds[3]) / 2 ];
+    const badgeMesh = makeAggregateBadgeMesh(center, tile, depth, count);
 
-    pushMesh(fills, transfers, badgeMesh);
+    pushMesh(output.fills, transfers, badgeMesh);
 
-    const labelTarget = STATE.useNativeLines ? linePrimitives : lines;
+    const labelTarget = STATE.useNativeLines ? output.linePrimitives : output.lines;
 
-    for (const labelMesh of makeAggregateLabelMeshes(center, tile, tileDepth, count)) {
+    for (const labelMesh of makeAggregateLabelMeshes(center, tile, depth, count)) {
         pushMesh(labelTarget, transfers, labelMesh);
     }
 }
 
-/**
- * Push a mesh and its transferable buffers into tile output arrays.
- *
- * @param {object[]} target - Mesh target array.
- * @param {ArrayBuffer[]} transfers - Transferable buffers.
- * @param {?object} mesh - Mesh to push.
- * @returns {void}
- */
-function pushMesh(target, transfers, mesh) {
-    if (!mesh) {
-        return;
-    }
-
-    target.push(mesh);
-    transfers.push(mesh.vertices, mesh.indices);
-
-    if (mesh.parameters) {
-        transfers.push(mesh.parameters);
-    }
-}
-
-/**
- * Return the center of image-space bounds.
- *
- * @param {number[]} bounds - Bounds as [minX, minY, maxX, maxY].
- * @returns {number[]} Center point.
- */
-function getBoundsCenter(bounds) {
-    return [
-        (bounds[0] + bounds[2]) / 2,
-        (bounds[1] + bounds[3]) / 2
-    ];
-}
 
 /**
  * Create a filled octagonal aggregate badge mesh.
  *
- * The count is also stored as mesh parameters so future renderer or picking
- * paths can inspect the exact aggregate count even when the visible label is
- * capped.
- *
  * @param {number[]} center - Badge center in image coordinates.
  * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
- * @param {number} count - Visible annotation count.
+ * @param {number} depth - Depth value.
  * @returns {object} Mesh object.
  */
-function makeAggregateBadgeMesh(center, tile, tileDepth, count) {
+function makeAggregateBadgeMesh(center, tile, depth) {
     const [x, y] = imageToTileUv(center, tile);
     const rect = getTileLevelRect(tile.level, tile.x, tile.y);
     const radiusX = (STATE.aggregation.badgeSize / 2) / rect.width;
     const radiusY = (STATE.aggregation.badgeSize / 2) / rect.height;
     const vertices = [
-        x, y, tileDepth, -1
+        x, y, depth, -1
     ];
     const indices = [];
     const sides = 8;
@@ -1513,7 +1359,7 @@ function makeAggregateBadgeMesh(center, tile, tileDepth, count) {
         vertices.push(
             x + Math.cos(angle) * radiusX,
             y + Math.sin(angle) * radiusY,
-            tileDepth,
+            depth,
             -1
         );
     }
@@ -1522,7 +1368,7 @@ function makeAggregateBadgeMesh(center, tile, tileDepth, count) {
         indices.push(0, i, i === sides ? 1 : i + 1);
     }
 
-    return makeMesh(vertices, indices, STATE.aggregation.badgeColor, [count]);
+    return makeMesh(vertices, indices, STATE.aggregation.badgeColor);
 }
 
 /**
@@ -1530,12 +1376,12 @@ function makeAggregateBadgeMesh(center, tile, tileDepth, count) {
  *
  * @param {number[]} center - Label center in image coordinates.
  * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} depth - Depth value.
  * @param {number} count - Visible annotation count.
  * @returns {object[]} Label line meshes.
  */
-function makeAggregateLabelMeshes(center, tile, tileDepth, count) {
-    const label = formatAggregateLabel(count);
+function makeAggregateLabelMeshes(center, tile, depth, count) {
+    const label = count > STATE.aggregation.maxLabelValue ? `${STATE.aggregation.maxLabelValue}+` : String(count);
     const scale = getLevelScale(tile.level);
     const height = STATE.aggregation.labelSize / scale;
     const width = height * 0.55;
@@ -1552,10 +1398,10 @@ function makeAggregateLabelMeshes(center, tile, tileDepth, count) {
         ];
 
         for (const segment of getGlyphSegments(character, glyphCenter, width, height)) {
-            const mesh = makeLineMeshWithStyle(
+            const mesh = makeLineMesh(
                 segment,
                 tile,
-                tileDepth,
+                depth,
                 STATE.aggregation.labelStrokeWidth,
                 STATE.aggregation.labelColor
             );
@@ -1567,20 +1413,6 @@ function makeAggregateLabelMeshes(center, tile, tileDepth, count) {
     }
 
     return meshes;
-}
-
-/**
- * Format an aggregate count label.
- *
- * @param {number} count - Visible annotation count.
- * @returns {string} Label text.
- */
-function formatAggregateLabel(count) {
-    if (count > STATE.aggregation.maxLabelValue) {
-        return `${STATE.aggregation.maxLabelValue}+`;
-    }
-
-    return String(count);
 }
 
 /**
@@ -1628,46 +1460,31 @@ function getGlyphSegments(character, center, width, height) {
     return segments.map(segment => segmentCoordinates[segment]);
 }
 
+
 /**
  * Create a square point marker mesh.
  *
  * @param {number[]} coordinate - Image coordinate.
  * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} depth - Depth value.
+ * @param {number} pointSize - Line width in level pixels.
+ * @param {number[]} color - RGBA color.
  * @returns {?object} Mesh object.
  */
-function makePointMesh(coordinate, tile, tileDepth) {
+function makePointMesh(coordinate, tile, depth, pointSize, color) {
     const [x, y] = imageToTileUv(coordinate, tile);
-    const size = tilePixelSizeToUv((STATE.style.pointSize !== undefined && STATE.style.pointSize !== null) ? STATE.style.pointSize : 12, tile);
+    const size = tilePixelSizeToUv(pointSize, tile);
     const half = size / 2;
 
     return makeMesh(
         [
-            x - half, y - half, tileDepth, -1,
-            x + half, y - half, tileDepth, -1,
-            x + half, y + half, tileDepth, -1,
-            x - half, y + half, tileDepth, -1
+            x - half, y - half, depth, -1,
+            x + half, y - half, depth, -1,
+            x + half, y + half, depth, -1,
+            x - half, y + half, depth, -1
         ],
         [0, 1, 2, 0, 2, 3],
-        STATE.style.pointColor || [1, 0.2, 0.1, 1]
-    );
-}
-
-/**
- * Create simple rectangular segment meshes for a line.
- *
- * @param {number[][]} coordinates - Image coordinates.
- * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
- * @returns {?object} Mesh object.
- */
-function makeLineMesh(coordinates, tile, tileDepth) {
-    return makeLineMeshWithStyle(
-        coordinates,
-        tile,
-        tileDepth,
-        (STATE.style.lineWidth !== undefined && STATE.style.lineWidth !== null) ? STATE.style.lineWidth : 4,
-        STATE.style.lineColor || [0.1, 0.45, 1, 1]
+        color
     );
 }
 
@@ -1676,12 +1493,12 @@ function makeLineMesh(coordinates, tile, tileDepth) {
  *
  * @param {number[][]} coordinates - Image coordinates.
  * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} depth - Depth value.
  * @param {number} lineWidth - Line width in level pixels.
  * @param {number[]} color - RGBA color.
  * @returns {?object} Mesh object.
  */
-function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
+function makeLineMesh(coordinates, tile, depth, lineWidth, color) {
     if (!coordinates || coordinates.length < 2) {
         return null;
     }
@@ -1693,7 +1510,7 @@ function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
         for (let i = 0; i < coordinates.length; i++) {
             const point = imageToTileUv(coordinates[i], tile);
 
-            vertices.push(point[0], point[1], tileDepth, -1);
+            vertices.push(point[0], point[1], depth, -1);
 
             if (i < coordinates.length - 1) {
                 indices.push(i, i + 1);
@@ -1730,10 +1547,10 @@ function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
         const base = vertices.length / 4;
 
         vertices.push(
-            p0[0] - nx, p0[1] - ny, tileDepth, -1,
-            p0[0] + nx, p0[1] + ny, tileDepth, -1,
-            p1[0] + nx, p1[1] + ny, tileDepth, -1,
-            p1[0] - nx, p1[1] - ny, tileDepth, -1
+            p0[0] - nx, p0[1] - ny, depth, -1,
+            p0[0] + nx, p0[1] + ny, depth, -1,
+            p1[0] + nx, p1[1] + ny, depth, -1,
+            p1[0] - nx, p1[1] - ny, depth, -1
         );
 
         indices.push(
@@ -1758,10 +1575,11 @@ function makeLineMeshWithStyle(coordinates, tile, tileDepth, lineWidth, color) {
  *
  * @param {number[][][]} coordinates - Polygon image coordinates.
  * @param {object} tile - Tile request.
- * @param {number} tileDepth - Packed tile-depth value.
+ * @param {number} depth - Depth value.
+ * @param {number[]} color - RGBA color.
  * @returns {?object} Mesh object.
  */
-function makePolygonMesh(coordinates, tile, tileDepth) {
+function makePolygonMesh(coordinates, tile, depth, color) {
     if (!self.earcut) {
         throw new Error('GeoJSON worker: missing earcut library.');
     }
@@ -1786,7 +1604,7 @@ function makePolygonMesh(coordinates, tile, tileDepth) {
             const point = imageToTileUv(coordinate, tile);
 
             flat.push(point[0], point[1]);
-            vertices.push(point[0], point[1], tileDepth, -1);
+            vertices.push(point[0], point[1], depth, -1);
             vertexCount += 1;
         }
     }
@@ -1797,7 +1615,7 @@ function makePolygonMesh(coordinates, tile, tileDepth) {
         return null;
     }
 
-    return makeMesh(vertices, indices, STATE.style.fillColor || [0.8, 0.8, 0.1, 0.5]);
+    return makeMesh(vertices, indices, color);
 }
 
 /**
@@ -1808,16 +1626,27 @@ function makePolygonMesh(coordinates, tile, tileDepth) {
  * @param {number[]} color - RGBA color.
  * @returns {object} Mesh object.
  */
-function makeMesh(vertices, indices, color, parameters) {
-    const mesh = {
+function makeMesh(vertices, indices, color) {
+    return {
         vertices: new Float32Array(vertices).buffer,
         indices: new Uint32Array(indices).buffer,
         color
     };
+}
 
-    if (parameters) {
-        mesh.parameters = new Float32Array(parameters).buffer;
+/**
+ * Push a mesh and its transferable buffers into tile output arrays.
+ *
+ * @param {object[]} target - Mesh target array.
+ * @param {ArrayBuffer[]} transfers - Transferable buffers.
+ * @param {?object} mesh - Mesh to push.
+ * @returns {void}
+ */
+function pushMesh(target, transfers, mesh) {
+    if (!mesh) {
+        return;
     }
 
-    return mesh;
+    target.push(mesh);
+    transfers.push(mesh.vertices, mesh.indices);
 }
