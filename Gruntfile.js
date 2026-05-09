@@ -31,7 +31,7 @@ module.exports = function(grunt) {
             "src/colormaps.js",
             "src/flex-shader-layer.js",
             "src/flex-shader-module.js",
-            "src/flex-modules/sample-channel.js",
+            "src/flex-modules/source-sampling.js",
             "src/flex-modules/threshold-mask.js",
             "src/flex-modules/colorize.js",
             "src/flex-controls/basic-controls.js",

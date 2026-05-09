@@ -35,14 +35,13 @@ const IMAGE_SOURCES = [
 const MODULAR_SHADER_ID = "modular";
 
 const DEFAULT_MODULAR_GRAPH = {
-    version: 1,
     nodes: {
         src: {
-            type: "sample-channel",
+            type: "sample-source-channel",
             params: {
                 sourceIndex: 0,
-                channel: "r",
-            },
+                channelIndex: 0
+            }
         },
         threshold: {
             type: "threshold-mask",

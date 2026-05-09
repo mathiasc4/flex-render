@@ -50,10 +50,10 @@
                         version: 1,
                         nodes: {
                             src: {
-                                type: "sample-channel",
+                                type: "sample-source-channel",
                                 params: {
                                     sourceIndex: 0,
-                                    channel: "r"
+                                    channelIndex: 0
                                 }
                             },
                             threshold: {

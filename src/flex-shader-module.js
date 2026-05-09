@@ -438,7 +438,8 @@
          *
          * Use context.input(name[, fallback]) to read a connected input expression.
          * Use context.output(name, type) to allocate a deterministic GLSL variable name
-         * for an output.
+         * for an output. Source-sampling modules should use context.sampleSourceChannel(...)
+         * or context.sampleSourceChannels(...) instead of legacy ShaderLayer.sampleChannel(...).
          *
          * @abstract
          * @param {ShaderModuleNodeCompileContext} context - Per-node compile context.
@@ -526,6 +527,33 @@
             this.graph.validateType(type, `node '${this.node.id}' output '${name}'`);
             return $.FlexRenderer.sanitizeKey(`${this.graph.owner.uid}_${this.node.id}_${name}`);
         }
+
+
+        /**
+         * Return a GLSL expression that samples one numeric source channel.
+         *
+         * @param {number|string} sourceIndex - Source slot index or GLSL int expression.
+         * @param {number|string} channelIndex - Flattened source channel index or GLSL int expression.
+         * @param {string} [textureCoords="v_texture_coords"] - GLSL vec2 coordinate expression.
+         * @param {object|boolean} [options={raw:true}] - Sampling options.
+         * @returns {string} GLSL expression returning float.
+         */
+        sampleSourceChannel(sourceIndex, channelIndex, textureCoords = "v_texture_coords", options = { raw: true }) {
+            return this.node.owner.sampleSourceChannel(textureCoords, sourceIndex, channelIndex, options);
+        }
+
+        /**
+         * Return a GLSL expression that samples one to four numeric source channels.
+         *
+         * @param {number|string} sourceIndex - Source slot index or GLSL int expression.
+         * @param {Array<number|string>} channelIndexes - Flattened source channel indexes.
+         * @param {string} [textureCoords="v_texture_coords"] - GLSL vec2 coordinate expression.
+         * @param {object|boolean} [options={raw:true}] - Sampling options.
+         * @returns {string} GLSL expression returning float, vec2, vec3, or vec4.
+         */
+        sampleSourceChannels(sourceIndex, channelIndexes, textureCoords = "v_texture_coords", options = { raw: true }) {
+            return this.node.owner.sampleSourceChannels(textureCoords, sourceIndex, channelIndexes, options);
+        }
     }
 
     /**
@@ -544,19 +572,22 @@
      * ShaderModule#params. Concrete modules may use this object for two kinds of
      * values:
      *
-     * - static compile-time parameters, such as sourceIndex, channel, baseChannel,
-     *   or mode names;
-     * - initial values for module-local UI controls declared through
-     *   ShaderModule.defaultControls, such as threshold or color.
+     * - static compile-time parameters, such as sourceIndex, channelIndex, channelIndexes, or mode names;
+     * - initial values for module-local UI controls declared through ShaderModule.defaultControls, such as threshold or color.
      *
      * Values should be JSON-compatible because graph configs are intended to be
      * stored, exported, edited, and reloaded.
      *
-     * Example for sample-channel:
+     * Example for sample-source-channel:
      * {
      *     sourceIndex: 0,
-     *     channel: "r",
-     *     baseChannel: 0
+     *     channelIndex: 0
+     * }
+     *
+     * Example for sample-source-channels:
+     * {
+     *     sourceIndex: 0,
+     *     channelIndexes: [0, 1, 2]
      * }
      *
      * Example for threshold-mask:
