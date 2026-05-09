@@ -127,18 +127,22 @@
     /**
      * Non-throwing graph analysis result.
      *
+     * The partial payload is intended for editor/debug UI and is JSON-compatible.
+     * Runtime ShaderModule instances, owner references, functions, and renderer state
+     * are intentionally omitted from this object.
+     *
      * @typedef {object} ShaderModuleGraphAnalysisResult
      * @property {boolean} ok - True when no error-severity diagnostics were emitted.
      * @property {ShaderModuleGraphDiagnostic[]} diagnostics - Structured diagnostics.
      * @property {object} partial - Partial graph state useful for editor/debug UI.
-     * @property {Object<string, ShaderModule>} partial.nodes - Instantiated valid reachable nodes.
-     * @property {Object<string, object>} partial.nodeAnalyses - Per-node analysis data for reachable nodes.
+     * @property {Object<string, ShaderModuleGraphNodeDescriptor>} partial.nodes - JSON-compatible descriptors for valid reachable nodes.
+     * @property {Object<string, object>} partial.nodeAnalyses - JSON-compatible per-node analysis data for reachable nodes.
      * @property {string[]} partial.order - Best-effort topological order for reachable nodes.
      * @property {string[]} partial.reachableNodeIds - Node ids reachable from graph.output.
      * @property {string[]} partial.unreachableNodeIds - Node ids ignored because they are not reachable from graph.output.
-     * @property {Object<string, object|boolean>} partial.controlDefinitions - Flattened controls collected from reachable nodes.
+     * @property {Object<string, object|boolean>} partial.controlDefinitions - JSON-compatible flattened control descriptors collected from reachable nodes.
      * @property {Object<string, ShaderModuleGraphControlRef>} partial.controlMap - Flattened control ownership map for reachable nodes.
-     * @property {ShaderModuleSourceRequirement[]} partial.sourceDefinitions - Merged source definitions collected from reachable nodes.
+     * @property {Object[]} partial.sourceDefinitions - JSON-compatible merged source descriptors collected from reachable nodes.
      * @property {?ShaderModuleGraphOutputRef} partial.outputRef - Parsed graph output reference, when valid.
      */
 
@@ -779,6 +783,20 @@
      */
 
     /**
+     * JSON-compatible descriptor for one analyzed graph node.
+     *
+     * This is the editor/debug representation used by ShaderModuleGraphAnalysisResult.
+     * It intentionally does not expose the live ShaderModule instance, owner reference,
+     * methods, controls, or renderer state.
+     *
+     * @typedef {object} ShaderModuleGraphNodeDescriptor
+     * @property {string} id - Graph node id.
+     * @property {string} type - Registered ShaderModule type from the node config.
+     * @property {Object<string, string>} inputs - JSON-compatible input reference map.
+     * @property {ShaderModuleNodeParams} params - JSON-compatible node-local params object.
+     */
+
+    /**
      * Raw config for a ShaderModule DAG.
      *
      * The executable graph is the dependency closure reachable from output. Runtime
@@ -945,6 +963,161 @@
      */
     function isGraphObject(value) {
         return !!value && typeof value === "object" && !Array.isArray(value);
+    }
+
+    /**
+     * Return a JSON-compatible clone of a value.
+     *
+     * Functions, undefined values, symbols, and cyclic references are omitted. This is
+     * used only for editor-facing graph analysis descriptors; runtime graph state keeps
+     * its original richer object/function values.
+     *
+     * @private
+     * @param {*} value - Value to clone.
+     * @param {WeakSet<object>} [seen] - Objects already visited.
+     * @returns {*} JSON-compatible clone, or undefined when the value cannot be represented.
+     */
+    function cloneJsonCompatibleForAnalysis(value, seen = new WeakSet()) {
+        if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+            return value;
+        }
+
+        if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+            return undefined;
+        }
+
+        if (Array.isArray(value)) {
+            const out = [];
+
+            for (const item of value) {
+                const cloned = cloneJsonCompatibleForAnalysis(item, seen);
+                if (cloned !== undefined) {
+                    out.push(cloned);
+                }
+            }
+
+            return out;
+        }
+
+        if (typeof value === "object") {
+            if (seen.has(value)) {
+                return undefined;
+            }
+
+            seen.add(value);
+
+            const out = {};
+            for (const key of Object.keys(value)) {
+                const cloned = cloneJsonCompatibleForAnalysis(value[key], seen);
+                if (cloned !== undefined) {
+                    out[key] = cloned;
+                }
+            }
+
+            seen.delete(value);
+            return out;
+        }
+
+        return undefined;
+    }
+
+    /**
+     * Return a JSON-compatible descriptor for one analyzed graph node.
+     *
+     * @private
+     * @param {string} nodeId - Graph node id.
+     * @param {object} nodeConfig - Raw graph node config.
+     * @returns {ShaderModuleGraphNodeDescriptor} Node descriptor.
+     */
+    function createNodeDescriptorForAnalysis(nodeId, nodeConfig) {
+        const config = isGraphObject(nodeConfig) ? nodeConfig : {};
+
+        return {
+            id: nodeId,
+            type: typeof config.type === "string" ? config.type : "",
+            inputs: isGraphObject(config.inputs) ?
+                cloneJsonCompatibleForAnalysis(config.inputs) || {} : {},
+            params: isGraphObject(config.params) ?
+                cloneJsonCompatibleForAnalysis(config.params) || {} : {}
+        };
+    }
+
+    /**
+     * Return JSON-compatible descriptors for instantiated analyzed nodes.
+     *
+     * @private
+     * @param {Object<string, ShaderModule>} nodes - Instantiated analyzed nodes keyed by node id.
+     * @param {ShaderModuleGraphConfig} graphConfig - Raw graph config.
+     * @returns {Object<string, ShaderModuleGraphNodeDescriptor>} Node descriptors keyed by node id.
+     */
+    function createNodeDescriptorsForAnalysis(nodes, graphConfig) {
+        const out = {};
+        const configs = graphConfig && isGraphObject(graphConfig.nodes) ? graphConfig.nodes : {};
+
+        for (const nodeId of Object.keys(nodes || {})) {
+            out[nodeId] = createNodeDescriptorForAnalysis(nodeId, configs[nodeId]);
+        }
+
+        return out;
+    }
+
+    /**
+     * Return a JSON-compatible source requirement/definition descriptor.
+     *
+     * Runtime-only predicates such as acceptsChannelCount are intentionally omitted.
+     *
+     * @private
+     * @param {ShaderModuleSourceRequirement} source - Source requirement or definition.
+     * @returns {object} JSON-compatible source descriptor.
+     */
+    function createSourceDescriptorForAnalysis(source) {
+        const descriptor = cloneJsonCompatibleForAnalysis(source) || {};
+
+        delete descriptor.acceptsChannelCount;
+
+        if (Array.isArray(source && source.sampledChannels)) {
+            descriptor.sampledChannels = source.sampledChannels.slice();
+        }
+
+        return descriptor;
+    }
+
+    /**
+     * Return JSON-compatible per-node analysis descriptors.
+     *
+     * Runtime-only functions from controls and source requirements are omitted.
+     *
+     * @private
+     * @param {Object<string, object>} nodeAnalyses - Runtime per-node analysis data.
+     * @returns {Object<string, object>} JSON-compatible per-node analysis data.
+     */
+    function createNodeAnalysisDescriptorsForAnalysis(nodeAnalyses) {
+        const out = {};
+
+        for (const nodeId of Object.keys(nodeAnalyses || {})) {
+            const analysis = nodeAnalyses[nodeId] || {};
+
+            out[nodeId] = {
+                inputDefinitions: cloneJsonCompatibleForAnalysis(analysis.inputDefinitions || {}) || {},
+                outputDefinitions: cloneJsonCompatibleForAnalysis(analysis.outputDefinitions || {}) || {},
+                controlDefinitions: cloneJsonCompatibleForAnalysis(analysis.controlDefinitions || {}) || {},
+                sourceRequirements: Array.isArray(analysis.sourceRequirements) ?
+                    analysis.sourceRequirements.map(createSourceDescriptorForAnalysis) : []
+            };
+        }
+
+        return out;
+    }
+
+    /**
+     * Return JSON-compatible source definition descriptors.
+     *
+     * @private
+     * @param {ShaderModuleSourceRequirement[]} sourceDefinitions - Runtime source definitions.
+     * @returns {object[]} JSON-compatible source descriptors.
+     */
+    function createSourceDefinitionDescriptorsForAnalysis(sourceDefinitions) {
+        return (sourceDefinitions || []).map(createSourceDescriptorForAnalysis);
     }
 
     /**
@@ -1301,15 +1474,15 @@
                     ok: !hasGraphErrors(diagnostics),
                     diagnostics,
                     partial: {
-                        nodes: $.extend(true, {}, this.nodes),
-                        nodeAnalyses,
+                        nodes: createNodeDescriptorsForAnalysis(this.nodes, this.config),
+                        nodeAnalyses: createNodeAnalysisDescriptorsForAnalysis(nodeAnalyses),
                         order: this.order.slice(),
                         reachableNodeIds: reachable,
                         unreachableNodeIds: unreachable,
-                        controlDefinitions: $.extend(true, {}, this.controlDefinitions),
-                        controlMap: $.extend(true, {}, this.controlMap),
-                        sourceDefinitions: this.sourceDefinitions.slice(),
-                        outputRef
+                        controlDefinitions: cloneJsonCompatibleForAnalysis(this.controlDefinitions) || {},
+                        controlMap: cloneJsonCompatibleForAnalysis(this.controlMap) || {},
+                        sourceDefinitions: createSourceDefinitionDescriptorsForAnalysis(this.sourceDefinitions),
+                        outputRef: cloneJsonCompatibleForAnalysis(outputRef) || null
                     }
                 };
 
