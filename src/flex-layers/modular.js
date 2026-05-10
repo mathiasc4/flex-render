@@ -80,6 +80,15 @@
                 };
             }
 
+            static get customParams() {
+                return {
+                    graph: {
+                        type: "json",
+                        usage: "Module graph with nodes, typed edges, and one non-void output port."
+                    }
+                };
+            }
+
             static sources() {
                 return [];
             }
