@@ -6,6 +6,8 @@ let STYLE = {
     fallback: { type: 'line', color: [0, 0, 0, 1], widthPx: 1, join: 'bevel', cap: 'butt' }
 };
 
+let USE_NATIVE_LINES = false;
+
 self.onmessage = async (e) => {
     const msg = e.data;
 
@@ -13,6 +15,7 @@ self.onmessage = async (e) => {
         if (msg.type === 'config') {
             EXTENT = msg.extent || EXTENT;
             STYLE = msg.style || STYLE;
+            USE_NATIVE_LINES = msg.useNativeLines === true;
             return;
         }
 
@@ -36,8 +39,8 @@ self.onmessage = async (e) => {
 
             const fills = [];
             const lines = [];
+            const linePrimitives = [];
             const points = [];
-            const icons = [];
 
             // Iterate layers
             for (const lname in vt.layers) {
@@ -89,22 +92,54 @@ self.onmessage = async (e) => {
                     }
 
                     if (feat.type === 2 && fstyle.type === 'line') {
-                        // Build stroke triangles (bevel joins + requested caps; miter threshold)
-                        const widthPx = fstyle.widthPx || 1.0;
-                        const widthTile = widthPx * (lyr.extent / (512)); // heuristic: px@512 tile
-                        for (let p = 0; p < geom.length; p++) {
-                            const pts = geom[p];
-                            const mesh = strokePoly(pts, widthTile, fstyle.join || 'bevel', fstyle.cap || 'butt', fstyle.miterLimit || 2.0);
-                            if (mesh && mesh.indices.length) {
-                                const vertCount = mesh.vertices.length / 2;
-                                const verts = new Float32Array(4 * vertCount);
-                                for (let v = 0; v < vertCount; v += 1) {
-                                    verts[4 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
-                                    verts[4 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                        if (USE_NATIVE_LINES) {
+                            for (let p = 0; p < geom.length; p++) {
+                                const pts = geom[p];
+
+                                if (!pts || pts.length < 2) {
+                                    continue;
+                                }
+
+                                const verts = new Float32Array(pts.length * 4);
+                                const idx = new Uint32Array((pts.length - 1) * 2);
+
+                                for (let v = 0; v < pts.length; v += 1) {
+                                    verts[4 * v + 0] = pts[v].x / lyr.extent;
+                                    verts[4 * v + 1] = pts[v].y / lyr.extent;
                                     verts[4 * v + 2] = tileDepth;
                                     verts[4 * v + 3] = -1;
+
+                                    if (v < pts.length - 1) {
+                                        idx[2 * v + 0] = v;
+                                        idx[2 * v + 1] = v + 1;
+                                    }
                                 }
-                                lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
+
+                                linePrimitives.push({
+                                    vertices: verts.buffer,
+                                    indices: idx.buffer,
+                                    color: fstyle.color,
+                                    lineWidth: Number.isFinite(fstyle.widthPx) && fstyle.widthPx > 0 ? fstyle.widthPx : 1.0
+                                });
+                            }
+                        } else {
+                            // Build stroke triangles (bevel joins + requested caps; miter threshold)
+                            const widthPx = fstyle.widthPx || 1.0;
+                            const widthTile = widthPx * (lyr.extent / (512)); // heuristic: px@512 tile
+                            for (let p = 0; p < geom.length; p++) {
+                                const pts = geom[p];
+                                const mesh = strokePoly(pts, widthTile, fstyle.join || 'bevel', fstyle.cap || 'butt', fstyle.miterLimit || 2.0);
+                                if (mesh && mesh.indices.length) {
+                                    const vertCount = mesh.vertices.length / 2;
+                                    const verts = new Float32Array(4 * vertCount);
+                                    for (let v = 0; v < vertCount; v += 1) {
+                                        verts[4 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
+                                        verts[4 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                                        verts[4 * v + 2] = tileDepth;
+                                        verts[4 * v + 3] = -1;
+                                    }
+                                    lines.push({ vertices: verts.buffer, indices: new Uint32Array(mesh.indices).buffer, color: fstyle.color });
+                                }
                             }
                         }
                     }
@@ -112,30 +147,51 @@ self.onmessage = async (e) => {
                     if (feat.type === 1 && fstyle.type === 'point') {
                         const size = (fstyle.size || 10.0) / 2.0;
                         const verts = [];
-                        const idx = [0, 1, 2, 0, 2, 3];
+                        const idx = [];
+
                         for (let p = 0; p < geom.length; p++) {
                             const pts = geom[p];
+
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
-                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
+                                const base = verts.length / 4;
+
                                 verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
                                 verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
+                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
+
+                                idx.push(
+                                    base + 0, base + 1, base + 2,
+                                    base + 0, base + 2, base + 3
+                                );
                             }
                         }
-                        points.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, color: fstyle.color });
+
+                        if (idx.length) {
+                            points.push({
+                                vertices: new Float32Array(verts).buffer,
+                                indices: new Uint32Array(idx).buffer,
+                                color: fstyle.color
+                            });
+                        }
                     }
 
                     if (feat.type === 1 && fstyle.type === 'icon') {
                         const size = fstyle.size || 1.0;
-                        const icon = fstyle.iconMapping[feat.properties.class] || { textureId: -1, width: 16, height: 16 };
+                        const icon = fstyle.iconMapping[feat.properties.class] || {
+                            textureId: -1,
+                            width: 16,
+                            height: 16
+                        };
 
                         const verts = [];
-                        const idx = [0, 1, 3, 0, 2, 3];
+                        const idx = [];
                         const parameters = [];
 
                         for (let p = 0; p < geom.length; p++) {
                             const pts = geom[p];
+
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
 
@@ -147,18 +203,36 @@ self.onmessage = async (e) => {
                                 const yStart = (pt.y - (height / 2.0)) / lyr.extent;
                                 const yEnd = (pt.y + (height / 2.0)) / lyr.extent;
 
+                                const base = verts.length / 4;
+
                                 verts.push(xStart, yStart, tileDepth, icon.textureId);
                                 verts.push(xEnd, yStart, tileDepth, icon.textureId);
                                 verts.push(xStart, yEnd, tileDepth, icon.textureId);
                                 verts.push(xEnd, yEnd, tileDepth, icon.textureId);
 
                                 for (let i = 0; i < 4; i += 1) {
-                                    parameters.push(xStart, yStart, width / lyr.extent, height / lyr.extent);
+                                    parameters.push(
+                                        xStart,
+                                        yStart,
+                                        width / lyr.extent,
+                                        height / lyr.extent
+                                    );
                                 }
+
+                                idx.push(
+                                    base + 0, base + 1, base + 3,
+                                    base + 0, base + 2, base + 3
+                                );
                             }
                         }
 
-                        icons.push({ vertices: new Float32Array(verts).buffer, indices: new Uint32Array(idx).buffer, parameters: new Float32Array(parameters).buffer });
+                        if (idx.length) {
+                            points.push({
+                                vertices: new Float32Array(verts).buffer,
+                                indices: new Uint32Array(idx).buffer,
+                                parameters: new Float32Array(parameters).buffer
+                            });
+                        }
                     }
                 }
             }
@@ -168,21 +242,37 @@ self.onmessage = async (e) => {
 
             for (const a of fills) {
                 transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
             }
 
             for (const a of lines) {
                 transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
+            }
+
+            for (const a of linePrimitives) {
+                transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
             }
 
             for (const a of points) {
                 transfer.push(a.vertices, a.indices);
+
+                if (a.parameters) {
+                    transfer.push(a.parameters);
+                }
             }
 
-            for (const a of icons) {
-                transfer.push(a.vertices, a.indices, a.parameters);
-            }
-
-            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, points, icons } }, transfer);
+            self.postMessage({ type: 'tile', key, ok: true, data: { fills, lines, linePrimitives, points } }, transfer);
         }
     } catch (err) {
         self.postMessage({ type: 'tile', key: e.data && e.data.key, ok: false, error: String(err) });

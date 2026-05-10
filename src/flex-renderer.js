@@ -22,7 +22,8 @@
 
     /**
      * @typedef {Object} FPRenderPackage
-     * @property {FPRenderPackageItem} tiles
+     * @property {FPRenderPackageItem[]} tiles
+     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
      * @property {Number[][]} stencilPolygons
      */
 
@@ -495,6 +496,29 @@
             this.renderSecondPass(frame.secondPass, options.secondPassOptions);
 
             this.gl.finish();
+        }
+
+        /**
+         * Clear the renderer-owned visible output.
+         *
+         * This is used when the owning drawer has no renderer-ready frame to submit,
+         * for example when the OpenSeadragon world is empty or when no ShaderLayer
+         * contributes a second-pass output.
+         *
+         * @returns {void}
+         */
+        clear() {
+            if (!this.gl || !this.canvas || !this.canvas.width || !this.canvas.height) {
+                return;
+            }
+
+            this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+            this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+            this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+            this.gl.finish();
+
+            this.__firstPassResult = null;
         }
 
         /**

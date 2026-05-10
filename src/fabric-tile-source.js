@@ -185,11 +185,31 @@
                 if (!packed) {
                     return [];
                 }
+
                 const vertsBuf = packed.positions || packed.vertices;
                 const idxBuf = packed.indices;
+
+                const sourceVertices = new Float32Array(vertsBuf);
+                const sourceIndices = new Uint32Array(idxBuf);
+
+                // fabric worker emits vec2 vertices: [x, y]
+                // FlexDrawer vector-mesh path expects vec4 vertices
+                const vertexCount = sourceVertices.length / 2;
+                const vertices = new Float32Array(vertexCount * 4);
+
+                for (let i = 0; i < vertexCount; i++) {
+                    const sourceOffset = i * 2;
+                    const targetOffset = i * 4;
+
+                    vertices[targetOffset + 0] = sourceVertices[sourceOffset + 0];
+                    vertices[targetOffset + 1] = sourceVertices[sourceOffset + 1];
+                    vertices[targetOffset + 2] = 0;
+                    vertices[targetOffset + 3] = -1;
+                }
+
                 return [{
-                    vertices: new Float32Array(vertsBuf),
-                    indices: new Uint32Array(idxBuf),
+                    vertices: vertices,
+                    indices: sourceIndices,
                     color: Array.isArray(defaultColor) ? defaultColor : [ 1, 1, 1, 1 ]
                 }];
             };
@@ -201,8 +221,8 @@
                 return;
             }
 
-            const fills = toMeshes(rec.fills, [ 1, 1, 1, 1 ]);
-            const lines = toMeshes(rec.lines, [ 1, 1, 1, 1 ]);
+            const fills = toMeshes(rec.fills, [ 1, 0, 0, 1 ]);
+            const lines = toMeshes(rec.lines, [ 0, 0, 1, 1 ]);
             for (const p of waiters) {
                 p.finish({ fills: fills, lines: lines }, undefined, 'vector-mesh');
             }

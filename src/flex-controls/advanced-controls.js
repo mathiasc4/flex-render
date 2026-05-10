@@ -2253,7 +2253,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
             (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
             size * 0.7
         );
-        const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight);
+        const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight, 1.0);
         const fontSize = Math.max(8, Math.floor(size * fitScale));
         metrics = measureAt(fontSize);
 

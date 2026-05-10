@@ -1319,6 +1319,7 @@ void main() {
         gl.enableVertexAttribArray(this._positionsBuffer);
         gl.vertexAttribPointer(this._positionsBuffer, 2, gl.FLOAT, false, 0, 0);
         this._geomSingleMatrix = gl.getUniformLocation(program, "u_geomMatrix");
+        this._nativeLineWidthRange = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE) || [1, 1];
 
         /*
          * Rendering vector tiles. Positions of tiles are always rectangular (stretched and moved by the matrix),
@@ -1573,41 +1574,54 @@ void main() {
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }
 
-                    batch = vectorTile.points;
-                    if (batch) {
-                        if (!vectorTile.fills && !vectorTile.lines) {
-                            gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
+                    const linePrimitiveBatches = vectorTile.linePrimitives;
+                    if (linePrimitiveBatches && linePrimitiveBatches.length) {
+                        for (const lineBatch of linePrimitiveBatches) {
+                            if (!vectorTile.fills && !vectorTile.lines) {
+                                gl.uniformMatrix3fv(this._geomSingleMatrix, false, lineBatch.matrix);
+                            }
+
+                            const lineWidth = Number.isFinite(lineBatch.lineWidth) && lineBatch.lineWidth > 0
+                                ? lineBatch.lineWidth
+                                : 1;
+                            const minLineWidth = this._nativeLineWidthRange[0] || 1;
+                            const maxLineWidth = this._nativeLineWidthRange[1] || 1;
+
+                            gl.lineWidth(Math.max(minLineWidth, Math.min(maxLineWidth, lineWidth)));
+
+                            // Bind positions. payload0 is vec4(x, y, depth, textureId).
+                            gl.bindBuffer(gl.ARRAY_BUFFER, lineBatch.vboPos);
+                            gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
+
+                            // Bind per-vertex colors.
+                            gl.bindBuffer(gl.ARRAY_BUFFER, lineBatch.vboParam);
+                            gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
+
+                            // Bind indices and draw native line segments.
+                            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lineBatch.ibo);
+                            gl.drawElementsInstanced(gl.LINES, lineBatch.count, gl.UNSIGNED_INT, 0, 1);
                         }
 
-                        // Bind positions
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
-                        gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
-
-                        // Bind per-vertex colors (normalized u8 → float 0..1)
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
-                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
-
-                        // Bind indices and draw one instance
-                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
-                        gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
+                        gl.lineWidth(1);
                     }
 
-                    // TODO: find out if we can somehow combine points and icons
-                    batch = vectorTile.icons;
+                    batch = vectorTile.points;
                     if (batch) {
-                        if (!vectorTile.fills && !vectorTile.lines && !vectorTile.points) {
+                        if (!vectorTile.fills && !vectorTile.lines && !(vectorTile.linePrimitives && vectorTile.linePrimitives.length)) {
                             gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
                         }
 
-                        // Bind positions
+                        // Bind positions. payload0 is vec4(x, y, depth, textureId).
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
                         gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
 
-                        // Bind per-vertex icon parameters
+                        // Bind per-vertex colors (normalized u8 → float 0..1).
+                        // For colored point meshes: vec4(r, g, b, a).
+                        // For icon point meshes: vec4(xStart, yStart, width, height).
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
                         gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
 
-                        // Bind indices and draw one instance
+                        // Bind indices and draw one instance.
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }
