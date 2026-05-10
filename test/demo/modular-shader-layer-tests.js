@@ -510,7 +510,7 @@ const viewportMargins = {
     bottom: 50,
 };
 
-$("#title-w").html("OpenSeadragon viewer using FlexRenderer");
+$("#title-w").html("OpenSeadragon viewer using FlexRenderer / Modular graph tests");
 
 const viewer = window.viewer = OpenSeadragon({
     id: "drawer-canvas",

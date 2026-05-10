@@ -1252,6 +1252,8 @@
             return true;
         }
 
+        console.log(type);
+
         addGraphDiagnostic(diagnostics, {
             severity: "error",
             code: "unsupported-value-type",
@@ -1263,6 +1265,7 @@
             },
             ...extra
         });
+
         return false;
     }
 
@@ -1290,6 +1293,8 @@
 
         for (const portName of Object.keys(definitions)) {
             const port = definitions[portName];
+
+            console.log(port);
 
             if (!isGraphObject(port)) {
                 addGraphDiagnostic(diagnostics, {

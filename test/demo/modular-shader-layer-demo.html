@@ -9,7 +9,7 @@
     <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
     <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
 
-    <script type="module" src="modular-shader-layer.js"></script>
+    <script type="module" src="modular-shader-layer-demo.js"></script>
 
     <style>
         html,
@@ -257,6 +257,26 @@
             font-size: 12px;
         }
 
+        .shader-config-preset-panel {
+            margin: 0 0 8px 0;
+            padding: 8px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+        }
+
+        .shader-config-preset-select {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 13px;
+        }
+
+        .shader-config-preset-description {
+            margin: 6px 0 0 0;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
         .shader-config-row--modular {
             grid-template-columns: minmax(0, 1fr);
         }
@@ -324,84 +344,6 @@
         .shader-config-diagnostics__path {
             font-family: monospace;
             color: #7c2d12;
-        }
-
-        .shader-config-tests {
-            margin-top: 8px;
-            padding: 6px;
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-        }
-
-        .shader-config-tests__title {
-            margin: 0 0 6px 0;
-            font-weight: 600;
-            font-size: 12px;
-        }
-
-        .shader-config-tests__row {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr);
-            gap: 6px;
-        }
-
-        .shader-config-tests__actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 6px;
-        }
-
-        .shader-config-tests__actions button {
-            font-size: 12px;
-        }
-
-        .shader-config-test-select {
-            width: 100%;
-            box-sizing: border-box;
-            font-size: 13px;
-        }
-
-        .shader-config-test-results {
-            margin-top: 8px;
-            padding: 6px 8px;
-            border: 1px solid #d1d5db;
-            background: #f8f8f8;
-            font-size: 12px;
-        }
-
-        .shader-config-test-results__title {
-            margin: 0 0 4px 0;
-            font-weight: 600;
-        }
-
-        .shader-config-test-results__list {
-            margin: 0;
-            padding-left: 18px;
-        }
-
-        .shader-config-test-results__item {
-            margin: 3px 0;
-        }
-
-        .shader-config-test-results__item--pass {
-            color: #166534;
-        }
-
-        .shader-config-test-results__item--fail {
-            color: #b91c1c;
-        }
-
-        .shader-config-test-results__item--skip {
-            color: #7c2d12;
-        }
-
-        .shader-config-test-results__meta {
-            color: #666;
-        }
-
-        .shader-config-test-results__code {
-            font-family: monospace;
         }
 
         @media (max-width: 1000px) {

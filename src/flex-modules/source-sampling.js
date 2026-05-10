@@ -256,7 +256,7 @@
 
                 return {
                     inputDefinitions: {},
-                    outputDefinitions: this.constructor.outputs(),
+                    outputDefinitions: this.getOutputDefinitions(),
                     controlDefinitions: this.getControlDefinitions(),
                     sourceRequirements: sourceIndexResult.ok && channelIndexResult.ok ? [{
                         index: sourceIndexResult.value,
