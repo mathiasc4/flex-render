@@ -201,6 +201,15 @@
                 return "Samples one numeric channel from one source slot.";
             }
 
+            static outputs() {
+                return {
+                    value: {
+                        type: "float",
+                        description: "Float value sampled from the configured source and logical channel index."
+                    }
+                };
+            }
+
             static docs() {
                 return {
                     summary: "Sample one source channel",
@@ -210,16 +219,7 @@
                         channelIndex: "Numeric flattened channel index. Defaults to 0."
                     },
                     outputs: {
-                        value: "float sampled from osd_channel(sourceIndex, channelIndex, v_texture_coords)."
-                    }
-                };
-            }
-
-            static outputs() {
-                return {
-                    value: {
-                        type: "float",
-                        description: "Sampled source channel value."
+                        value: "Float value sampled from the configured source and logical channel index."
                     }
                 };
             }
@@ -294,6 +294,15 @@
                 return "Samples one to four numeric channels from one source slot and returns float, vec2, vec3, or vec4.";
             }
 
+            static outputs() {
+                return {
+                    value: {
+                        type: "float | vec2 | vec3 | vec4",
+                        description: "Sampled source value assembled from one to four configured channel indexes. The concrete output type is float, vec2, vec3, or vec4 depending on params.channelIndexes.length."
+                    }
+                };
+            }
+
             static docs() {
                 return {
                     summary: "Sample multiple source channels",
@@ -303,7 +312,7 @@
                         channelIndexes: "Array of one to four numeric flattened channel indexes."
                     },
                     outputs: {
-                        value: "float, vec2, vec3, or vec4 depending on channelIndexes.length."
+                        value: "Sampled source value. The output type is float, vec2, vec3, or vec4 depending on params.channelIndexes.length."
                     }
                 };
             }
@@ -314,7 +323,7 @@
                 return {
                     value: {
                         type: count === 1 ? "float" : `vec${count}`,
-                        description: "Sampled source channel value."
+                        description: "Sampled source value assembled from the configured channel indexes."
                     }
                 };
             }
@@ -346,7 +355,7 @@
                     outputDefinitions: {
                         value: {
                             type: outputType,
-                            description: "Sampled source channel value."
+                            description: "Sampled source value assembled from the configured channel indexes."
                         }
                     },
                     controlDefinitions: this.getControlDefinitions(),

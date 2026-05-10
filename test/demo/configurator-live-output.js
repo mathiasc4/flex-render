@@ -3,7 +3,7 @@
     const ShaderMediator = OpenSeadragon.FlexRenderer.ShaderMediator;
     const demoUniqueId = "configurator_live_output_demo";
     const sourceImagePath = "../data/rainbow.png";
-    const defaultShaderId = "iconmap";
+    const defaultShaderId = "identity";
 
     let loadedImage = null;
     let activeShaderId = defaultShaderId;

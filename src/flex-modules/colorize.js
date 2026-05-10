@@ -15,14 +15,25 @@
 
             static inputs() {
                 return {
-                    value: { type: "float", required: true },
-                    alpha: { type: "float", required: false }
+                    value: {
+                        type: "float",
+                        required: true,
+                        description: "Scalar intensity used to scale the selected color."
+                    },
+                    alpha: {
+                        type: "float",
+                        required: false,
+                        description: "Optional opacity value. If omitted, the scalar value input is also used as alpha."
+                    }
                 };
             }
 
             static outputs() {
                 return {
-                    color: { type: "vec4" }
+                    color: {
+                        type: "vec4",
+                        description: "RGBA color produced as vec4(color * value, alpha)."
+                    }
                 };
             }
 
@@ -45,10 +56,26 @@
                     description: "Builds vec4(color * value, alpha). If alpha is not connected, value is also used as alpha.",
                     kind: "shader-module",
                     inputs: [
-                        { name: "value", type: "float" },
-                        { name: "alpha", type: "float", required: false }
+                        {
+                            name: "value",
+                            type: "float",
+                            required: true,
+                            description: "Scalar intensity used to scale the selected color."
+                        },
+                        {
+                            name: "alpha",
+                            type: "float",
+                            required: false,
+                            description: "Optional opacity value. If omitted, the scalar value input is also used as alpha."
+                        }
                     ],
-                    outputs: [{ name: "color", type: "vec4" }],
+                    outputs: [
+                        {
+                            name: "color",
+                            type: "vec4",
+                            description: "RGBA color produced as vec4(color * value, alpha)."
+                        }
+                    ],
                     controls: [
                         { name: "color", ui: "color", valueType: "vec3", default: "#00ffff" }
                     ]

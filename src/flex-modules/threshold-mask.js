@@ -15,13 +15,20 @@
 
             static inputs() {
                 return {
-                    value: { type: "float", required: true }
+                    value: {
+                        type: "float",
+                        required: true,
+                        description: "Scalar value compared against the threshold control."
+                    }
                 };
             }
 
             static outputs() {
                 return {
-                    mask: { type: "float" }
+                    mask: {
+                        type: "float",
+                        description: "Binary mask value: 1.0 when value is greater than or equal to the threshold, otherwise 0.0."
+                    }
                 };
             }
 
@@ -46,8 +53,21 @@
                     summary: "Binary threshold module.",
                     description: "Returns 1.0 when value >= threshold, otherwise 0.0.",
                     kind: "shader-module",
-                    inputs: [{ name: "value", type: "float" }],
-                    outputs: [{ name: "mask", type: "float" }],
+                    inputs: [
+                        {
+                            name: "value",
+                            type: "float",
+                            required: true,
+                            description: "Scalar value compared against the threshold control."
+                        }
+                    ],
+                    outputs: [
+                        {
+                            name: "mask",
+                            type: "float",
+                            description: "Binary mask value: 1.0 when value is greater than or equal to the threshold, otherwise 0.0."
+                        }
+                    ],
                     controls: [
                         { name: "threshold", ui: "range", valueType: "float", default: 0.5 }
                     ]

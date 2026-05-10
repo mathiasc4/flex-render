@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Configurator Docs and Schema Tests</title>
+    <title>Configurator Tests</title>
 
     <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/ajv/8.17.1/ajv7.min.js"></script>
     <script type="text/javascript">
@@ -44,9 +44,9 @@
                 ]);
 
                 await loadFirst([
-                    "./configurator-docs-schema-tests.js",
-                    "/test/demo/configurator-docs-schema-tests.js",
-                    "/demo/configurator-docs-schema-tests.js"
+                    "./configurator-tests.js",
+                    "/test/demo/configurator-tests.js",
+                    "/demo/configurator-tests.js"
                 ]);
             })().catch(error => {
                 window.__configuratorDocsSchemaTestsBootError = error;
@@ -374,10 +374,10 @@
 </head>
 <body>
 <div class="content">
-    <h2>Configurator Docs and Schema Tests</h2>
+    <h2>Configurator Tests</h2>
 
     <h3 id="title-w" class="viewer-title">
-        On-demand tests for generated ShaderConfigurator documentation and schema output
+        Tests for generated ShaderConfigurator documentation and schema output
     </h3>
 
     <div class="demo-layout">
