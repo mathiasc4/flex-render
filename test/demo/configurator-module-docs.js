@@ -17,6 +17,22 @@
         return JSON.stringify(value === undefined ? null : value, null, 2);
     }
 
+    function renderPortTypes(type) {
+        const types = Array.isArray(type) ? type : [type || "unknown"];
+
+        return `
+<span style="display: inline-grid; gap: 4px; justify-items: start;">
+    ${types.map(entry => `<code style="width: fit-content;">${escapeHtml(entry || "unknown")}</code>`).join("")}
+</span>`;
+    }
+
+    function renderControlMetadata(control) {
+        return `<pre style="margin: 0; max-height: 220px;">${escapeHtml(stringify({
+            default: control.default,
+            required: control.required
+        }))}</pre>`;
+    }
+
     function updateText(id, value) {
         const node = document.getElementById(id);
         if (node) {
@@ -26,6 +42,23 @@
 
     function getModules() {
         return Array.isArray(docsModel && docsModel.modules) ? docsModel.modules : [];
+    }
+
+    function getVisibleModules() {
+        const search = document.getElementById("module-search");
+        const query = (search && search.value || "").toLowerCase().trim();
+
+        return getModules()
+            .filter(moduleDoc => {
+                if (!query) {
+                    return true;
+                }
+
+                return `${moduleDoc.name} ${moduleDoc.type} ${moduleDoc.description || ""}`
+                    .toLowerCase()
+                    .includes(query);
+            })
+            .sort((a, b) => a.name.localeCompare(b.name));
     }
 
     function getSelectedModule() {
@@ -57,7 +90,7 @@
             ${ports.map(port => `
             <tr>
                 <td><code>${escapeHtml(port.name)}</code></td>
-                <td><code>${escapeHtml(port.type || "unknown")}</code></td>
+                <td>${renderPortTypes(port.type)}</td>
                 ${includeRequired ? `<td>${port.required ? "yes" : "no"}</td>` : ""}
                 <td>${escapeHtml(port.description || "")}</td>
             </tr>`).join("")}
@@ -91,10 +124,7 @@
             <tr>
                 <td><code>${escapeHtml(control.name)}</code></td>
                 <td>${escapeHtml((control.supportedTypes || []).join(", "))}</td>
-                <td><code>${escapeHtml(stringify({
-            default: control.default,
-            required: control.required
-        }))}</code></td>
+                <td>${renderControlMetadata(control)}</td>
             </tr>`).join("")}
         </tbody>
     </table>
@@ -120,16 +150,7 @@
         const list = document.getElementById("module-list");
         const query = (document.getElementById("module-search").value || "").toLowerCase().trim();
 
-        const modules = getModules()
-            .filter(moduleDoc => {
-                if (!query) {
-                    return true;
-                }
-                return `${moduleDoc.name} ${moduleDoc.type} ${moduleDoc.description || ""}`
-                    .toLowerCase()
-                    .includes(query);
-            })
-            .sort((a, b) => a.name.localeCompare(b.name));
+        const modules = getVisibleModules();
 
         if (!selectedModuleType && modules.length) {
             selectedModuleType = modules[0].type;
@@ -212,10 +233,7 @@ ${renderClassDocs(moduleDoc)}
             schemaModel = null;
         }
 
-        const modules = getModules();
-        if (!selectedModuleType || !modules.some(moduleDoc => moduleDoc.type === selectedModuleType)) {
-            selectedModuleType = modules.length ? modules[0].type : null;
-        }
+        selectedModuleType = null;
 
         renderSummary();
         renderModuleList();

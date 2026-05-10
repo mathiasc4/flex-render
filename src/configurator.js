@@ -1077,16 +1077,31 @@
                 name: typeof Module.name === "function" ? Module.name() : type,
                 description: typeof Module.description === "function" ? Module.description() : "",
                 inputs: this._compileShaderModulePortDescriptors(inputs),
-                outputs: this._compileShaderModulePortDescriptors(outputs),
+                outputs: this._compileShaderModulePortDescriptors(outputs, { allowMultipleTypes: true }),
                 controls: this._compileShaderModuleControlDescriptors(Module),
                 classDocs: this._getModuleClassDocs(Module)
             };
         },
 
-        _compileShaderModulePortDescriptors(ports = {}) {
+        _compileShaderModulePortType(port, allowMultipleTypes = false) {
+            const raw = port && port.type !== undefined ? port.type : "unknown";
+            const values = Array.isArray(raw) ? raw : [raw];
+            const normalized = values
+                .filter(type => typeof type === "string" && type)
+                .map(type => type.trim())
+                .filter(Boolean);
+
+            if (allowMultipleTypes) {
+                return normalized.length ? [...new Set(normalized)] : ["unknown"];
+            }
+
+            return normalized.length ? normalized[0] : "unknown";
+        },
+
+        _compileShaderModulePortDescriptors(ports = {}, options = {}) {
             return Object.entries(ports || {}).map(([name, port]) => ({
                 name,
-                type: port && port.type ? port.type : "unknown",
+                type: this._compileShaderModulePortType(port, options.allowMultipleTypes === true),
                 required: !!(port && port.required),
                 default: port && port.default !== undefined ? deepClone(port.default) : undefined,
                 description: (port && port.description) || ""
@@ -1198,7 +1213,7 @@
                 description,
                 "x-docs": this._getModuleClassDocs(Module),
                 "x-inputs": this._compileShaderModulePortDescriptors(inputs),
-                "x-outputs": this._compileShaderModulePortDescriptors(outputs),
+                "x-outputs": this._compileShaderModulePortDescriptors(outputs, { allowMultipleTypes: true }),
                 "x-controls": this._compileShaderModuleControlDescriptors(Module)
             };
 

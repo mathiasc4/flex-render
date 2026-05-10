@@ -84,6 +84,21 @@
      */
 
     /**
+     * Documentation-only output port descriptor declared by static outputs().
+     *
+     * This descriptor is used by ShaderConfigurator for generated documentation,
+     * schema metadata, and module palettes. It may describe multiple possible
+     * output types because static module metadata cannot see node-local params.
+     *
+     * Runtime graph analysis and graph building must use getOutputDefinitions()
+     * on a configured module instance instead.
+     *
+     * @typedef {object} ShaderModuleStaticOutputDescriptor
+     * @property {ShaderModuleValueType[]} type - Possible value types carried by the output port.
+     * @property {string} [description] - Human-readable port description.
+     */
+
+    /**
      * Source requirement declared by a ShaderModule.
      *
      * @typedef {object} ShaderModuleSourceRequirement
@@ -203,9 +218,6 @@
      * - getSourceRequirements()
      * - getFragmentShaderDefinition()
      *
-     * Infrastructure helpers such as getControlName(...), control(...),
-     * getInputDefinitions(), and getOutputDefinitions() should normally be called
-     * rather than overridden.
      *
      * @abstract
      */
@@ -329,8 +341,9 @@
          * Override: RECOMMENDED for modules that consume values from other nodes.
          * Leave empty only for source, constant, or root modules with no graph inputs.
          *
-         * ShaderModuleGraphAnalyzer and ShaderModuleGraphBuilder use these declarations
-         * to validate required edges, referenced output ports, and GLSL type compatibility.
+         * ShaderConfigurator uses these declarations for generated documentation,
+         * schema output, and module palettes. Runtime graph analysis and graph building
+         * must use getInputDefinitions() on a configured module instance instead.
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Input port declarations keyed by port name.
          */
@@ -339,15 +352,18 @@
         }
 
         /**
-         * Typed output port declarations.
+         * Documentation-only output port declarations.
          *
-         * Override: REQUIRED for normal value-producing modules.
+         * Override: RECOMMENDED for normal value-producing modules.
          *
-         * ShaderModuleGraphAnalyzer and ShaderModuleGraphBuilder use these declarations
-         * to validate graph edges and the final graph output type. Every declared output
-         * must be returned by compile(context).
+         * ShaderConfigurator uses these declarations for generated documentation,
+         * schema metadata, and module palettes. Because this static method cannot see
+         * node-local params, each output type is an array of possible value types.
          *
-         * @returns {Object<string, ShaderModulePortDescriptor>} Output port declarations keyed by port name.
+         * Runtime graph analysis and graph building must use getOutputDefinitions()
+         * on a configured module instance instead.
+         *
+         * @returns {Object<string, ShaderModuleStaticOutputDescriptor>} Output port declarations keyed by port name.
          */
         static outputs() {
             return {};
@@ -385,31 +401,27 @@
         /**
          * Instance-level input port declarations.
          *
-         * Override: INFRASTRUCTURE. Do not override in normal modules.
-         *
-         * This forwards to inputs() so graph analysis, building, and compilation can read
-         * input declarations from a module instance. Module authors should override
-         * inputs() instead.
+         * Override when this module consumes graph inputs. This is the runtime/analyzer
+         * source of truth for configured module instances. Do not rely on static inputs()
+         * here when the input shape may depend on node params.
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Input port declarations keyed by port name.
          */
         getInputDefinitions() {
-            return this.constructor.inputs();
+            return {};
         }
 
         /**
          * Instance-level output port declarations.
          *
-         * Override: INFRASTRUCTURE. Do not override in normal modules.
-         *
-         * This forwards to outputs() so graph analysis, building, and compilation can read
-         * output declarations from a module instance. Module authors should override
-         * outputs() instead.
+         * Override for value-producing modules. This is the runtime/analyzer source of
+         * truth for configured module instances. The returned type must be one concrete
+         * ShaderModuleValueType string, not the array used by static outputs().
          *
          * @returns {Object<string, ShaderModulePortDescriptor>} Output port declarations keyed by port name.
          */
         getOutputDefinitions() {
-            return this.constructor.outputs();
+            return {};
         }
 
         /**
@@ -519,8 +531,8 @@
          *
          * The runtime ShaderModuleGraph compiler calls this after ShaderModuleGraphBuilder
          * validates and resolves the node's input edges. The returned outputs object must
-         * contain every port declared by outputs(), and each compiled output type must
-         * match its declared GLSL type.
+         * contain every port declared by getOutputDefinitions(), and each compiled output
+         * type must match its declared GLSL type.
          *
          * Use context.input(name[, fallback]) to read a connected input expression.
          * Use context.output(name, type) to allocate a deterministic GLSL variable name

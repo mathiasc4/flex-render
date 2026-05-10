@@ -452,6 +452,13 @@
                                 assert("description" in moduleDoc, `Module '${moduleDoc.type}' docs entry is missing description field.`);
                                 assert(Array.isArray(moduleDoc.inputs), `Module '${moduleDoc.type}' docs entry is missing inputs array.`);
                                 assert(Array.isArray(moduleDoc.outputs), `Module '${moduleDoc.type}' docs entry is missing outputs array.`);
+                                for (const output of moduleDoc.outputs) {
+                                    assert(
+                                        Array.isArray(output.type),
+                                        `Module '${moduleDoc.type}' output '${output.name}' type should be an array of possible types.`,
+                                        output
+                                    );
+                                }
                                 assert(Array.isArray(moduleDoc.controls), `Module '${moduleDoc.type}' docs entry is missing controls array.`);
                                 assert(moduleDoc.classDocs, `Module '${moduleDoc.type}' docs entry is missing classDocs.`);
                             }

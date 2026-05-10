@@ -188,7 +188,7 @@
         /**
          * Source module that samples one numeric channel from one source slot.
          */
-        class SampleChannelModule extends $.FlexRenderer.ShaderModule {
+        class SampleSourceChannelModule extends $.FlexRenderer.ShaderModule {
             static type() {
                 return "sample-source-channel";
             }
@@ -204,7 +204,7 @@
             static outputs() {
                 return {
                     value: {
-                        type: "float",
+                        type: ["float"],
                         description: "Float value sampled from the configured source and logical channel index."
                     }
                 };
@@ -237,6 +237,15 @@
                     acceptsChannelCount: () => true,
                     description: `Source ${sourceIndex} sampled channel ${channelIndex}. Requires at least ${requiredChannelCount} channels.`
                 }];
+            }
+
+            getOutputDefinitions() {
+                return {
+                    value: {
+                        type: "float",
+                        description: "Float value sampled from the configured source and logical channel index."
+                    }
+                };
             }
 
             analyze(context) {
@@ -297,7 +306,7 @@
             static outputs() {
                 return {
                     value: {
-                        type: "float | vec2 | vec3 | vec4",
+                        type: ["float", "vec2", "vec3", "vec4"],
                         description: "Sampled source value assembled from one to four configured channel indexes. The concrete output type is float, vec2, vec3, or vec4 depending on params.channelIndexes.length."
                     }
                 };
@@ -317,17 +326,6 @@
                 };
             }
 
-            getOutputDefinitions() {
-                const count = readChannelIndexesParam(this).length;
-
-                return {
-                    value: {
-                        type: count === 1 ? "float" : `vec${count}`,
-                        description: "Sampled source value assembled from the configured channel indexes."
-                    }
-                };
-            }
-
             getSourceRequirements() {
                 const sourceIndex = readNonNegativeIntegerParam(this, "sourceIndex", 0);
                 const sampledChannels = uniqueSortedChannelIndexes(readChannelIndexesParam(this));
@@ -340,6 +338,17 @@
                     acceptsChannelCount: () => true,
                     description: `Source ${sourceIndex} sampled channels ${formatChannelList(sampledChannels)}. Requires at least ${requiredChannelCount} channels.`
                 }];
+            }
+
+            getOutputDefinitions() {
+                const count = readChannelIndexesParam(this).length;
+
+                return {
+                    value: {
+                        type: count === 1 ? "float" : `vec${count}`,
+                        description: "Sampled source value assembled from the configured channel indexes."
+                    }
+                };
             }
 
             analyze(context) {

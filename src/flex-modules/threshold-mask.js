@@ -26,24 +26,8 @@
             static outputs() {
                 return {
                     mask: {
-                        type: "float",
+                        type: ["float"],
                         description: "Binary mask value: 1.0 when value is greater than or equal to the threshold, otherwise 0.0."
-                    }
-                };
-            }
-
-            static get defaultControls() {
-                return {
-                    threshold: {
-                        default: {
-                            type: "range",
-                            default: 0.5,
-                            min: 0,
-                            max: 1,
-                            step: 0.005,
-                            title: "Threshold"
-                        },
-                        accepts: (type) => type === "float"
                     }
                 };
             }
@@ -71,6 +55,41 @@
                     controls: [
                         { name: "threshold", ui: "range", valueType: "float", default: 0.5 }
                     ]
+                };
+            }
+
+            static get defaultControls() {
+                return {
+                    threshold: {
+                        default: {
+                            type: "range",
+                            default: 0.5,
+                            min: 0,
+                            max: 1,
+                            step: 0.005,
+                            title: "Threshold"
+                        },
+                        accepts: (type) => type === "float"
+                    }
+                };
+            }
+
+            getInputDefinitions() {
+                return {
+                    value: {
+                        type: "float",
+                        required: true,
+                        description: "Scalar value compared against the threshold control."
+                    }
+                };
+            }
+
+            getOutputDefinitions() {
+                return {
+                    mask: {
+                        type: "float",
+                        description: "Binary mask value: 1.0 when value is greater than or equal to the threshold, otherwise 0.0."
+                    }
                 };
             }
 

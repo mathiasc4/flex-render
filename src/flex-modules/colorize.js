@@ -31,21 +31,8 @@
             static outputs() {
                 return {
                     color: {
-                        type: "vec4",
+                        type: ["vec4"],
                         description: "RGBA color produced as vec4(color * value, alpha)."
-                    }
-                };
-            }
-
-            static get defaultControls() {
-                return {
-                    color: {
-                        default: {
-                            type: "color",
-                            default: "#00ffff",
-                            title: "Color"
-                        },
-                        accepts: (type) => type === "vec3"
                     }
                 };
             }
@@ -79,6 +66,43 @@
                     controls: [
                         { name: "color", ui: "color", valueType: "vec3", default: "#00ffff" }
                     ]
+                };
+            }
+
+            static get defaultControls() {
+                return {
+                    color: {
+                        default: {
+                            type: "color",
+                            default: "#00ffff",
+                            title: "Color"
+                        },
+                        accepts: (type) => type === "vec3"
+                    }
+                };
+            }
+
+            getInputDefinitions() {
+                return {
+                    value: {
+                        type: "float",
+                        required: true,
+                        description: "Scalar intensity used to scale the selected color."
+                    },
+                    alpha: {
+                        type: "float",
+                        required: false,
+                        description: "Optional opacity value. If omitted, the scalar value input is also used as alpha."
+                    }
+                };
+            }
+
+            getOutputDefinitions() {
+                return {
+                    color: {
+                        type: "vec4",
+                        description: "RGBA color produced as vec4(color * value, alpha)."
+                    }
                 };
             }
 
