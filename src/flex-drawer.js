@@ -10,6 +10,31 @@
      */
 
     /**
+     * One vector mesh.
+     *
+     * @typedef {object} VectorMesh
+     * @property {Float32Array} vertices - Packed vertices as vec4(x, y, depth, textureId).
+     * @property {Uint32Array} indices - Indices into the vertex array.
+     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
+     * @property {Float32Array} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     * @property {number} [lineWidth=1] - Native line width in pixels. Used only for `linePrimitives`.
+     */
+
+    /**
+     * Tessellated vector payload for one tile.
+     *
+     * Icons are represented as point meshes. A point mesh is rendered as an icon
+     * when its vertex textureId component is >= 0 and its `parameters` array
+     * contains per-vertex atlas placement data.
+     *
+     * @typedef {object} VectorMeshTile
+     * @property {VectorMesh[]} [fills] - Polygon fill triangle meshes.
+     * @property {VectorMesh[]} [lines] - Stroke triangle meshes rendered with gl.TRIANGLES. Mutually exclusive with linePrimitives.
+     * @property {VectorMesh[]} [linePrimitives] - Native line segment meshes rendered with gl.LINES. Mutually exclusive with lines.
+     * @property {VectorMesh[]} [points] - Point marker and icon quad meshes.
+     */
+
+    /**
      * @property {Number} idGenerator unique ID getter
      *
      * @class OpenSeadragon.FlexDrawer
@@ -137,6 +162,10 @@
             const createdOrder = [];
 
             for (const shaderId of requestedOrder) {
+                const sanitized = $.FlexRenderer.sanitizeKey(shaderId);
+                if (this.renderer._shaders[sanitized]) {
+                    this.renderer.removeShader(sanitized);
+                }
                 const shader = this.renderer.createShaderLayer(shaderId, shaders[shaderId], true);
                 if (shader) {
                     createdOrder.push(shaderId);
@@ -352,7 +381,7 @@
             if (refreshShader) {
                 this.renderer.refreshShaderLayer(shaderId, { rebuildProgram });
             } else if (rebuildProgram) {
-                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
             }
 
             this.renderer.notifyVisualizationChanged({
@@ -869,6 +898,11 @@
                     return;
                 }
 
+                if (this._destroyed) {
+                    this._rebuildHandle = null;
+                    return;
+                }
+
                 if (!this._configuredExternally) {
                     this.renderer.setShaderLayerOrder(this.viewer.world._items.map(item => item.__shaderConfig.id));
                 }
@@ -883,7 +917,7 @@
                     this.viewer.world.getItemCount()
                 );
                 this._updatePackLayout();
-                this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
                 this.rebuildCounter++;
                 this._rebuildHandle = null;
                 this._refreshDrawReadyState();
@@ -965,7 +999,7 @@
 
         /**
          * Build the current second-pass uniform payload for a set of shaders.
-         * The returned array is backend-neutral input for `renderer.secondPassProcessData(...)`
+         * The returned array is backend-neutral input for `renderer.renderSecondPass(...)`
          * and `renderer.renderSecondPassToTexture(...)`.
          * @param {Object} [view=undefined]
          * @param {Object.<string, ShaderLayer>} [shaderMap=this.renderer.getAllShaders()]
@@ -1024,51 +1058,83 @@
 
         // DRAWING METHODS
         /**
-         * Draw using FlexRenderer.
-         * @param {[TiledImage]} tiledImages array of TiledImage objects to draw
-         * @param {Object} [view=undefined] custom view position if desired
-         * @param view.bounds {OpenSeadragon.Rect} bounds of the viewport
-         * @param view.center {OpenSeadragon.Point} center of the viewport
-         * @param view.rotation {Number} rotation of the viewport
-         * @param view.zoom {Number} zoom of the viewport
+         * Draw using `FlexRenderer`.
+         *
+         * This method is the OpenSeadragon `DrawerBase` draw entry point. It remains
+         * responsible for OpenSeadragon-specific adaptation: resolving the current
+         * viewport, building the viewport matrix, collecting tile data, and collecting
+         * ShaderLayer render uniforms that depend on TiledImage state.
+         *
+         * The actual two-pass render orchestration is delegated to
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @override
+         * @param {Array<OpenSeadragon.TiledImage>} tiledImages - TiledImage objects to draw.
+         * @param {object} [view=undefined] - Optional custom view state.
+         * @param {OpenSeadragon.Rect} view.bounds - Viewport bounds.
+         * @param {OpenSeadragon.Point} view.center - Viewport center.
+         * @param {number} view.rotation - Viewport rotation in radians.
+         * @param {number} view.zoom - Viewport zoom.
+         * @returns {void}
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
          */
         draw(tiledImages, view = undefined) {
-            if (!this._drawReady && !this._refreshDrawReadyState()) {
-                this.viewer.forceRedraw();
+            if (!tiledImages || tiledImages.length === 0) {
+                this.renderer.clear();
                 return;
             }
 
-            const bounds = this.viewport.getBoundsNoRotateWithMargins(true);
-            view = view || {
-                bounds: bounds,
-                center: new OpenSeadragon.Point(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
-                rotation: this.viewport.getRotation(true) * Math.PI / 180,
-                zoom: this.viewport.getZoom(true)
-            };
+            if (!this._drawReady && !this._refreshDrawReadyState()) {
+                return;
+            }
 
-            // TODO consider sending data and computing on GPU
+            view = this._resolveRenderView(view);
+
+            // TODO consider sending data and computing on GPU.
             // calculate view matrix for viewer
-            let flipMultiplier = this.viewport.flipped ? -1 : 1;
-            let posMatrix = $.Mat3.makeTranslation(-view.center.x, -view.center.y);
-            let scaleMatrix = $.Mat3.makeScaling(2 / view.bounds.width * flipMultiplier, -2 / view.bounds.height);
-            let rotMatrix = $.Mat3.makeRotation(-view.rotation);
-            let viewMatrix = scaleMatrix.multiply(rotMatrix).multiply(posMatrix);
+            const flipMultiplier = this.viewport.flipped ? -1 : 1;
+            const posMatrix = $.Mat3.makeTranslation(-view.center.x, -view.center.y);
+            const scaleMatrix = $.Mat3.makeScaling(2 / view.bounds.width * flipMultiplier, -2 / view.bounds.height);
+            const rotMatrix = $.Mat3.makeRotation(-view.rotation);
+            const viewMatrix = scaleMatrix.multiply(rotMatrix).multiply(posMatrix);
 
             this._ensurePackLayout();
 
-            if (this._drawTwoPassFirst(tiledImages, view, viewMatrix)) {
-                this._drawTwoPassSecond(view);
-            }
+            const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
+            const secondPass = this._collectSecondPassPayload(view);
+
+            this.renderer.render({
+                firstPass: firstPass,
+                secondPass: secondPass
+            });
         } // end of function
 
         /**
-         * During the first-pass draw all tiles' data sources into the corresponding off-screen textures using identity rendering,
-         * excluding any image-processing operations or any rendering customizations.
-         * @param {OpenSeadragon.TiledImage[]} tiledImages array of TiledImage objects to draw
-         * @param {Object} viewport has bounds, center, rotation, zoom
-         * @param {OpenSeadragon.Mat3} viewMatrix
+         * Build first-pass render packages from OpenSeadragon TiledImage state.
+         *
+         * This method is the OpenSeadragon-to-renderer adaptation step for the first
+         * pass. It collects drawable tiles, extracts renderer-ready cache payloads,
+         * computes tile transform matrices, and converts crop/clip polygons into
+         * viewport-coordinate polygons consumed by the active backend.
+         *
+         * It intentionally does not clear WebGL state and does not execute the first
+         * pass. The normal draw path passes the returned packages to
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @private
+         * @param {Array<OpenSeadragon.TiledImage>} tiledImages - TiledImage objects to draw.
+         * @param {object} viewport - Resolved viewport state.
+         * @param {OpenSeadragon.Rect} viewport.bounds - Viewport bounds.
+         * @param {OpenSeadragon.Point} viewport.center - Viewport center.
+         * @param {number} viewport.rotation - Viewport rotation in radians.
+         * @param {number} viewport.zoom - Viewport zoom.
+         * @param {OpenSeadragon.Mat3} viewMatrix - Matrix mapping viewport coordinates into renderer clip space.
+         * @returns {Array<FPRenderPackage>} First-pass render packages.
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
          */
-        _drawTwoPassFirst(tiledImages, viewport, viewMatrix) {
+        _collectFirstPassPayload(tiledImages, viewport, viewMatrix) {
             // FIRST PASS (render things as they are into the corresponding off-screen textures)
             const TI_PAYLOAD = [];
 
@@ -1140,7 +1206,7 @@
                                 tile: tile
                             });
                         } else if (tileInfo.vectors) {
-                            // Flatten fill + line meshes into a simple draw list
+                            // Flatten vector meshes into a simple draw list.
 
                             if (tileInfo.vectors.fills) {
                                 tileInfo.vectors.fills.matrix = transformMatrix;
@@ -1148,11 +1214,13 @@
                             if (tileInfo.vectors.lines) {
                                 tileInfo.vectors.lines.matrix = transformMatrix;
                             }
+                            if (tileInfo.vectors.linePrimitives) {
+                                for (const lineBatch of tileInfo.vectors.linePrimitives) {
+                                    lineBatch.matrix = transformMatrix;
+                                }
+                            }
                             if (tileInfo.vectors.points) {
                                 tileInfo.vectors.points.matrix = transformMatrix;
-                            }
-                            if (tileInfo.vectors.icons) {
-                                tileInfo.vectors.icons.matrix = transformMatrix;
                             }
 
                             vecPayload.push(tileInfo.vectors);
@@ -1204,11 +1272,7 @@
 
             // todo flatten render data
 
-            this.renderer.gl.clearColor(1.0, 1.0, 1.0, 1.0);
-            this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT); // This ensures that areas that are not drawn into do not show old data
-
-            this.renderer.firstPassProcessData(TI_PAYLOAD);
-            return true;
+            return TI_PAYLOAD;
         }
 
         /**
@@ -1224,15 +1288,32 @@
             const sources = [];
             const flatShaders = this.renderer.getFlatShaderLayers(shaders, shaderOrder);
 
+            const canvas = this.renderer.canvas;
+            const osdViewport = this.viewer.viewport;
+            const inner = osdViewport && osdViewport._containerInnerSize;
+            const sx = inner && inner.x ? canvas.width / inner.x : 1;
+            const sy = inner && inner.y ? canvas.height / inner.y : 1;
+
             for (const shader of flatShaders) {
                 const config = shader.getConfig();
                 const hasSources = Array.isArray(config.tiledImages) && config.tiledImages.length > 0;
                 const tiledImage = hasSources ? this.viewer.world.getItemAt(config.tiledImages[0]) : null;
 
+                let imageOriginPx = [0, 0];
+                if (tiledImage && osdViewport) {
+                    // image (0,0) → viewport coords → CSS viewer-element pixels (top-down)
+                    // → framebuffer pixels (bottom-up to match gl_FragCoord).
+                    const vp = tiledImage.imageToViewportCoordinates(0, 0, true);
+                    const cssPt = osdViewport.pixelFromPoint(vp, true);
+                    imageOriginPx[0] = cssPt.x * sx;
+                    imageOriginPx[1] = canvas.height - cssPt.y * sy;
+                }
+
                 sources.push({
                     zoom: viewport.zoom,
                     pixelSize: tiledImage ? this._tiledImageViewportToImageZoom(tiledImage, viewport.zoom) : 1,
                     opacity: tiledImage ? tiledImage.getOpacity() : 1,
+                    imageOriginPx,
                     shader: shader,
                 });
             }
@@ -1241,21 +1322,25 @@
         }
 
         /**
-         * During the second-pass draw from the off-screen textures into the rendering canvas,
-         * applying the image-processing operations and rendering customizations.
-         * @param {Object} viewport has bounds, center, rotation, zoom
+         * Build the second-pass render package array from the renderer's current
+         * ShaderLayer graph and the resolved OpenSeadragon viewport state.
+         *
+         * This remains drawer-owned because pixel size and opacity are currently
+         * derived from OpenSeadragon `TiledImage` instances.
+         *
+         * @private
+         * @param {object} viewport - Resolved viewport state.
+         * @param {number} viewport.zoom - Viewport zoom.
+         * @returns {Array<SPRenderPackage>} Second-pass render packages.
+         *
+         * @memberof OpenSeadragon.FlexDrawer#
          */
-        _drawTwoPassSecond(viewport) {
-            const sources = this._collectShaderUniforms(this.renderer.getAllShaders(), this.renderer.getShaderLayerOrder(), viewport);
-
-            if (!sources.length) {
-                this.viewer.forceRedraw();
-                return false;
-            }
-
-            this.renderer.secondPassProcessData(sources);
-            this.renderer.gl.finish();
-            return true;
+        _collectSecondPassPayload(viewport) {
+            return this._collectShaderUniforms(
+                this.renderer.getAllShaders(),
+                this.renderer.getShaderLayerOrder(),
+                viewport
+            );
         }
 
         _getTileRenderMeta(tile, tiledImage) {
@@ -1492,7 +1577,7 @@
                 return null;
             }
 
-            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.points))) {
+            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points))) {
                 return this._buildVectorTileInfo(data, gl);
             }
 
@@ -1596,24 +1681,27 @@
                 const gl = this._gl;
                 if (data.vectors.fills) {
                     gl.deleteBuffer(data.vectors.fills.vboPos);
-                    gl.deleteBuffer(data.vectors.fills.vboCol);
+                    gl.deleteBuffer(data.vectors.fills.vboParam);
                     gl.deleteBuffer(data.vectors.fills.ibo);
                 }
                 if (data.vectors.lines) {
                     gl.deleteBuffer(data.vectors.lines.vboPos);
-                    gl.deleteBuffer(data.vectors.lines.vboCol);
+                    gl.deleteBuffer(data.vectors.lines.vboParam);
                     gl.deleteBuffer(data.vectors.lines.ibo);
+                }
+                if (data.vectors.linePrimitives) {
+                    for (const lineBatch of data.vectors.linePrimitives) {
+                        gl.deleteBuffer(lineBatch.vboPos);
+                        gl.deleteBuffer(lineBatch.vboParam);
+                        gl.deleteBuffer(lineBatch.ibo);
+                    }
                 }
                 if (data.vectors.points) {
                     gl.deleteBuffer(data.vectors.points.vboPos);
-                    gl.deleteBuffer(data.vectors.points.vboCol);
+                    gl.deleteBuffer(data.vectors.points.vboParam);
                     gl.deleteBuffer(data.vectors.points.ibo);
                 }
-                if (data.vectors.icons) {
-                    gl.deleteBuffer(data.vectors.icons.vboPos);
-                    gl.deleteBuffer(data.vectors.icons.vboCol);
-                    gl.deleteBuffer(data.vectors.icons.ibo);
-                }
+
                 data.vectors = null;
             }
         }
@@ -1773,20 +1861,41 @@
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
-                return { vboPos, vboParam, ibo, count: indices.length };
+                const firstMesh = meshes[0] || {};
+                const lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0 ? firstMesh.lineWidth : 1;
+
+                return { vboPos, vboParam, ibo, count: indices.length, lineWidth };
             };
+
+            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
+            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
 
             if (data.fills && data.fills.length) {
                 tileInfo.vectors.fills = buildBatch(data.fills);
             }
-            if (data.lines && data.lines.length) {
+            if (hasMeshLines) {
                 tileInfo.vectors.lines = buildBatch(data.lines);
+            }
+            if (hasNativeLines) {
+                const linePrimitiveGroups = new Map();
+
+                for (const mesh of data.linePrimitives) {
+                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
+                        ? mesh.lineWidth
+                        : 1;
+                    const key = String(lineWidth);
+
+                    if (!linePrimitiveGroups.has(key)) {
+                        linePrimitiveGroups.set(key, []);
+                    }
+
+                    linePrimitiveGroups.get(key).push(mesh);
+                }
+
+                tileInfo.vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map(buildBatch);
             }
             if (data.points && data.points.length) {
                 tileInfo.vectors.points = buildBatch(data.points);
-            }
-            if (data.icons && data.icons.length) {
-                tileInfo.vectors.icons = buildBatch(data.icons);
             }
 
             return tileInfo;

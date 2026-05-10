@@ -22,7 +22,8 @@
 
     /**
      * @typedef {Object} FPRenderPackage
-     * @property {FPRenderPackageItem} tiles
+     * @property {FPRenderPackageItem[]} tiles
+     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
      * @property {Number[][]} stencilPolygons
      */
 
@@ -42,12 +43,6 @@
      * @param {OpenSeadragon.FlexRenderer.ShaderLayer} [shaderLayer]
      * @param {ShaderConfig} [shaderConfig]
      * @returns {String}
-     */
-
-    /**
-     * @typedef {Object} RenderOutput
-     * @property {Number} textureDepth
-     * @property {Number} stencilDepth
      */
 
     /**
@@ -76,6 +71,50 @@
      * @property {number} [width] target width in physical pixels
      * @property {number} [height] target height in physical pixels
      * @property {number[]} [clearColor=[0, 0, 0, 0]] RGBA color used when rendering an empty second pass
+     */
+
+    /**
+     * Prepared two-pass renderer frame.
+     *
+     * This object is the main public boundary between `FlexDrawer` and
+     * `FlexRenderer` for the normal viewer draw path. It contains renderer-ready
+     * packages, not raw OpenSeadragon viewer, viewport, tile cache, or TiledImage
+     * control objects.
+     *
+     * `FlexDrawer` builds this object from OpenSeadragon state. `FlexRenderer`
+     * executes the render passes.
+     *
+     * @typedef {object} RenderFrame
+     * @memberof OpenSeadragon.FlexRenderer
+     * @property {Array<FPRenderPackage>} firstPass - First-pass render packages.
+     * @property {Array<SPRenderPackage>} secondPass - Second-pass render packages.
+     */
+
+    /**
+     * Options for `OpenSeadragon.FlexRenderer#render`.
+     *
+     * @typedef {object} RenderOptions
+     * @memberof OpenSeadragon.FlexRenderer
+     * @property {object} [secondPassOptions] - Backend-specific options forwarded to `renderSecondPass(...)`.
+     */
+
+    /**
+     * Descriptor returned by renderer pass methods.
+     *
+     * First-pass outputs may expose backend-owned intermediate textures and stencil
+     * textures. A second-pass render to the visible canvas usually does not expose
+     * a texture, but still returns a descriptor so callers can distinguish between
+     * submitted render work and a valid no-op.
+     *
+     * @typedef {object} RenderOutput
+     * @memberof OpenSeadragon.FlexRenderer
+     * @property {number} textureDepth - Number of color/intermediate texture layers exposed by this output.
+     * @property {number} stencilDepth - Number of stencil/source-mask texture layers exposed by this output.
+     * @property {WebGLTexture|undefined} [texture] - Backend-owned color/intermediate TEXTURE_2D_ARRAY texture, when exposed.
+     * @property {WebGLTexture|undefined} [stencil] - Backend-owned stencil/source-mask TEXTURE_2D_ARRAY texture, when exposed.
+     * @property {boolean} [rendered=true] - Whether this pass submitted render work.
+     * @property {string} [pass] - Pass that produced this descriptor, for example `'first-pass'` or `'second-pass'`.
+     * @property {string} [reason] - Diagnostic reason when `rendered` is false or when fallback output normalization was needed.
      */
 
     /**
@@ -155,40 +194,43 @@
 
             this.canvasContextOptions = incomingOptions.canvasOptions;
             const canvas = document.createElement("canvas");
-            const WebGLImplementation = this.constructor.determineContext(this.webGLPreferredVersion);
+            const WebGLImplementation = this.constructor.determineBackend(this.webGLPreferredVersion);
             const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
+
             if (webGLRenderingContext) {
                 this.gl = webGLRenderingContext;                                            // WebGLRenderingContext|WebGL2RenderingContext
-                this.webglContext = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
+                this.backend = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
                 this.canvas = canvas;
 
                 // Should be last call of the constructor to make sure everything is initialized
-                this.webglContext.init();
+                this.backend.init();
             } else {
                 throw new Error("$.FlexRenderer::constructor: Could not create WebGLRenderingContext!");
             }
         }
 
         /**
-         * Search through all FlexRenderer properties to find one that extends WebGLImplementation and it's getVersion() method returns <version> input parameter.
+         * Search through all FlexRenderer properties to find one that extends WebGLImplementation and its getVersion() method returns <version> input parameter.
          * @param {String} version WebGL version, "1.0" or "2.0"
          * @returns {WebGLImplementation}
          *
          * @instance
          * @memberof FlexRenderer
          */
-        static determineContext(version) {
+        static determineBackend(version) {
             const namespace = $.FlexRenderer;
+
             for (let property in namespace) {
-                const context = namespace[ property ],
-                    proto = context && context.prototype;
+                const backend = namespace[ property ];
+                const proto = backend && backend.prototype;
+
                 if (proto && proto instanceof namespace.WebGLImplementation &&
-                    $.isFunction( proto.getVersion ) && proto.getVersion.call( context ) === version) {
-                        return context;
+                    $.isFunction( proto.getVersion ) && proto.getVersion.call( backend ) === version) {
+                        return backend;
                 }
             }
 
-            throw new Error("$.FlexRenderer::determineContext: Could not find WebGLImplementation with version " + version);
+            throw new Error("$.FlexRenderer::determineBackend: Could not find WebGLImplementation with version " + version);
         }
 
         /**
@@ -249,7 +291,7 @@
          * @return {String|*}
          */
         get webglVersion() {
-            return this.webglContext.webGLVersion;
+            return this.backend.webGLVersion;
         }
 
         /**
@@ -267,7 +309,7 @@
             this.canvas.width = width;
             this.canvas.height = height;
             this.gl.viewport(x, y, width, height);
-            this.webglContext.setDimensions(x, y, width, height, levels, tiledImageCount);
+            this.backend.setDimensions(x, y, width, height, levels, tiledImageCount);
         }
 
         /**
@@ -292,14 +334,31 @@
         }
 
         /**
-         * Call to first-pass draw using WebGLProgram.
-         * @param {FPRenderPackage[]} source
-         * @return {RenderOutput}
+         * Render the first pass into renderer-owned intermediate output.
+         *
+         * The first pass consumes renderer-ready source packages, selects the
+         * backend first-pass program, loads it when required, renders source/tile
+         * data into intermediate color and stencil outputs, stores the result as
+         * renderer-owned first-pass state, and returns the render output descriptor.
+         *
+         * This method does not collect OpenSeadragon tiles. `FlexDrawer` is
+         * responsible for adapting OpenSeadragon tile/cache state into
+         * `FPRenderPackage` objects before calling this method directly or through
+         * `OpenSeadragon.FlexRenderer#render`.
+         *
+         * @param {Array<FPRenderPackage>} source - First-pass render packages.
+         * @returns {RenderOutput} Renderer-owned first-pass output descriptor.
+         * @throws {TypeError} Thrown when `source` is not an array.
+         *
          * @instance
-         * @memberof FlexRenderer
+         * @memberof OpenSeadragon.FlexRenderer#
          */
-        firstPassProcessData(source) {
-            const program = this._programImplementations[this.webglContext.firstPassProgramKey];
+        renderFirstPass(source) {
+            if (!Array.isArray(source)) {
+                throw new TypeError("$.FlexRenderer::renderFirstPass: source must be an array.");
+            }
+
+            const program = this._programImplementations[this.backend.firstPassProgramKey];
 
             if (this.useProgram(program, "first-pass")) {
                 program.load();
@@ -316,33 +375,150 @@
         }
 
         /**
-         * Execute the second pass for the already prepared first-pass result.
+         * Render the second pass from the current first-pass output.
+         *
+         * The second pass consumes renderer-ready ShaderLayer packages, selects the
+         * backend second-pass program, loads it when required, and renders the final
+         * composed output from the renderer-owned first-pass result.
+         *
+         * If `renderArray` is empty, there are no ShaderLayer packages to compose.
+         * In that case this method does not touch the active second-pass program and
+         * returns a no-op `RenderOutput` descriptor.
          *
          * Responsibility split:
-         * - the renderer owns inspector state and decides whether the active inspector mode
-         *   can be executed inline in the normal second pass
-         * - reveal modes stay in the normal second-pass program
-         * - lens mode may delegate to the backend-specific inspector compositor path
+         * - the renderer owns inspector state and decides whether the active
+         *   inspector mode can be executed inline in the normal second pass;
+         * - reveal modes stay in the normal second-pass program;
+         * - lens mode may delegate to the backend-specific inspector compositor path.
          *
-         * @param {SPRenderPackage[]} renderArray
-         * @param {RenderOptions|undefined} options
-         * @return {RenderOutput}
+         * @param {Array<SPRenderPackage>} renderArray - Second-pass render packages.
+         * @param {object|undefined} [options=undefined] - Optional backend-specific render options.
+         * @returns {RenderOutput} Second-pass render output descriptor. Empty render arrays return a no-op descriptor with `rendered: false`.
+         * @throws {TypeError} Thrown when `renderArray` is not an array.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
          */
-        secondPassProcessData(renderArray, options = undefined) {
-            if (this.webglContext && typeof this.webglContext.processSecondPassWithInspector === "function") {
+        renderSecondPass(renderArray, options = undefined) {
+            if (!Array.isArray(renderArray)) {
+                throw new TypeError("$.FlexRenderer::renderSecondPass: renderArray must be an array.");
+            }
+
+            if (!renderArray.length) {
+                return {
+                    textureDepth: 0,
+                    stencilDepth: 0,
+                    texture: undefined,
+                    stencil: undefined,
+                    rendered: false,
+                    pass: "second-pass",
+                    reason: "empty-render-array"
+                };
+            }
+
+            if (this.backend && typeof this.backend.processSecondPassWithInspector === "function") {
                 const inspectorState = this.getInspectorState();
                 if (inspectorState && inspectorState.enabled && inspectorState.mode === "lens-zoom") {
-                    return this.webglContext.processSecondPassWithInspector(renderArray, options);
+                    const inspectorResult = this.backend.processSecondPassWithInspector(renderArray, options);
+
+                    return inspectorResult || {
+                        textureDepth: 0,
+                        stencilDepth: 0,
+                        texture: undefined,
+                        stencil: undefined,
+                        rendered: true,
+                        pass: "second-pass",
+                        reason: "inspector-compositor-returned-no-output"
+                    };
                 }
             }
 
-            const program = this._programImplementations[this.webglContext.secondPassProgramKey];
+            const program = this._programImplementations[this.backend.secondPassProgramKey];
 
             if (this.useProgram(program, "second-pass")) {
                 program.load(renderArray);
             }
 
-            return program.use(this.__firstPassResult, renderArray, options);
+            const result = program.use(this.__firstPassResult, renderArray, options);
+
+            return result || {
+                textureDepth: 0,
+                stencilDepth: 0,
+                texture: undefined,
+                stencil: undefined,
+                rendered: true,
+                pass: "second-pass",
+                reason: "second-pass-program-returned-no-output"
+            };
+        }
+
+        /**
+         * Render one prepared two-pass frame.
+         *
+         * This method accepts renderer-ready first-pass and second-pass packages and executes
+         * the normal render sequence. It does not inspect OpenSeadragon viewers,
+         * TiledImages, tile caches, or viewport objects.
+         *
+         * `FlexDrawer` remains responsible for adapting OpenSeadragon state into
+         * the prepared frame. `FlexRenderer` remains responsible for executing the
+         * render passes.
+         *
+         * The method deliberately returns nothing. Call `renderFirstPass(...)` or
+         * `renderSecondPass(...)` directly when a pass output descriptor is needed.
+         *
+         * @param {RenderFrame} frame - Prepared render frame.
+         * @param {RenderOptions} [options={}] - Render options.
+         * @returns {void}
+         * @throws {TypeError} Thrown when `frame`, `frame.firstPass`, or `frame.secondPass` has an invalid shape.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
+         */
+        render(frame, options = {}) {
+            options = options || {};
+
+            if (!frame || typeof frame !== "object") {
+                throw new TypeError("$.FlexRenderer::render: frame must be an object.");
+            }
+
+            if (!Array.isArray(frame.firstPass)) {
+                throw new TypeError("$.FlexRenderer::render: frame.firstPass must be an array.");
+            }
+
+            if (!Array.isArray(frame.secondPass)) {
+                throw new TypeError("$.FlexRenderer::render: frame.secondPass must be an array.");
+            }
+
+            this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+
+            this.renderFirstPass(frame.firstPass);
+            this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+
+            this.gl.finish();
+        }
+
+        /**
+         * Clear the renderer-owned visible output.
+         *
+         * This is used when the owning drawer has no renderer-ready frame to submit,
+         * for example when the OpenSeadragon world is empty or when no ShaderLayer
+         * contributes a second-pass output.
+         *
+         * @returns {void}
+         */
+        clear() {
+            if (!this.gl || !this.canvas || !this.canvas.width || !this.canvas.height) {
+                return;
+            }
+
+            this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+            this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+            this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+            this.gl.finish();
+
+            this.__firstPassResult = null;
         }
 
         /**
@@ -376,12 +552,19 @@
                 const config = shader.getConfig();
                 // Check explicitly type of the config, if updated, recreate shader
                 if (shader.constructor.type() !== config.type) {
+                    const NewShader = $.FlexRenderer.ShaderMediator.getClass(config.type);
+                    if (NewShader) {
+                        // Drop orphan params from the previous shader type before re-instantiation,
+                        // otherwise stale keys (color, threshold, connect, incompatible use_channelN, ...)
+                        // ride along and trigger parseChannel warnings or sample()-time incompatibilities.
+                        this._sanitizeShaderParams(config, NewShader);
+                    }
                     this.createShaderLayer(shaderId, config, false);
                 }
             }
             // Needs reference early
             this._programImplementations[key] = program;
-            this.webglContext.setBackground(this._background);
+            this.backend.setBackground(this._background);
 
             program.build(this._shaders, this.getShaderLayerOrder());
             // Used also to re-compile, set requiresLoad to true
@@ -421,12 +604,11 @@
 
             if (this._program) {
                 const reused = !program._justCreated;
+
                 if (this.running && this._program === program && reused) {
                     return false;
                 }
-                if (reused) {
-                    program._justCreated = false;
-                }
+
                 this._program.unload();
             }
 
@@ -455,37 +637,48 @@
                 //todo a bit dirty.. consider events / consider doing within webgl context
                 if (name === "second-pass") {
                     // generate HTML elements for ShaderLayer's controls and put them into the DOM
-                    if (this.htmlHandler) {
-                        this.htmlReset();
+                    try {
+                        if (this.htmlHandler) {
+                            this.htmlReset();
 
-                        this.forEachShaderLayerWithContext(
-                            this._shaders,
-                            this.getShaderLayerOrder(),
-                            (shaderLayer, shaderId, shaderConfig, htmlContext) => {
-                                this.htmlHandler(
-                                    shaderLayer,
-                                    shaderConfig,
-                                    htmlContext
-                                );
+                            this.forEachShaderLayerWithContext(
+                                this._shaders,
+                                this.getShaderLayerOrder(),
+                                (shaderLayer, shaderId, shaderConfig, htmlContext) => {
+                                    this.htmlHandler(
+                                        shaderLayer,
+                                        shaderConfig,
+                                        htmlContext
+                                    );
+                                }
+                            );
+
+                            this.raiseEvent('html-controls-created', {
+                                name: name,
+                                program: program,
+                                shaderLayers: this._shaders,
+                            });
+                        }
+
+                        for (const shaderId in this._shaders) {
+                            try {
+                                this._shaders[shaderId].init();
+                            } catch (e) {
+                                $.console.warn(`Shader ${shaderId} init(). The shader control will not work.`, e);
                             }
-                        );
-
-                        this.raiseEvent('html-controls-created', {
-                            name: name,
-                            program: program,
-                            shaderLayers: this._shaders,
-                        });
-                    }
-
-                    for (const shaderId in this._shaders) {
-                        this._shaders[shaderId].init();
+                        }
+                    } catch (e) {
+                        $.console.warn(`Second pass re-initialization error: the visualization might not render.`, e);
                     }
                 }
             }
 
+            program._justCreated = false;
+
             if (!this.running) {
                 this.running = true;
             }
+
             return needsUpdate;
         }
 
@@ -564,7 +757,7 @@
             // TODO a bit dirty approach, make the program key usable from outside
             const shader = new Shader(id, {
                 shaderConfig: shaderConfig,
-                webglContext: this.webglContext,
+                backend: this.backend,
                 params: shaderConfig.params,
                 interactive: this.interactive,
 
@@ -572,7 +765,7 @@
                 invalidate: this.redrawCallback,
                 // callback to rebuild the WebGL program
                 rebuild: () => {
-                    this.registerProgram(null, this.webglContext.secondPassProgramKey);
+                    this.registerProgram(null, this.backend.secondPassProgramKey);
                 },
                 // callback to recreate the shader when control topology changes
                 refresh: () => {
@@ -611,14 +804,116 @@
         }
 
         /**
+         * Change a layer's shader type and trigger a rebuild.
+         * Use this rather than mutating shaderConfig.type directly: it scrubs orphan
+         * params from the previous type before the rebuild loop re-instantiates the shader.
+         *
+         * @param {String} layerId
+         * @param {String} newType  must be a registered shader type ($.FlexRenderer.ShaderMediator)
+         */
+        changeShaderType(layerId, newType) {
+            const id = $.FlexRenderer.sanitizeKey(layerId);
+            const shader = this._shaders[id];
+            if (!shader) {
+                throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
+            }
+
+            const NewShader = $.FlexRenderer.ShaderMediator.getClass(newType);
+            if (!NewShader) {
+                throw new Error(`$.FlexRenderer::changeShaderType: Unknown shader type '${newType}'.`);
+            }
+
+            const config = shader.getConfig();
+            if (config.type === newType) {
+                return;
+            }
+            config.type = newType;
+            config.error = false;
+            this._sanitizeShaderParams(config, NewShader);
+            this.registerProgram(null, this.webglContext.secondPassProgramKey);
+        }
+
+        /**
+         * Drop keys from shaderConfig.params that are not valid for the target shader class.
+         * Called on shader-type-change paths only — orphan keys from the previous shader
+         * (e.g. heatmap's `color`, `threshold`, `connect`) and incompatible per-source
+         * channel values would otherwise cause parseChannel warnings or sample()-time
+         * GLSL incompatibilities once the new shader is constructed.
+         *
+         * @param {ShaderConfig} shaderConfig    config whose .params object will be mutated
+         * @param {Function}     NewShaderClass  the target shader class
+         * @private
+         */
+        _sanitizeShaderParams(shaderConfig, NewShaderClass) {
+            const params = shaderConfig && shaderConfig.params;
+            if (!params || typeof params !== "object") {
+                return;
+            }
+
+            const controlNames = new Set(Object.keys(NewShaderClass.defaultControls || {}));
+
+            let sources = [];
+            try {
+                sources = NewShaderClass.sources() || [];
+            } catch (e) {
+                sources = [];
+            }
+
+            for (const key of Object.keys(params)) {
+                // Keep any use_* key (filters, mode, blend, per-source channel, future additions).
+                // Keep keys that match a control on the new shader.
+                if (!key.startsWith("use_") && !controlNames.has(key)) {
+                    delete params[key];
+                    continue;
+                }
+                // For per-source channel strings, drop if the new source can't accept the length —
+                // letting the constructor regenerate a default beats parseChannel greedy-padding.
+                const channelMatch = /^use_channel(\d+)$/.exec(key);
+                if (!channelMatch) {
+                    continue;
+                }
+                const source = sources[parseInt(channelMatch[1], 10)];
+                if (!source || typeof source.acceptsChannelCount !== "function") {
+                    continue;
+                }
+                const value = params[key];
+                if (typeof value !== "string") {
+                    continue;
+                }
+                // Strip optional "N:" inline base-channel prefix (e.g. "7:r").
+                const inline = /^(\d+):(.*)$/.exec(value);
+                const channel = inline ? inline[2] : value;
+                if (!source.acceptsChannelCount(channel.length)) {
+                    delete params[key];
+                }
+            }
+
+            if (typeof NewShaderClass.normalizeConfig === "function") {
+                NewShaderClass.normalizeConfig(shaderConfig, {});
+            }
+        }
+
+        /**
          *
          * @param order
          */
         setShaderLayerOrder(order) {
             if (!order) {
                 this._shadersOrder = null;
+                return;
             }
-            this._shadersOrder = order.map($.FlexRenderer.sanitizeKey);
+            const sanitized = order.map($.FlexRenderer.sanitizeKey);
+            const seen = new Set();
+            const deduped = [];
+            for (const key of sanitized) {
+                if (seen.has(key)) {
+                    $.console.warn(`setShaderLayerOrder: duplicate shader key '${key}' ignored (would cause GLSL redefinition).`);
+                    continue;
+                }
+                seen.add(key);
+                deduped.push(key);
+            }
+            this._shadersOrder = deduped;
         }
 
         /**
@@ -755,7 +1050,7 @@
             const shouldRebuild = options.rebuildProgram !== false;
 
             if (shouldRebuild) {
-                this.registerProgram(null, this.webglContext.secondPassProgramKey);
+                this.registerProgram(null, this.backend.secondPassProgramKey);
             }
 
             return rebuiltShader;
@@ -941,10 +1236,10 @@
          * @return {Object}
          */
         renderSecondPassToTexture(renderArray, options = {}) {
-            if (!this.webglContext || typeof this.webglContext.renderSecondPassToTexture !== 'function') {
+            if (!this.backend || typeof this.backend.renderSecondPassToTexture !== 'function') {
                 throw new Error('Active WebGL implementation does not support second-pass texture targets.');
             }
-            return this.webglContext.renderSecondPassToTexture(renderArray, options);
+            return this.backend.renderSecondPassToTexture(renderArray, options);
         }
 
         destroy() {
@@ -965,7 +1260,7 @@
                 this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
                 this._debugPreviewColorRB = null;
             }
-            this.webglContext.destroy();
+            this.backend.destroy();
             this._programImplementations = {};
         }
 
@@ -1048,7 +1343,7 @@
                 }, true);
                 renderer.setShaderLayerOrder([shaderId]);
                 renderer.setDimensions(0, 0, width, height, 1, 1);
-                renderer.registerProgram(null, renderer.webglContext.secondPassProgramKey);
+                renderer.registerProgram(null, renderer.backend.secondPassProgramKey);
 
                 const gl = renderer.gl;
                 const colorPixels = $.FlexRenderer._buildSelfTestColorData(width, height, expected);
@@ -1063,7 +1358,7 @@
                     stencilDepth: 1,
                 };
 
-                renderer.secondPassProcessData([{
+                renderer.renderSecondPass([{
                     zoom: 1,
                     pixelSize: 1,
                     opacity: 1,

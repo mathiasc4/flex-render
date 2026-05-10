@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Standalone Renderer Demo</title>
+        <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+        <script type="text/javascript" src="../../build/openseadragon/flex-renderer.js"></script>
+        <style>
+            :root {
+                --demo-bg: #f4efe4;
+                --demo-paper: rgba(255, 251, 244, 0.9);
+                --demo-panel: rgba(255, 255, 255, 0.74);
+                --demo-ink: #17211d;
+                --demo-muted: #5d6a64;
+                --demo-accent: #a62828;
+                --demo-accent-soft: rgba(166, 40, 40, 0.14);
+                --demo-line: rgba(23, 33, 29, 0.12);
+                --demo-shadow: 0 18px 44px rgba(41, 30, 18, 0.14);
+                --demo-radius: 22px;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                margin: 0;
+                font-family: Georgia, "Times New Roman", serif;
+                color: var(--demo-ink);
+                background:
+                    radial-gradient(circle at top left, rgba(166, 40, 40, 0.18), transparent 28%),
+                    radial-gradient(circle at top right, rgba(22, 58, 44, 0.15), transparent 26%),
+                    linear-gradient(180deg, #f8f3e9 0%, #efe4d2 100%);
+                min-height: 100vh;
+            }
+
+            .demo-shell {
+                display: grid;
+                grid-template-columns: 360px minmax(0, 1fr);
+                min-height: 100vh;
+            }
+
+            .demo-sidebar {
+                padding: 28px 24px;
+                border-right: 1px solid var(--demo-line);
+                background: linear-gradient(180deg, rgba(255, 251, 244, 0.9), rgba(248, 240, 228, 0.84));
+                backdrop-filter: blur(14px);
+            }
+
+            .demo-main {
+                padding: 28px;
+                display: grid;
+                grid-template-rows: auto auto minmax(0, 1fr);
+                gap: 20px;
+            }
+
+            .demo-title {
+                margin: 0 0 10px;
+                font-size: 2rem;
+                line-height: 1;
+                letter-spacing: 0.01em;
+            }
+
+            .demo-intro {
+                margin: 0;
+                color: var(--demo-muted);
+                line-height: 1.45;
+                font-size: 0.98rem;
+            }
+
+            .demo-section {
+                margin-top: 24px;
+            }
+
+            .demo-section:first-of-type {
+                margin-top: 20px;
+            }
+
+            .demo-section-title {
+                margin: 0 0 10px;
+                font-size: 0.88rem;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: var(--demo-muted);
+            }
+
+            .preset-grid,
+            .source-grid {
+                display: grid;
+                gap: 10px;
+            }
+
+            .preset-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .preset-card,
+            .source-card {
+                border: 1px solid var(--demo-line);
+                border-radius: 18px;
+                background: var(--demo-panel);
+                box-shadow: var(--demo-shadow);
+                transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+            }
+
+            .preset-card {
+                padding: 14px 16px;
+                cursor: pointer;
+                width: 100%;
+                text-align: left;
+                font: inherit;
+                color: inherit;
+            }
+
+            .preset-card:hover,
+            .source-card:hover {
+                transform: translateY(-1px);
+                border-color: rgba(166, 40, 40, 0.24);
+            }
+
+            .preset-card.is-active,
+            .source-card.is-active {
+                border-color: rgba(166, 40, 40, 0.46);
+                background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(166, 40, 40, 0.08));
+            }
+
+            .preset-card__title,
+            .source-card__title {
+                margin: 0;
+                font-size: 1rem;
+            }
+
+            .preset-card__copy,
+            .source-card__copy {
+                margin: 8px 0 0;
+                color: var(--demo-muted);
+                font-size: 0.9rem;
+                line-height: 1.35;
+            }
+
+            .source-card {
+                display: grid;
+                grid-template-columns: 72px minmax(0, 1fr);
+                gap: 12px;
+                padding: 10px;
+                align-items: center;
+                cursor: pointer;
+            }
+
+            .source-thumb {
+                width: 72px;
+                height: 72px;
+                border-radius: 14px;
+                overflow: hidden;
+                border: 1px solid rgba(23, 33, 29, 0.14);
+                background: #e8ddd0;
+            }
+
+            .source-thumb canvas {
+                width: 100%;
+                height: 100%;
+                display: block;
+            }
+
+            .source-toggle {
+                position: absolute;
+                opacity: 0;
+                pointer-events: none;
+            }
+
+            .demo-toolbar,
+            .status-bar,
+            .editor-card,
+            .stage-card {
+                border: 1px solid var(--demo-line);
+                border-radius: var(--demo-radius);
+                background: var(--demo-paper);
+                box-shadow: var(--demo-shadow);
+            }
+
+            .demo-toolbar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px 16px;
+                align-items: end;
+                padding: 18px 20px;
+            }
+
+            .toolbar-field {
+                display: grid;
+                gap: 6px;
+            }
+
+            .toolbar-field label {
+                font-size: 0.82rem;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: var(--demo-muted);
+            }
+
+            .toolbar-field input {
+                width: 88px;
+                border-radius: 999px;
+                border: 1px solid rgba(23, 33, 29, 0.16);
+                background: rgba(255, 255, 255, 0.86);
+                padding: 10px 14px;
+                font: inherit;
+                color: inherit;
+            }
+
+            .toolbar-actions {
+                display: flex;
+                gap: 10px;
+                margin-left: auto;
+                flex-wrap: wrap;
+            }
+
+            .demo-button {
+                border: 0;
+                border-radius: 999px;
+                padding: 11px 18px;
+                font: inherit;
+                cursor: pointer;
+                transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+            }
+
+            .demo-button:hover {
+                transform: translateY(-1px);
+            }
+
+            .demo-button--primary {
+                background: var(--demo-accent);
+                color: #fff7f0;
+            }
+
+            .demo-button--ghost {
+                background: rgba(23, 33, 29, 0.08);
+                color: var(--demo-ink);
+            }
+
+            .status-bar {
+                padding: 14px 18px;
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                flex-wrap: wrap;
+                font-size: 0.94rem;
+            }
+
+            .status-bar strong {
+                color: var(--demo-accent);
+            }
+
+            .main-grid {
+                display: grid;
+                grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
+                gap: 20px;
+                min-height: 0;
+            }
+
+            .stage-card {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                padding: 18px;
+                min-height: 0;
+            }
+
+            .stage-title,
+            .editor-title {
+                margin: 0;
+                font-size: 1.15rem;
+            }
+
+            .stage-copy,
+            .editor-copy {
+                margin: 6px 0 0;
+                color: var(--demo-muted);
+                font-size: 0.92rem;
+                line-height: 1.45;
+            }
+
+            .render-shell {
+                margin-top: 18px;
+                min-height: 420px;
+                border-radius: 18px;
+                border: 1px dashed rgba(23, 33, 29, 0.18);
+                background:
+                    linear-gradient(135deg, rgba(166, 40, 40, 0.08), transparent 45%),
+                    linear-gradient(315deg, rgba(22, 58, 44, 0.08), transparent 45%),
+                    #fdf9f2;
+                display: grid;
+                place-items: center;
+                overflow: hidden;
+                position: relative;
+            }
+
+            .render-shell canvas {
+                max-width: 100%;
+                max-height: 100%;
+                display: block;
+                border-radius: 12px;
+                box-shadow: 0 10px 24px rgba(23, 33, 29, 0.18);
+                image-rendering: auto;
+            }
+
+            .render-meta {
+                margin-top: 14px;
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+
+            .render-pill {
+                padding: 6px 10px;
+                border-radius: 999px;
+                background: rgba(23, 33, 29, 0.08);
+                color: var(--demo-muted);
+                font-size: 0.82rem;
+            }
+
+            .editor-card {
+                display: grid;
+                grid-template-rows: auto 1fr;
+                padding: 18px;
+                min-height: 0;
+            }
+
+            .config-input {
+                width: 100%;
+                min-height: 100%;
+                resize: none;
+                margin-top: 18px;
+                border: 1px solid rgba(23, 33, 29, 0.14);
+                border-radius: 18px;
+                padding: 16px;
+                background: rgba(255, 255, 255, 0.78);
+                color: inherit;
+                font: 13px/1.5 "Courier New", Courier, monospace;
+            }
+
+            .config-input:focus,
+            .toolbar-field input:focus {
+                outline: 2px solid var(--demo-accent-soft);
+                border-color: rgba(166, 40, 40, 0.34);
+            }
+
+            @media (max-width: 1180px) {
+                .demo-shell {
+                    grid-template-columns: 1fr;
+                }
+
+                .demo-sidebar {
+                    border-right: 0;
+                    border-bottom: 1px solid var(--demo-line);
+                }
+
+                .main-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+
+            @media (max-width: 720px) {
+                .demo-main,
+                .demo-sidebar {
+                    padding: 18px;
+                }
+
+                .render-shell {
+                    min-height: 300px;
+                }
+
+                .toolbar-actions {
+                    margin-left: 0;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="demo-shell">
+            <aside class="demo-sidebar">
+                <h1 class="demo-title">Standalone Renderer</h1>
+                <p class="demo-intro">
+                    Preset-driven test bench for the standalone runtime. Swap synthetic inputs,
+                    inspect JSON shader configs, and re-render several built-in visualizations
+                    without spinning up a viewer.
+                </p>
+
+                <section class="demo-section">
+                    <h2 class="demo-section-title">Visualization Presets</h2>
+                    <div id="preset-grid" class="preset-grid"></div>
+                </section>
+
+                <section class="demo-section">
+                    <h2 class="demo-section-title">Input Sources</h2>
+                    <div id="source-grid" class="source-grid"></div>
+                </section>
+            </aside>
+
+            <main class="demo-main">
+                <section class="demo-toolbar">
+                    <div class="toolbar-field">
+                        <label for="render-width">Width</label>
+                        <input id="render-width" type="number" min="64" step="64" value="768">
+                    </div>
+                    <div class="toolbar-field">
+                        <label for="render-height">Height</label>
+                        <input id="render-height" type="number" min="64" step="64" value="512">
+                    </div>
+                    <div class="toolbar-actions">
+                        <button id="load-preset" class="demo-button demo-button--ghost" type="button">Reload Preset</button>
+                        <button id="render-button" class="demo-button demo-button--primary" type="button">Render</button>
+                        <button id="download-button" class="demo-button demo-button--ghost" type="button">Download PNG</button>
+                    </div>
+                </section>
+
+                <section id="status-bar" class="status-bar">
+                    <div><strong>Status</strong> ready</div>
+                    <div id="status-meta"></div>
+                </section>
+
+                <div class="main-grid">
+                    <section class="stage-card">
+                        <div>
+                            <h2 class="stage-title">Render Output</h2>
+                            <p class="stage-copy">
+                                The mounted canvas is the actual standalone renderer canvas. Presets update the JSON editor,
+                                then render against the currently selected source stack.
+                            </p>
+                        </div>
+                        <div id="render-shell" class="render-shell"></div>
+                        <div id="render-meta" class="render-meta"></div>
+                    </section>
+
+                    <section class="editor-card">
+                        <div>
+                            <h2 class="editor-title">Shader Configuration</h2>
+                            <p class="editor-copy">
+                                Edit the configuration directly, then render. The selected input source order maps to `tiledImages`
+                                indexes starting at `0`.
+                            </p>
+                        </div>
+                        <textarea id="config-input" class="config-input" spellcheck="false"></textarea>
+                    </section>
+                </div>
+            </main>
+        </div>
+
+        <script type="text/javascript" src="./standalone-renderer.js"></script>
+    </body>
+</html>

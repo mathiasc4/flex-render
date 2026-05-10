@@ -81,6 +81,17 @@
                 };
             }
 
+            static _readWrapperParam(config, name, fallback = undefined) {
+                const params = (config && config.params) || {};
+                if (params[name] !== undefined) {
+                    return params[name];
+                }
+                if (config && config[name] !== undefined) {
+                    return config[name];
+                }
+                return fallback;
+            }
+
             static get defaultControls() {
                 return {
                     channel_offset: { // eslint-disable-line camelcase
@@ -99,7 +110,7 @@
 
             _readIntConfig(name, fallback, minimum = null) {
                 const config = this.getConfig ? (this.getConfig() || {}) : (this.__shaderConfig || {});
-                const raw = config[name];
+                const raw = this.constructor._readWrapperParam(config, name, fallback);
                 const parsed = Number.parseInt(raw, 10);
                 let value = Number.isFinite(parsed) ? parsed : fallback;
                 if (minimum != null && value < minimum) { // eslint-disable-line eqeqeq
@@ -110,8 +121,8 @@
 
             _getDelegateSettings() {
                 const config = this.getConfig ? (this.getConfig() || {}) : (this.__shaderConfig || {});
-                const delegateConfig = $.extend(true, {}, config.channelRendererConfig || {});
-                const delegateType = delegateConfig.type || config.channelRenderer || "single_channel";
+                const delegateConfig = $.extend(true, {}, this.constructor._readWrapperParam(config, "channelRendererConfig", {}) || {});
+                const delegateType = delegateConfig.type || this.constructor._readWrapperParam(config, "channelRenderer", "single_channel");
 
                 if (delegateType === this.constructor.type()) {
                     throw new Error("channel-series cannot recursively render itself.");
@@ -169,6 +180,11 @@
 
             _buildDelegateShaderConfig(settings) {
                 const config = this.getConfig ? (this.getConfig() || {}) : (this.__shaderConfig || {});
+                const delegateParams = $.extend(true, {}, ((settings.delegateConfig && settings.delegateConfig.params) || {}));
+                delete delegateParams.channelRenderer;
+                delete delegateParams.channelRendererConfig;
+                delete delegateParams.sourceIndex;
+                delete delegateParams.channel_offset;
                 return $.extend(true, {
                     id: `${this.id}_delegate`,
                     name: config.name || settings.delegateType,
@@ -176,11 +192,12 @@
                     visible: 1,
                     fixed: false,
                     tiledImages: (config.tiledImages || []).slice(),
-                    params: {},
+                    params: delegateParams,
                     cache: {}
                 }, settings.delegateConfig, {
                     id: `${this.id}_delegate`,
                     type: settings.delegateType,
+                    params: delegateParams,
                     tiledImages: Array.isArray(settings.delegateConfig.tiledImages) ?
                         settings.delegateConfig.tiledImages.slice() :
                         ((config.tiledImages || []).slice())
@@ -204,7 +221,7 @@
 
                 this._delegateShader = new DelegateShader(`${this.id}_delegate`, {
                     shaderConfig: delegateConfig,
-                    webglContext: this.webglContext,
+                    backend: this.backend,
                     params: delegateConfig.params,
                     interactive: this._interactive,
                     invalidate: this.invalidate,

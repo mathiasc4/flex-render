@@ -41,12 +41,13 @@ module.exports = function(grunt) {
             "src/flex-layers/bipolar-heatmap.js",
             "src/flex-layers/colormap.js",
             "src/flex-layers/default.js",
-            "src/flex-layers/edge-isoline.js",
             "src/flex-layers/edge.js",
+            "src/flex-layers/grid.js",
             "src/flex-layers/group.js",
             "src/flex-layers/heatmap.js",
             "src/flex-layers/iconmap.js",
             "src/flex-layers/sobel.js",
+            "src/flex-layers/stain-separation.js",
             "src/flex-layers/texture.js",
             "src/flex-layers/threshold.js",
             "src/flex-layers/time-series.js",
@@ -54,6 +55,7 @@ module.exports = function(grunt) {
             "src/flex-layers/channel-series.js",
             "src/mvt-tile-source.js",
             "src/fabric-tile-source.js",
+            "src/geojson-tile-source.js",
             "src/configurator.js"
         ],
         mvtWorkerDeps = [
@@ -65,6 +67,10 @@ module.exports = function(grunt) {
         fabricWorkerDeps = [
             "src/vendor/earcut.min.js",
             "src/workers/fabric-worker.core.js"
+        ],
+        geojsonWorkerDeps = [
+            "src/vendor/earcut.min.js",
+            "src/workers/geojson-worker.core.js"
         ];
 
     const banner = "//! <%= pkg.name %> <%= pkg.version %>\n" +
@@ -162,11 +168,38 @@ module.exports = function(grunt) {
                 src: ["build/openseadragon/fabric-worker.js"],
                 dest: "build/openseadragon/fabric-worker.inline.js"
             },
+            geojsonWorkerPre: {
+                options: { sourceMap: false, banner: "" },
+                src: geojsonWorkerDeps,
+                dest: "build/openseadragon/geojson-worker.js"
+            },
+            geojsonWorkerPost: {
+                options: {
+                    process: function (content/*, srcPath*/) {
+                        // Escape backticks and ${ in template literals
+                        const esc = content
+                            .replace(/`/g, "\\`")
+                            .replace(/\$\{/g, "\\${");
+                        return [
+                            "(function(root){",
+                            "  root.OpenSeadragon = root.OpenSeadragon || {};",
+                            "  // Full inlined worker source",
+                            "  root.OpenSeadragon.__GEOJSON_WORKER_SOURCE__ = `",
+                            esc,
+                            "`;",
+                            "})(typeof self !== 'undefined' ? self : window);"
+                        ].join("\n");
+                    }
+                },
+                src: ["build/openseadragon/geojson-worker.js"],
+                dest: "build/openseadragon/geojson-worker.inline.js"
+            },
             dist: {
                 // keep your existing dist concat; just ensure the inline is appended:
                 src: ["<banner>"].concat(sources).concat([
                     "build/openseadragon/mvt-worker.inline.js",
-                    "build/openseadragon/fabric-worker.inline.js"
+                    "build/openseadragon/fabric-worker.inline.js",
+                    "build/openseadragon/geojson-worker.inline.js"
                 ]),
                 dest: distribution
             }
@@ -381,6 +414,7 @@ module.exports = function(grunt) {
         "clean:build", "git-describe", "eslint",
         "concat:mvtWorkerPre", "concat:mvtWorkerPost",
         "concat:fabricWorkerPre", "concat:fabricWorkerPost",
+        "concat:geojsonWorkerPre", "concat:geojsonWorkerPost",
         "concat:dist", "uglify",
         "replace:cleanPaths", "copy:build"
     ]);

@@ -527,9 +527,16 @@
                     this.renderer._showOffscreenMatrix(fp, {scale: 0.5, pad: 8});
                 }
 
-                this._drawTwoPassSecond({
+                const sources = this._collectSecondPassPayload({
                     zoom: this.viewport.getZoom(true)
                 });
+
+                if (!sources.length) {
+                    this.viewer.forceRedraw();
+                }
+
+                this.renderer.renderSecondPass(sources);
+                this.renderer.gl.finish();
 
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
@@ -763,7 +770,7 @@
             );
 
             const source = this._buildSyntheticFirstPassSource();
-            this.renderer.firstPassProcessData(source);
+            this.renderer.renderFirstPass(source);
             return this.renderer.__firstPassResult;
         };
 
@@ -838,7 +845,7 @@
             }
 
             this.renderer.setShaderLayerOrder(shaderOrder || Object.keys(normalized));
-            this.renderer.registerProgram(null, this.renderer.webglContext.secondPassProgramKey);
+            this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
         };
 
         runtime.getOverriddenShaderConfig = function(key) {
@@ -891,7 +898,7 @@
                     throw new Error("Standalone renderer has no configured shader layers.");
                 }
 
-                this.renderer.secondPassProcessData(renderArray);
+                this.renderer.renderSecondPass(renderArray);
                 this.renderer.gl.finish();
 
                 const canvas = document.createElement('canvas');

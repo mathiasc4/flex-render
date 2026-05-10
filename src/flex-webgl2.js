@@ -460,8 +460,12 @@ uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
 // Stores texture indexes for each shader, beginning at index obtained from u_instanceOffsets
 uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
 
-// Carries shader global attributes (opacity, pixelSize, zoom)
-uniform vec3 u_shaderVariables[${this.textureMappingsUniformSize}];
+// Carries shader global attributes (opacity, pixelSize, imageOriginPx.xy)
+uniform vec4 u_shaderVariables[${this.textureMappingsUniformSize}];
+
+// Viewport zoom — identical across all shaders this frame, so kept as a scalar
+// instead of duplicating per slot in u_shaderVariables.
+uniform float u_zoom;
 
 // For each tiled image, we store (base texture offset, pack count, channel count)
 uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
@@ -509,6 +513,7 @@ bool stencilPasses;
 float opacity;
 float pixelSize;
 float zoom;
+vec2 imageOriginPx;
 
 
 // FUNCTION DEFINITIONS
@@ -672,7 +677,7 @@ ${execution}
     vec4 overall_color = intermediate_color;
     vec4 clip_color = vec4(.0);
 
-    vec3 attrs;
+    vec4 attrs;
 `;
         let customBlendFunctions = "";
 
@@ -717,9 +722,20 @@ ${getStencilPassCode(remainingBlendShader)}
         for (const shaderLayerId of keyOrder) {
             const shaderLayer = shaderMap[shaderLayerId];
             const shaderLayerConfig = shaderLayer.getConfig();
-            const slot = shaderLayer.__renderSlot;
-            const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
-            const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
+
+            // Snapshot mutable assembly state so a throw mid-iteration (e.g. an
+            // incompatible control's sample() throws from getFragmentShaderExecution)
+            // can be rolled back cleanly and the offending layer emitted as disabled
+            // instead of corrupting the GLSL source.
+            const definitionSnapshot = definition;
+            const executionSnapshot = execution;
+            const customBlendSnapshot = customBlendFunctions;
+            const remainingBlendSnapshot = remainingBlendShader;
+
+            try {
+                const slot = shaderLayer.__renderSlot;
+                const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
+                const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
 
             execution += `\n    // ${shaderLayer.uid}\n`;
 
@@ -748,7 +764,8 @@ ${getStencilPassCode(shaderLayer)}
     attrs = u_shaderVariables[${slot}];
     opacity = attrs.x;
     pixelSize = attrs.y;
-    zoom = attrs.z;
+    imageOriginPx = attrs.zw;
+    zoom = u_zoom;
 `;
 
             if (shaderLayer._mode !== "clip") {
@@ -765,6 +782,28 @@ ${getStencilPassCode(shaderLayer)}
     clip_color.a = clip_color.a * ${opacityModifier};
     intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
 `;
+                }
+            } catch (e) {
+                $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig.type}). Hiding layer.`, e);
+                shaderLayerConfig.error = true;
+                definition = definitionSnapshot;
+                execution = executionSnapshot;
+                customBlendFunctions = customBlendSnapshot;
+                remainingBlendShader = remainingBlendSnapshot;
+
+                execution += `\n    // ${shaderLayer.uid}\n`;
+                if (shaderLayer._mode !== "clip") {
+                    execution += `${getRemainingBlending()}
+    // ${shaderLayer.uid} - Disabled (assembly error)
+    intermediate_color = vec4(0.0);
+`;
+                    remainingBlendShader = shaderLayer;
+                } else {
+                    execution += `
+    // ${shaderLayer.uid} - Disabled with Clipmask (assembly error)
+    intermediate_color = vec4(0.0);
+`;
+                }
             }
         }
 
@@ -796,6 +835,7 @@ ${getStencilPassCode(shaderLayer)}
         this._instanceOffsets = gl.getUniformLocation(program, "u_instanceOffsets[0]");
         this._instanceTextureIndexes = gl.getUniformLocation(program, "u_instanceTextureIndexes[0]");
         this._shaderVariables = gl.getUniformLocation(program, "u_shaderVariables");
+        this._zoomLoc = gl.getUniformLocation(program, "u_zoom");
 
         this._texturesLocation = gl.getUniformLocation(program, "u_inputTextures");
         this._stencilLocation = gl.getUniformLocation(program, "u_stencilTextures");
@@ -843,17 +883,26 @@ ${getStencilPassCode(shaderLayer)}
         for (const renderInfo of renderArray) {
             renderInfo.shader.glDrawing(this.webGLProgram, gl);
 
-            shaderVariables.push(renderInfo.opacity, renderInfo.pixelSize, renderInfo.zoom);
+            const origin = renderInfo.imageOriginPx || [0, 0];
+            shaderVariables.push(renderInfo.opacity, renderInfo.pixelSize, origin[0], origin[1]);
 
             instanceOffsets.push(instanceTextureIndexes.length);
             instanceTextureIndexes.push(...renderInfo.shader.getConfig().tiledImages);
         }
 
         // todo _instanceOffsets and _instanceTextureIndexes are possibly static per program lifetime, so we could do this once at load()
-        gl.uniform1iv(this._instanceOffsets, instanceOffsets);
-        gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
+        // Guard against empty arrays — WebGL2 raises INVALID_VALUE on uniform1iv with a zero-length array.
+        // This happens for shaders with no tiledImages (e.g. the grid shader); leaving the GLSL fixed-size
+        // uniform arrays at their defaults is fine since those shaders don't read these uniforms.
+        if (instanceOffsets.length > 0) {
+            gl.uniform1iv(this._instanceOffsets, instanceOffsets);
+        }
+        if (instanceTextureIndexes.length > 0) {
+            gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
+        }
         // todo changes dynamically, but could be stored per tiled image instead of per-shader layer
-        gl.uniform3fv(this._shaderVariables, shaderVariables);
+        gl.uniform4fv(this._shaderVariables, shaderVariables);
+        gl.uniform1f(this._zoomLoc, renderArray.length > 0 ? renderArray[0].zoom : 1);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, renderOutput.texture);
@@ -1270,6 +1319,7 @@ void main() {
         gl.enableVertexAttribArray(this._positionsBuffer);
         gl.vertexAttribPointer(this._positionsBuffer, 2, gl.FLOAT, false, 0, 0);
         this._geomSingleMatrix = gl.getUniformLocation(program, "u_geomMatrix");
+        this._nativeLineWidthRange = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE) || [1, 1];
 
         /*
          * Rendering vector tiles. Positions of tiles are always rectangular (stretched and moved by the matrix),
@@ -1524,41 +1574,54 @@ void main() {
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }
 
-                    batch = vectorTile.points;
-                    if (batch) {
-                        if (!vectorTile.fills && !vectorTile.lines) {
-                            gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
+                    const linePrimitiveBatches = vectorTile.linePrimitives;
+                    if (linePrimitiveBatches && linePrimitiveBatches.length) {
+                        for (const lineBatch of linePrimitiveBatches) {
+                            if (!vectorTile.fills && !vectorTile.lines) {
+                                gl.uniformMatrix3fv(this._geomSingleMatrix, false, lineBatch.matrix);
+                            }
+
+                            const lineWidth = Number.isFinite(lineBatch.lineWidth) && lineBatch.lineWidth > 0
+                                ? lineBatch.lineWidth
+                                : 1;
+                            const minLineWidth = this._nativeLineWidthRange[0] || 1;
+                            const maxLineWidth = this._nativeLineWidthRange[1] || 1;
+
+                            gl.lineWidth(Math.max(minLineWidth, Math.min(maxLineWidth, lineWidth)));
+
+                            // Bind positions. payload0 is vec4(x, y, depth, textureId).
+                            gl.bindBuffer(gl.ARRAY_BUFFER, lineBatch.vboPos);
+                            gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
+
+                            // Bind per-vertex colors.
+                            gl.bindBuffer(gl.ARRAY_BUFFER, lineBatch.vboParam);
+                            gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
+
+                            // Bind indices and draw native line segments.
+                            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lineBatch.ibo);
+                            gl.drawElementsInstanced(gl.LINES, lineBatch.count, gl.UNSIGNED_INT, 0, 1);
                         }
 
-                        // Bind positions
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
-                        gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
-
-                        // Bind per-vertex colors (normalized u8 → float 0..1)
-                        gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
-                        gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
-
-                        // Bind indices and draw one instance
-                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
-                        gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
+                        gl.lineWidth(1);
                     }
 
-                    // TODO: find out if we can somehow combine points and icons
-                    batch = vectorTile.icons;
+                    batch = vectorTile.points;
                     if (batch) {
-                        if (!vectorTile.fills && !vectorTile.lines && !vectorTile.points) {
+                        if (!vectorTile.fills && !vectorTile.lines && !(vectorTile.linePrimitives && vectorTile.linePrimitives.length)) {
                             gl.uniformMatrix3fv(this._geomSingleMatrix, false, batch.matrix);
                         }
 
-                        // Bind positions
+                        // Bind positions. payload0 is vec4(x, y, depth, textureId).
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
                         gl.vertexAttribPointer(this._positionsBuffer, 4, gl.FLOAT, false, 0, 0);
 
-                        // Bind per-vertex icon parameters
+                        // Bind per-vertex colors (normalized u8 → float 0..1).
+                        // For colored point meshes: vec4(r, g, b, a).
+                        // For icon point meshes: vec4(xStart, yStart, width, height).
                         gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
                         gl.vertexAttribPointer(this._colorAttrib, 4, gl.FLOAT, false, 0, 0);
 
-                        // Bind indices and draw one instance
+                        // Bind indices and draw one instance.
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
                         gl.drawElementsInstanced(gl.TRIANGLES, batch.count, gl.UNSIGNED_INT, 0, 1);
                     }

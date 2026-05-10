@@ -22,10 +22,80 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
         };
     }
 
+    /**
+     * Envelope-level couplings, applied to every shader that nests a `colormap`
+     * envelope. Surfaced in the published schema at
+     * `$defs.uiControlEnvelopes.colormap['x-controlCouplings']` and reachable
+     * at runtime via `ShaderConfigurator.getEnvelopeCouplingValidators("colormap")`.
+     */
+    static controlCouplings() {
+        return [{
+            name: "colormap_palette_in_mode",
+            summary: "Colormap default must be a palette listed in schemeGroups[mode].",
+            corrective: "Set default to a palette that appears in $.FlexRenderer.ColorMaps.schemeGroups[mode], or change mode to a group whose list includes the desired palette.",
+            controls: ["default", "mode"],
+            validate: (envelope) => {
+                const palette = envelope && envelope.default;
+                const mode = envelope && envelope.mode;
+                // Skip array defaults — those belong to `custom_colormap`, which
+                // does not constrain palette name to a scheme group.
+                if (typeof palette !== "string" || typeof mode !== "string") {
+                    return { ok: true };
+                }
+                const group = $.FlexRenderer.ColorMaps && $.FlexRenderer.ColorMaps.schemeGroups
+                    && $.FlexRenderer.ColorMaps.schemeGroups[mode];
+                if (!group) {
+                    return { ok: true };
+                }
+                if (group.includes(palette)) {
+                    return { ok: true };
+                }
+                return {
+                    ok: false,
+                    expected: { default: `∈ schemeGroups["${mode}"] = [${group.join(", ")}]` },
+                    actual: { default: palette, mode }
+                };
+            }
+        }];
+    }
+
     constructor(owner, name, webGLVariableName, params) {
         super(owner, name, webGLVariableName);
         this._params = this.getParams(params);
+        this._normalizeParams();
         this.prepare();
+    }
+
+    /**
+     * Coerce caller-supplied params into the shape `init()` and `prepare()` expect.
+     * If the user passed an array `default` they likely meant `type: "custom_colormap"` —
+     * we warn rather than mutate the type, and fall back to a safe palette name so
+     * `init()`'s `schemeGroups[mode].includes(...)` cannot blow up.
+     */
+    _normalizeParams() {
+        const params = this._params || {};
+        const groups = ($.FlexRenderer.ColorMaps && $.FlexRenderer.ColorMaps.schemeGroups) || {};
+        const defaults = ($.FlexRenderer.ColorMaps && $.FlexRenderer.ColorMaps.defaults) || {};
+
+        if (typeof params.mode !== "string" || !groups[params.mode]) {
+            console.warn(
+                `[FlexRenderer.UIControls.ColorMap] params.mode "${params.mode}" is not a known scheme group ` +
+                `(${Object.keys(groups).join(", ")}); falling back to "sequential".`
+            );
+            params.mode = "sequential";
+        }
+
+        if (Array.isArray(params.default)) {
+            console.warn(
+                `[FlexRenderer.UIControls.ColorMap] params.default is an array — ` +
+                `did you mean type: "custom_colormap"? Falling back to the default palette for mode "${params.mode}".`
+            );
+            params.default = defaults[params.mode];
+        }
+
+        if (typeof params.default !== "string" || !params.default) {
+            params.default = defaults[params.mode];
+        }
     }
 
     prepare() {
@@ -50,8 +120,23 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
             this.setSteps();
         }
 
-        if (!this.value || !$.FlexRenderer.ColorMaps.schemeGroups[this.params.mode].includes(this.value)) {
-            this.value = $.FlexRenderer.ColorMaps.defaults[this.params.mode];
+        const mode = this.params.mode;
+        const group = $.FlexRenderer.ColorMaps.schemeGroups[mode];
+        const requested = this.params.default;
+        if (!this.value || !group || !group.includes(this.value)) {
+            const fallback = $.FlexRenderer.ColorMaps.defaults[mode];
+            if (requested && fallback && requested !== fallback) {
+                // Visible signal so the script-driven layer (and any human
+                // reading devtools) can correlate the unexpected preview
+                // colour with a palette/mode mismatch. Behaviour is unchanged
+                // — still falls back — to avoid breaking persisted configs
+                // that rely on the substitution.
+                console.warn(
+                    `[FlexRenderer.ColorMap] palette "${requested}" is not in schemeGroups["${mode}"]; ` +
+                    `substituting with "${fallback}". Pick a mode whose schemeGroups list contains the desired palette.`
+                );
+            }
+            this.value = fallback;
         }
         this.colorPallete = $.FlexRenderer.ColorMaps[this.value][this.maxSteps];
 
@@ -159,7 +244,13 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
             let min = this.steps[0];
             this.steps = this.steps.slice(0, maximum + 1);
             this.maxSteps = this.steps.length - 1;
-            this.steps.forEach(x => (x - min) / (max - min));
+            // Normalize to 0..1 if the caller passed an unnormalized range. The previous
+            // `forEach` here computed the rescaled values and discarded them — a no-op
+            // disguised as normalization. `map` actually applies it.
+            const span = max - min;
+            if (span > 0 && (min !== 0 || max !== 1)) {
+                this.steps = this.steps.map(x => (x - min) / span);
+            }
             for (let i = this.maxSteps + 1; i < maximum + 1; i++) {
                 this.steps.push(-1);
             }
@@ -167,6 +258,9 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
     }
 
     _continuousCssFromPallete(pallete) {
+        if (!pallete || !pallete.length) {
+            return "";
+        }
         let css = [`linear-gradient(90deg`];
         for (let i = 0; i < this.maxSteps; i++) {
             css.push(`, ${pallete[i]} ${Math.round((this.steps[i] + this.steps[i + 1]) * 50)}%`);
@@ -176,6 +270,9 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
     }
 
     _discreteCssFromPallete(pallete) {
+        if (!pallete || !pallete.length) {
+            return "";
+        }
         let css = [`linear-gradient(90deg, ${pallete[0]} 0%`];
         for (let i = 1; i < this.maxSteps; i++) {
             css.push(`, ${pallete[i - 1]} ${Math.round(this.steps[i] * 100)}%, ${pallete[i]} ${Math.round(this.steps[i] * 100)}%`);
@@ -184,15 +281,20 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
         return css.join("");
     }
 
-    _setPallete(newPallete) {
-        if (typeof newPallete[0] === "string") {
-            let temp = newPallete; //if this.pallete passed
-            this.pallete = [];
-            for (let color of temp) {
-                this.pallete.push(...this.parser(color));
-            }
+    /**
+     * Rebuild `this.pallete` (flat float uniform buffer) from a canonical hex-string palette.
+     * Contract: `hexColors` MUST be an array of `"#rrggbb"` strings. Input normalization
+     * belongs at the boundary (init / updater / cache round-trip), not here. The previous
+     * implementation tried to be polymorphic (parse strings on one call, re-pad on another)
+     * and crashed when given any other shape because `this.pallete` was never initialized
+     * along the alternate branch.
+     */
+    _setPallete(hexColors) {
+        this.pallete = [];
+        for (const color of hexColors) {
+            this.pallete.push(...this.parser(color));
         }
-        for (let i = this.pallete.length; i < 3 * (this.MAX_SAMPLES); i++) {
+        while (this.pallete.length < 3 * this.MAX_SAMPLES) {
             this.pallete.push(0);
         }
     }
@@ -231,7 +333,7 @@ uniform int ${this.webGLVariableName}_colormap_size;`;
 
     sample(value = undefined, valueGlType = 'void') {
         if (!value || valueGlType !== 'float') {
-            return `ERROR Incompatible control. Colormap cannot be used with ${this.name} (sampling type '${valueGlType}')`;
+            throw new Error(`Incompatible control. Colormap cannot be used with ${this.name} (sampling type '${valueGlType}').`);
         }
         return `sample_colormap(${value}, ${this.webGLVariableName}_colormap, ${this.webGLVariableName}_steps, ${this.webGLVariableName}_colormap_size, ${!this.params.continuous})`;
     }
@@ -282,6 +384,58 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         };
     }
 
+    static controlCouplings() {
+        // The parent's palette-in-mode coupling has no meaning here:
+        // `default` is an array of user-supplied colors, not a named palette.
+        return [];
+    }
+
+    _normalizeParams() {
+        // Hook overridden because the parent ColorMap's normalization encodes invariants specific to
+        // its own semantics (params.default must be a named palette string in some scheme group).
+        // custom_colormap has different semantics — params.default is the palette itself, as an array.
+        // Inheriting the parent's normalization would clobber legitimate user input.
+        // General rule: parent-class invariants that don't hold for a subclass belong behind an
+        // overridable hook, not in a constructor-driven mutation path.
+    }
+
+    /**
+     * Coerce an arbitrary palette value (user input or stale cache) into the canonical shape:
+     * an array of `"#rrggbb"` hex strings. Called once at the init boundary so every internal
+     * consumer (`_setPallete`, `cssGradient`, the color-input UI, the cache round-trip) can
+     * assume the canonical shape and skip its own defensive branching.
+     *
+     * Tolerated inputs:
+     *   - array of hex strings (canonical)              → returned as-is
+     *   - array of [r, g, b] or [r, g, b, a] in 0..1   → converted to hex (alpha dropped — GLSL is vec3)
+     *   - anything else                                  → warn, fall back to supports().default
+     */
+    _normalizePalette(value) {
+        if (Array.isArray(value) && value.length > 0) {
+            if (value.every(item => typeof item === "string")) {
+                return value;
+            }
+            if (value.every(item => Array.isArray(item) && item.length >= 3)) {
+                return value.map(rgb => this._rgbTupleToHex(rgb));
+            }
+        }
+        console.warn(
+            `[FlexRenderer.UIControls.custom_colormap] palette has unsupported shape; ` +
+            `expected an array of "#rrggbb" hex strings (or [r,g,b] tuples in 0..1). ` +
+            `Falling back to default.`,
+            value
+        );
+        return this.supports.default;
+    }
+
+    _rgbTupleToHex(tuple) {
+        const channel = (n) => {
+            const v = Math.max(0, Math.min(255, Math.round(Number(n) * 255)));
+            return v.toString(16).padStart(2, "0");
+        };
+        return `#${channel(tuple[0])}${channel(tuple[1])}${channel(tuple[2])}`;
+    }
+
     prepare() {
         this.MAX_SAMPLES = 32;
         this.GLOBAL_GLSL_KEY = 'custom_colormap';
@@ -296,7 +450,11 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
     }
 
     init() {
-        this.value = this.load(this.params.default);
+        // Pin the shape contract at the boundary: `this.value` / `this.colorPallete` are always
+        // an array of `"#rrggbb"` hex strings from this point on. The loaded value may be the
+        // user-supplied default in any tolerated input shape, or a stale cache entry from an
+        // earlier (possibly buggy) run — normalize once here so internal methods can trust it.
+        this.value = this._normalizePalette(this.load(this.params.default));
 
         if (!Array.isArray(this.steps)) {
             this.setSteps();
@@ -439,8 +597,20 @@ return masked * bigger / actualLength;
     init() {
         this._updatePending = false;
         //encoded values hold breaks values between min and max,
-        this.encodedValues = this.load(this.params.breaks, "breaks");
-        this.mask = this.load(this.params.mask, "mask");
+        // Pin the shape contract at the boundary: `encodedValues` and `mask` are always arrays of
+        // finite numbers from this point on. Loaders may return user-supplied input or stale cache
+        // entries in any shape; normalize once here so the rest of init() and every later method
+        // (slider setup, mask toggling, glDrawing) can skip its own defensive branching.
+        this.encodedValues = this._normalizeNumberArray(
+            this.load(this.params.breaks, "breaks"),
+            this.supports.breaks,
+            "breaks"
+        );
+        this.mask = this._normalizeNumberArray(
+            this.load(this.params.mask, "mask"),
+            this.supports.mask,
+            "mask"
+        );
 
         this.value = this.encodedValues.map(this._normalize.bind(this));
         this.value = this.value.slice(0, this.MAX_SLIDERS);
@@ -591,6 +761,35 @@ return masked * bigger / actualLength;
         return (value - this.params.min) / (this.params.max - this.params.min);
     }
 
+    /**
+     * Coerce an arbitrary `breaks` / `mask` value (user input or stale cache) into the canonical
+     * shape: an array of finite numbers. Tolerates a single-number input (treated as a one-element
+     * array, since `breaks: 0.5` is a reasonable user shorthand). Anything else — non-array,
+     * empty, full of NaN — warns and returns the supports() default. The single-number branch is
+     * the only "convenience" coercion; everything else fails loudly so silent corruption can't
+     * propagate into uniforms.
+     */
+    _normalizeNumberArray(value, fallback, paramName) {
+        let candidate = value;
+        if (typeof candidate === "number" && Number.isFinite(candidate)) {
+            candidate = [candidate];
+        }
+        if (Array.isArray(candidate)) {
+            const cleaned = candidate
+                .map(v => Number.parseFloat(v))
+                .filter(v => Number.isFinite(v));
+            if (cleaned.length > 0) {
+                return cleaned;
+            }
+        }
+        console.warn(
+            `[FlexRenderer.UIControls.AdvancedSlider] params.${paramName} has unsupported shape; ` +
+            `expected an array of finite numbers. Falling back to default.`,
+            value
+        );
+        return fallback.slice();
+    }
+
     _updateConnectStyles(container) {
         if (!container) {
             container = document.getElementById(this.id);
@@ -668,9 +867,8 @@ uniform float ${this.webGLVariableName}_mask[ADVANCED_SLIDER_LEN+1];`;
     }
 
     sample(value = undefined, valueGlType = 'void') {
-        // TODO: throwing & managing exception would be better, now we don't know what happened when this gets baked to GLSL
         if (!value || valueGlType !== 'float') {
-            return `ERROR Incompatible control. Advanced slider cannot be used with ${this.name} (sampling type '${valueGlType}')`;
+            throw new Error(`Incompatible control. Advanced slider cannot be used with ${this.name} (sampling type '${valueGlType}').`);
         }
         return `sample_advanced_slider(${value}, ${this.webGLVariableName}_breaks, ${this.webGLVariableName}_mask, ${this.params.maskOnly}, ${this.webGLVariableName}_min)`;
     }
@@ -905,7 +1103,7 @@ $.FlexRenderer.UIControls.registerClass("button", $.FlexRenderer.UIControls.Butt
 $.FlexRenderer.IAtlasTextureControl = class IAtlasTextureControl extends $.FlexRenderer.UIControls.IControl {
     constructor(owner, name, webGLVariableName, params) {
         super(owner, name, webGLVariableName);
-        this.atlas = owner.webglContext ? owner.webglContext.secondAtlas : null;
+        this.atlas = owner.backend ? owner.backend.secondAtlas : null;
         this._params = this.getParams(params);
         this.textureId = -1;
         this.encodedValue = this.params.default;
@@ -2055,7 +2253,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
             (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
             size * 0.7
         );
-        const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight);
+        const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight, 1.0);
         const fontSize = Math.max(8, Math.floor(size * fitScale));
         metrics = measureAt(fontSize);
 
@@ -2127,19 +2325,18 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
 
         node.innerHTML = icons.map(icon => {
             const previewHtml = icon.className
-                ? `<i class="${icon.className}" aria-hidden="true" style="font-size: 24px;"></i>`
-                : `<span style="font-size: 24px; line-height: 1;">${icon.glyph}</span>`;
+                ? `<i class="${icon.className} text-2xl" aria-hidden="true"></i>`
+                : `<span class="text-2xl leading-none">${icon.glyph}</span>`;
 
             return `
 <button type="button"
-    class="icon-search-result"
+    class="icon-search-result btn btn-ghost h-auto py-2 flex flex-col items-center gap-1 normal-case font-normal"
     data-icon-name="${icon.name}"
     data-icon-set="${icon.set || ""}"
-    title="${icon.name}"
-    style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 84px; padding: 10px; border: 1px solid #d8e2d9; border-radius: 10px; background: #fff;">
-<span style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;">${previewHtml}</span>
-<span style="font-size: 12px; text-align: center; line-height: 1.2;">${icon.name}</span>
-<span style="font-size: 11px; text-align: center; line-height: 1.2; opacity: 0.6;">${icon.set || ""}</span>
+    title="${icon.name}">
+<span class="inline-flex items-center justify-center w-8 h-8">${previewHtml}</span>
+<span class="text-xs text-center leading-tight truncate max-w-full">${icon.name}</span>
+<span class="text-[11px] text-center leading-tight opacity-60">${icon.set || ""}</span>
 </button>`;
         }).join("");
 
@@ -2173,28 +2370,31 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
 
     toHtml(classes = "", css = "") {
         const disabled = this.params.interactive ? "" : "disabled";
-        const body = `<div id="${this.id}_root" class="er-control__widget er-control__widget--icon"${$.FlexRenderer.UIControls.styleAttr(`${css}; position: relative;`)}>
-<div class="er-control__toolbar er-control__toolbar--icon" style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-    <button id="${this.id}_trigger" type="button" class="er-control__button er-control__button--icon-trigger" ${disabled}
-        style="width: 52px; height: 52px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #ccc; border-radius: 8px; background: #fff; cursor: pointer;">
-        <span id="${this.id}_preview" class="er-control__preview er-control__preview--icon" style="display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 100%;">?</span>
+        const decodedColor = this._decodeStoredValue(this.encodedValue || this.params.default).color;
+        // Positioning (`position: absolute`, top/right offsets, z-index, width
+        // clamp) and the `display: none` toggle stay inline — init() flips
+        // display directly, and these utilities don't compose cleanly as
+        // single Tailwind classes. Visual styling delegates to daisyUI tokens
+        // so the popover follows the host theme.
+        const body = `<div id="${this.id}_root" class="er-control__widget er-control__widget--icon relative"${$.FlexRenderer.UIControls.styleAttr(css)}>
+<div class="er-control__toolbar er-control__toolbar--icon flex items-center justify-between gap-2">
+    <button id="${this.id}_trigger" type="button" class="er-control__button er-control__button--icon-trigger btn btn-square btn-outline" ${disabled}>
+        <span id="${this.id}_preview" class="er-control__preview er-control__preview--icon inline-flex items-center justify-center w-full h-full">?</span>
     </button>
 </div>
-<div id="${this.id}_popup" class="er-control__popup er-control__popup--icon"
-     style="display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: min(420px, 90vw); padding: 12px; border: 1px solid #c9d5ca; border-radius: 12px; background: #fdfefd; box-shadow: 0 16px 36px rgba(18, 32, 24, 0.12);">
-    <div class="er-control__popup-header er-control__popup-header--icon" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <strong style="font-size: 13px;">Icon picker</strong>
-        <button id="${this.id}_close" type="button" class="er-control__button er-control__button--icon-close" ${disabled}>Close</button>
+<div id="${this.id}_popup" class="er-control__popup er-control__popup--icon card card-compact bg-base-100 border border-base-300 shadow-lg"
+     style="display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: min(420px, 90vw);">
+    <div class="card-body p-3">
+        <div class="er-control__popup-header er-control__popup-header--icon flex justify-between items-center mb-2">
+            <span class="font-medium text-sm">Icon picker</span>
+            <button id="${this.id}_close" type="button" class="er-control__button er-control__button--icon-close btn btn-ghost btn-xs btn-circle" aria-label="Close" ${disabled}>✕</button>
+        </div>
+        <div class="er-control__search er-control__search--icon flex items-center gap-2 mb-2">
+            <input type="text" id="${this.id}_query" class="er-control__input er-control__input--icon-query input input-bordered input-sm flex-1" placeholder="Search icons, aliases, glyphs" ${disabled}>
+            <input type="color" id="${this.id}_color" class="er-control__input er-control__input--icon-color w-10 h-10 rounded cursor-pointer" value="${decodedColor}" title="Icon color" ${disabled}>
+        </div>
+        <div id="${this.id}_results" class="er-control__results er-control__results--icon grid grid-cols-3 gap-2 max-h-[360px] overflow-auto"></div>
     </div>
-    <div class="er-control__search er-control__search--icon" style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-bottom: 10px; align-items: end;">
-        <input type="text" id="${this.id}_query" class="er-control__input er-control__input--icon-query" placeholder="Search icons, aliases, glyphs" style="width: 100%;" ${disabled}>
-        <label class="er-control__color-picker er-control__color-picker--icon" style="display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #4e5d52;">
-            <span>Color</span>
-            <input type="color" id="${this.id}_color" class="er-control__input er-control__input--icon-color" value="${this._decodeStoredValue(this.encodedValue || this.params.default).color}" style="width: 44px; height: 38px; padding: 2px;" ${disabled}>
-        </label>
-    </div>
-    <div id="${this.id}_results" class="er-control__results er-control__results--icon"
-         style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; max-height: 360px; overflow: auto;"></div>
 </div>
 </div>`;
         return $.FlexRenderer.UIControls.renderControl("icon", this.params.title, body, classes);

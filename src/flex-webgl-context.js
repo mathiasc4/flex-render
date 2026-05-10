@@ -192,7 +192,7 @@
          * Reuse the current first-pass result and render the normal second pass into an offscreen target.
          *
          * Contract:
-         * - consumes the same `renderArray` that would be passed to `secondPassProcessData(...)`
+         * - consumes the same `renderArray` that would be passed to `renderSecondPass(...)`
          * - must not mutate renderer-owned inspector state
          * - should render the normal second-pass composition, not apply special lens logic here
          * - returns a backend-owned target object that can later be consumed by compositor logic

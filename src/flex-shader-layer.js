@@ -92,7 +92,7 @@
          * @param {String} id unique identifier
          * @param {Object} privateOptions
          * @param {Object} privateOptions.shaderConfig              object bind with this ShaderLayer
-         * @param {WebGLImplementation} privateOptions.webglContext
+         * @param {WebGLImplementation} privateOptions.backend
          * @param {Object} privateOptions.cache
          * @param {Function} privateOptions.invalidate  // callback to re-render the viewport
          * @param {Function} privateOptions.rebuild     // callback to rebuild the WebGL program
@@ -112,7 +112,7 @@
             }
 
             this.__shaderConfig = privateOptions.shaderConfig;
-            this.webglContext = privateOptions.webglContext;
+            this.backend = privateOptions.backend;
             this._interactive = privateOptions.interactive;
             this._customControls = privateOptions.params ? privateOptions.params : {};
 
@@ -712,7 +712,7 @@
             }
 
             if (evented) {
-                this.webglContext.renderer.notifyVisualizationChanged({
+                this.backend.renderer.notifyVisualizationChanged({
                     reason: "channel-change",
                     shaderId: this.id,
                     shaderType: this.constructor.type()
@@ -784,7 +784,7 @@
                 return 4;
             }
             const worldIndex = cfg.tiledImages[sourceIndex];
-            const drawer = this.webglContext.renderer.drawer;
+            const drawer = this.backend.renderer.drawer;
             if (!drawer || worldIndex == null) {  // eslint-disable-line eqeqeq
                 return 4;
             }
@@ -803,7 +803,7 @@
             }
 
             const worldIndex = cfg.tiledImages[sourceIndex];
-            const drawer = this.webglContext.renderer.drawer;
+            const drawer = this.backend.renderer.drawer;
             const world = drawer && drawer.viewer ? drawer.viewer.world : null;
             if (!world || worldIndex == null) {  // eslint-disable-line eqeqeq
                 return null;
@@ -823,7 +823,7 @@
                 return 1;
             }
             const worldIndex = cfg.tiledImages[sourceIndex];
-            const drawer = this.webglContext.renderer.drawer;
+            const drawer = this.backend.renderer.drawer;
             if (!drawer || worldIndex == null) {  // eslint-disable-line eqeqeq
                 return 1;
             }
@@ -947,7 +947,7 @@
          * @return {never}
          */
         getTextureSize(otherDataIndex = 0) {
-            return this.webglContext.getTextureSize(otherDataIndex);
+            return this.backend.getTextureSize(otherDataIndex);
         }
 
         // BLENDING LOGIC
@@ -959,11 +959,11 @@
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
         resetMode(options = {}, force = true, evented = true) {
-            this._mode = this._resetOption("use_mode", this.webglContext.supportedUseModes, options, force);
+            this._mode = this._resetOption("use_mode", this.backend.supportedUseModes, options, force);
             this._blend = this._resetOption("use_blend", OpenSeadragon.FlexRenderer.BLEND_MODE, options, force);
 
             if (evented) {
-                this.webglContext.renderer.notifyVisualizationChanged({
+                this.backend.renderer.notifyVisualizationChanged({
                     reason: "mode-change",
                     shaderId: this.id,
                     shaderType: this.constructor.type(),
@@ -1011,7 +1011,7 @@
 
             if (contiguous) {
                 // Use the old fast path: osd_texture + swizzle
-                return `${this.webglContext.sampleTexture(sourceIndex, uv)}.${pattern}`;
+                return `${this.backend.sampleTexture(sourceIndex, uv)}.${pattern}`;
             }
 
             // TODO: we should call here API of the underlying engine to get sampling method, not hardcoding it here!
@@ -1084,12 +1084,12 @@
          * TODO configurable...
          */
         getCustomBlendFunction(functionName) {
-            let code = this.webglContext.getBlendingFunction(this._blend);
+            let code = this.backend.getBlendingFunction(this._blend);
             if (!code) {
                 $.console.warn("Invalid blending - using default", this._blend, this);
                 // Set to mask, typical wanted value if mode is not show. If mode=show, there is a hardcoded blend function.
                 this._blend = 'mask';
-                code = this.webglContext.getBlendingFunction(this._blend);
+                code = this.backend.getBlendingFunction(this._blend);
             }
             return `vec4 ${functionName}(vec4 fg, vec4 bg) {
 ${code}
@@ -1188,7 +1188,7 @@ ${code}
             this.__scaleSuffix = this.__scaleSuffix.reverse().join("");
 
             if (evented) {
-                this.webglContext.renderer.notifyVisualizationChanged({
+                this.backend.renderer.notifyVisualizationChanged({
                     reason: "filter-change",
                     shaderId: this.id,
                     shaderType: this.constructor.type()

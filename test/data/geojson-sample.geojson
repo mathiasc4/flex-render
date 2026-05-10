@@ -1,0 +1,323 @@
+{
+  "type": "FeatureCollection",
+  "bbox": [0, 0, 4096, 4096],
+  "features": [
+    {
+      "type": "Feature",
+      "id": "simple-polygon",
+      "properties": {
+        "name": "Simple polygon",
+        "purpose": "Basic Polygon support"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [300, 300],
+            [1050, 420],
+            [1200, 1050],
+            [650, 1300],
+            [250, 900],
+            [300, 300]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "concave-polygon",
+      "properties": {
+        "name": "Concave polygon",
+        "purpose": "Tests earcut instead of triangle-fan polygon filling"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [1450, 300],
+            [2500, 300],
+            [2500, 600],
+            [1900, 600],
+            [1900, 1250],
+            [1450, 1250],
+            [1450, 300]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "polygon-with-hole",
+      "properties": {
+        "name": "Polygon with hole",
+        "purpose": "Tests Polygon inner rings / earcut hole offsets"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [2850, 300],
+            [3850, 300],
+            [3850, 1300],
+            [2850, 1300],
+            [2850, 300]
+          ],
+          [
+            [3150, 600],
+            [3550, 600],
+            [3550, 1000],
+            [3150, 1000],
+            [3150, 600]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "simple-line",
+      "properties": {
+        "name": "Simple line",
+        "purpose": "Basic LineString support"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [250, 1850],
+          [700, 1500],
+          [1150, 1800],
+          [1500, 1450],
+          [1900, 1700]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multi-line",
+      "properties": {
+        "name": "MultiLineString",
+        "purpose": "Tests MultiLineString explosion into LineString records"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [2200, 1500],
+            [2700, 1800],
+            [3200, 1500]
+          ],
+          [
+            [2200, 1900],
+            [2700, 2200],
+            [3200, 1900],
+            [3700, 2200]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "simple-point",
+      "properties": {
+        "name": "Simple point",
+        "purpose": "Basic Point support"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [650, 2300]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multi-point",
+      "properties": {
+        "name": "MultiPoint",
+        "purpose": "Tests MultiPoint explosion into Point records"
+      },
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [1100, 2300],
+          [1450, 2550],
+          [1800, 2300],
+          [2150, 2550]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multi-polygon",
+      "properties": {
+        "name": "MultiPolygon",
+        "purpose": "Tests MultiPolygon explosion into Polygon records"
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [300, 3000],
+              [900, 3000],
+              [900, 3600],
+              [300, 3600],
+              [300, 3000]
+            ]
+          ],
+          [
+            [
+              [1100, 3000],
+              [1800, 3000],
+              [1800, 3700],
+              [1100, 3700],
+              [1100, 3000]
+            ],
+            [
+              [1300, 3200],
+              [1600, 3200],
+              [1600, 3500],
+              [1300, 3500],
+              [1300, 3200]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "geometry-collection",
+      "properties": {
+        "name": "GeometryCollection",
+        "purpose": "Tests GeometryCollection expansion"
+      },
+      "geometry": {
+        "type": "GeometryCollection",
+        "geometries": [
+          {
+            "type": "Point",
+            "coordinates": [2400, 3250]
+          },
+          {
+            "type": "LineString",
+            "coordinates": [
+              [2250, 3650],
+              [2600, 3000],
+              [2950, 3650]
+            ]
+          },
+          {
+            "type": "Polygon",
+            "coordinates": [
+              [
+                [3150, 3000],
+                [3800, 3150],
+                [3600, 3700],
+                [3000, 3600],
+                [3150, 3000]
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-fill-a",
+      "properties": {
+        "name": "Overlap fill A",
+        "purpose": "First semi-transparent polygon in overlap test area"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [2450, 2350],
+            [3250, 2350],
+            [3250, 2850],
+            [2450, 2850],
+            [2450, 2350]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-fill-b",
+      "properties": {
+        "name": "Overlap fill B",
+        "purpose": "Second semi-transparent polygon overlapping fill A"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [2850, 2450],
+            [3900, 2600],
+            [3700, 3050],
+            [2700, 2950],
+            [2850, 2450]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-hole-on-fill",
+      "properties": {
+        "name": "Overlapping polygon with hole",
+        "purpose": "Hole should reveal whatever is underneath rather than being filled by this polygon"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [3300, 2300],
+            [4050, 2300],
+            [4050, 3000],
+            [3300, 3000],
+            [3300, 2300]
+          ],
+          [
+            [3525, 2500],
+            [3825, 2500],
+            [3825, 2800],
+            [3525, 2800],
+            [3525, 2500]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-line-on-fill",
+      "properties": {
+        "name": "Line over overlapping fills",
+        "purpose": "Tests whether lines remain visible over filled polygons"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [2350, 2600],
+          [2850, 2500],
+          [3300, 2700],
+          [3900, 2850]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "overlap-points-on-fill",
+      "properties": {
+        "name": "Points over overlapping fills",
+        "purpose": "Tests whether point markers remain visible over filled polygons"
+      },
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [2750, 2600],
+          [3050, 2700],
+          [3450, 2650],
+          [3750, 2900]
+        ]
+      }
+    }
+  ]
+}
