@@ -210,8 +210,7 @@
                     visible: 1,
                     fixed: false,
                     tiledImages: [0],
-                    params,
-                    cache: {}
+                    params
                 }
             }
         };
@@ -738,6 +737,25 @@
         }
     }
 
+    function renderDetailsCell(details) {
+        const text = stringifyDetails(details);
+
+        if (!text) {
+            return `<span class="details-empty">—</span>`;
+        }
+
+        const lineCount = text.split("\n").length;
+        const summary = lineCount > 1 ?
+            `Show details (${lineCount} lines)` :
+            "Show details";
+
+        return `
+<details class="details-toggle">
+    <summary>${escapeHtml(summary)}</summary>
+    <div class="details-body">${escapeHtml(text)}</div>
+</details>`;
+    }
+
     function renderResults(report) {
         const root = document.getElementById("results-root");
         const suites = [];
@@ -765,7 +783,7 @@
     <td><span class="status ${escapeHtml(result.status)}">${escapeHtml(result.status.toUpperCase())}</span></td>
     <td>${escapeHtml(result.name)}</td>
     <td>${escapeHtml(result.message)}</td>
-    <td class="details">${escapeHtml(stringifyDetails(result.details))}</td>
+    <td class="details">${renderDetailsCell(result.details)}</td>
 </tr>`).join("");
 
             return `

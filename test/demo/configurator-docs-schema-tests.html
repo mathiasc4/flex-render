@@ -44,11 +44,6 @@
                 ]);
 
                 await loadFirst([
-                    "../../src/configurator.js",
-                    "/src/configurator.js"
-                ]);
-
-                await loadFirst([
                     "./configurator-docs-schema-tests.js",
                     "/test/demo/configurator-docs-schema-tests.js",
                     "/demo/configurator-docs-schema-tests.js"
@@ -294,6 +289,40 @@
 
         .details {
             color: #666;
+            min-width: 140px;
+            max-width: 360px;
+        }
+
+        .details-empty {
+            color: #aaa;
+        }
+
+        .details-toggle {
+            max-width: 360px;
+        }
+
+        .details-toggle summary {
+            cursor: pointer;
+            color: #374151;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .details-toggle summary:hover {
+            text-decoration: underline;
+        }
+
+        .details-body {
+            margin-top: 4px;
+            padding: 4px 6px;
+            max-height: 160px;
+            overflow: auto;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            color: #666;
+            font-family: monospace;
+            font-size: 11px;
+            line-height: 1.3;
             white-space: pre-wrap;
             word-break: break-word;
         }

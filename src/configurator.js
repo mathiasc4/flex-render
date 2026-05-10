@@ -391,12 +391,14 @@
                 };
             });
 
+            const modules = this._compileShaderModuleDescriptors();
             const controls = this._compileAvailableControls();
 
             const model = {
-                version: 6,
+                version: 7,
                 generatedAt: new Date().toISOString(),
                 shaders,
+                modules,
                 controls
             };
 
@@ -407,6 +409,8 @@
         compileConfigSchemaModel() {
             const availableShaders = $.FlexRenderer.ShaderMediator.availableShaders();
             const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
+            const shaderModules = this._compileShaderModuleJsonSchemas();
+            const shaderModuleGraph = this._compileShaderModuleGraphJsonSchema(shaderModules);
             const shaderLayerRefs = availableShaders.map(Shader => ({
                 $ref: `#/$defs/shaderLayers/${Shader.type()}`
             }));
@@ -424,7 +428,7 @@
 
             const schema = {
                 $schema: "https://json-schema.org/draft/2020-12/schema",
-                $id: "https://flex-renderer/schemas/visualization-config/v2.json",
+                $id: "https://flex-renderer/schemas/visualization-config/v3.json",
                 title: "FlexRenderer visualization config",
                 description: "Published JSON Schema for renderer visualization configuration.",
                 type: "object",
@@ -446,9 +450,11 @@
                 },
                 $defs: {
                     uiControlEnvelopes,
-                    shaderLayers
+                    shaderLayers,
+                    shaderModules,
+                    shaderModuleGraph
                 },
-                "x-schemaVersion": 2,
+                "x-schemaVersion": 3,
                 "x-generatedAt": new Date().toISOString()
             };
 
@@ -786,6 +792,19 @@
                 shadersSection.appendChild(isNode(rendered) ? rendered : this._renderDefaultShaderDoc(shader));
             }
 
+            const modulesSection = document.createElement("section");
+            modulesSection.className = "flex flex-col gap-4";
+            modulesSection.innerHTML = `<h3 class="text-xl font-semibold">Available shader modules</h3>`;
+
+            for (const module of model.modules || []) {
+                const customModuleRenderer = this.docsRenderers.get("module");
+                let rendered = null;
+                if (customModuleRenderer) {
+                    rendered = customModuleRenderer({ configurator: this, module, model });
+                }
+                modulesSection.appendChild(isNode(rendered) ? rendered : this._renderDefaultModuleDoc(module));
+            }
+
             const controlsSection = document.createElement("section");
             controlsSection.className = "flex flex-col gap-4";
             controlsSection.innerHTML = `<h3 class="text-xl font-semibold">Available UI controls</h3>`;
@@ -815,6 +834,9 @@
             }
 
             root.appendChild(shadersSection);
+            if ((model.modules || []).length) {
+                root.appendChild(modulesSection);
+            }
             root.appendChild(controlsSection);
             node.appendChild(root);
         },
@@ -1033,6 +1055,194 @@
             }));
         },
 
+        _compileShaderModuleDescriptors() {
+            const Mediator = $.FlexRenderer.ShaderModuleMediator;
+
+            if (!Mediator || typeof Mediator.availableModules !== "function") {
+                return [];
+            }
+
+            return Mediator.availableModules().map(Module =>
+                this._compileShaderModuleDescriptor(Module)
+            );
+        },
+
+        _compileShaderModuleDescriptor(Module) {
+            const type = Module.type();
+            const inputs = typeof Module.inputs === "function" ? (Module.inputs() || {}) : {};
+            const outputs = typeof Module.outputs === "function" ? (Module.outputs() || {}) : {};
+
+            return {
+                type,
+                name: typeof Module.name === "function" ? Module.name() : type,
+                description: typeof Module.description === "function" ? Module.description() : "",
+                inputs: this._compileShaderModulePortDescriptors(inputs),
+                outputs: this._compileShaderModulePortDescriptors(outputs),
+                controls: this._compileShaderModuleControlDescriptors(Module),
+                classDocs: this._getModuleClassDocs(Module)
+            };
+        },
+
+        _compileShaderModulePortDescriptors(ports = {}) {
+            return Object.entries(ports || {}).map(([name, port]) => ({
+                name,
+                type: port && port.type ? port.type : "unknown",
+                required: !!(port && port.required),
+                default: port && port.default !== undefined ? deepClone(port.default) : undefined,
+                description: (port && port.description) || ""
+            }));
+        },
+
+        _compileShaderModuleControlDescriptors(Module) {
+            return this._compileControlDescriptorsFromDefinitions(Module.defaultControls || {});
+        },
+
+        _compileControlDescriptorsFromDefinitions(defs = {}) {
+            const uiControls = this._buildControls();
+            const result = {};
+
+            for (const [controlName, controlConfig] of Object.entries(defs || {})) {
+                if (controlName.startsWith("use_") || controlConfig === false) {
+                    continue;
+                }
+
+                const supported = [];
+
+                if (controlConfig && controlConfig.required && controlConfig.required.type) {
+                    supported.push(controlConfig.required.type);
+                } else if (controlConfig && typeof controlConfig.accepts === "function") {
+                    for (const glType in uiControls) {
+                        for (const existing of uiControls[glType]) {
+                            if (controlConfig.accepts(glType, existing)) {
+                                supported.push(existing.name);
+                            }
+                        }
+                    }
+                }
+
+                result[controlName] = [...new Set(supported)];
+            }
+
+            return Object.keys(result).map(name => {
+                const def = defs[name] || {};
+
+                return {
+                    name,
+                    supportedTypes: result[name],
+                    default: def.default !== undefined ? deepClone(def.default) : null,
+                    required: def.required !== undefined ? deepClone(def.required) : null
+                };
+            });
+        },
+
+        _compileShaderModuleJsonSchemas() {
+            const Mediator = $.FlexRenderer.ShaderModuleMediator;
+            const schemas = {};
+
+            if (!Mediator || typeof Mediator.availableModules !== "function") {
+                return schemas;
+            }
+
+            for (const Module of Mediator.availableModules()) {
+                schemas[Module.type()] = this._compileShaderModuleNodeJsonSchema(Module);
+            }
+
+            return schemas;
+        },
+
+        _compileShaderModuleNodeJsonSchema(Module) {
+            const type = Module.type();
+            const name = typeof Module.name === "function" ? Module.name() : type;
+            const description = typeof Module.description === "function" ? Module.description() : "";
+            const inputs = typeof Module.inputs === "function" ? (Module.inputs() || {}) : {};
+            const outputs = typeof Module.outputs === "function" ? (Module.outputs() || {}) : {};
+            const inputProperties = {};
+            const requiredInputs = [];
+
+            for (const [inputName, input] of Object.entries(inputs)) {
+                inputProperties[inputName] = this._compileShaderModuleRefJsonSchema(
+                    `Input reference for '${inputName}'.`
+                );
+
+                if (input && input.required) {
+                    requiredInputs.push(inputName);
+                }
+            }
+
+            const required = ["type"];
+            const inputSchema = {
+                type: "object",
+                additionalProperties: false,
+                properties: inputProperties,
+                description: "Input edge references keyed by module input port name."
+            };
+
+            if (requiredInputs.length) {
+                inputSchema.required = requiredInputs;
+                required.push("inputs");
+            }
+
+            const schema = {
+                type: "object",
+                additionalProperties: false,
+                required,
+                properties: {
+                    type: { const: type },
+                    inputs: inputSchema,
+                    params: {
+                        type: "object",
+                        description: "Module-local compile-time params and initial module control values."
+                    }
+                },
+                title: name,
+                description,
+                "x-docs": this._getModuleClassDocs(Module),
+                "x-inputs": this._compileShaderModulePortDescriptors(inputs),
+                "x-outputs": this._compileShaderModulePortDescriptors(outputs),
+                "x-controls": this._compileShaderModuleControlDescriptors(Module)
+            };
+
+            return schema;
+        },
+
+        _compileShaderModuleGraphJsonSchema(shaderModules = {}) {
+            const moduleTypes = Object.keys(shaderModules).sort();
+            const moduleRefs = moduleTypes.map(type => ({
+                $ref: `#/$defs/shaderModules/${type}`
+            }));
+
+            return {
+                type: "object",
+                additionalProperties: false,
+                required: ["nodes", "output"],
+                properties: {
+                    version: {
+                        type: "integer",
+                        minimum: 1,
+                        description: "Optional graph config version."
+                    },
+                    nodes: {
+                        type: "object",
+                        additionalProperties: moduleRefs.length ? { oneOf: moduleRefs } : { type: "object" },
+                        description: "Map of graph node id -> registered ShaderModule node config."
+                    },
+                    output: this._compileShaderModuleRefJsonSchema(
+                        "Final graph output reference in nodeId.portName form."
+                    )
+                },
+                description: "Typed ShaderModule DAG compiled by ModularShaderLayer.",
+                "x-moduleTypes": moduleTypes
+            };
+        },
+
+        _compileShaderModuleRefJsonSchema(description) {
+            return {
+                type: "string",
+                pattern: "^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$",
+                description: description || "Graph reference in nodeId.portName form."
+            };
+        },
+
         _resolveShaderControlDefinitions(Shader) {
             const probe = this._createShaderDefinitionProbe(Shader);
             const baseControls = typeof probe.getControlDefinitions === "function" ?
@@ -1180,12 +1390,6 @@
                         type: "object",
                         required: false,
                         usage: "Shader-specific settings, built-in use_* options, UI-control configs, and custom parameters."
-                    },
-                    {
-                        key: "_controls",
-                        type: "object",
-                        required: false,
-                        usage: "Renderer-managed control storage present on ShaderConfig."
                     },
                     {
                         key: "cache",
@@ -1522,6 +1726,13 @@
 
         _compileSpecialCustomParamJsonSchema(Shader, item) {
             const shaderType = Shader && typeof Shader.type === "function" ? Shader.type() : "";
+
+            if (shaderType === "modular" && item.key === "graph") {
+                return {
+                    $ref: "#/$defs/shaderModuleGraph"
+                };
+            }
+
             if (shaderType === "time-series" && item.key === "series") {
                 return {
                     type: "array",
@@ -2142,6 +2353,49 @@
                 out.push("");
             }
 
+            if (Array.isArray(model.modules) && model.modules.length) {
+                out.push(`Shader modules`);
+                out.push("");
+
+                for (const module of model.modules) {
+                    out.push(`Module: ${module.name} [${module.type}]`);
+
+                    if (module.description) {
+                        out.push(`Description: ${module.description}`);
+                    }
+
+                    if (Array.isArray(module.inputs) && module.inputs.length) {
+                        out.push(`Inputs:`);
+                        for (const input of module.inputs) {
+                            out.push(`- ${input.name}: ${input.type}` +
+                                (input.required ? " | required" : "") +
+                                (input.description ? ` | ${input.description}` : ""));
+                        }
+                    }
+
+                    if (Array.isArray(module.outputs) && module.outputs.length) {
+                        out.push(`Outputs:`);
+                        for (const output of module.outputs) {
+                            out.push(`- ${output.name}: ${output.type}` +
+                                (output.description ? ` | ${output.description}` : ""));
+                        }
+                    }
+
+                    if (Array.isArray(module.controls) && module.controls.length) {
+                        out.push(`Controls:`);
+                        for (const control of module.controls) {
+                            out.push(`- ${control.name}: supported ui types = ${control.supportedTypes.join(", ")}`);
+                        }
+                    }
+
+                    if (module.classDocs && module.classDocs.summary) {
+                        out.push(`Class docs: ${module.classDocs.summary}`);
+                    }
+
+                    out.push("");
+                }
+            }
+
             return out.join("\n");
         },
 
@@ -2275,6 +2529,35 @@
                     hasSources: typeof Shader.sources === "function",
                     hasDefaultControls: !!Shader.defaultControls,
                     hasCustomParams: !!Shader.customParams
+                }
+            }, fallback);
+        },
+
+        _getModuleClassDocs(Module) {
+            if (!Module || typeof Module.type !== "function") {
+                return null;
+            }
+
+            const fallback = {
+                kind: "shader-module",
+                type: Module.type(),
+                name: typeof Module.name === "function" ? Module.name() : Module.type()
+            };
+
+            const explicit = this._extractDocsProvider(Module, fallback);
+            if (explicit) {
+                return explicit;
+            }
+
+            const description = typeof Module.description === "function" ? Module.description() : "";
+            return this._normalizeClassDocs({
+                ...fallback,
+                summary: description || `${fallback.name} shader module`,
+                description: description || `${fallback.name} shader module.`,
+                api: {
+                    hasInputs: typeof Module.inputs === "function",
+                    hasOutputs: typeof Module.outputs === "function",
+                    hasDefaultControls: !!Module.defaultControls
                 }
             }, fallback);
         },
@@ -2440,6 +2723,86 @@
     </div>` : ""}
   </div>
 </details>`;
+            return card;
+        },
+
+        _renderDefaultModuleDoc(module) {
+            const card = document.createElement("div");
+            card.className = "card bg-base-100 border border-base-300 shadow-sm";
+
+            card.innerHTML = `
+<details class="bg-base-100">
+  <summary class="flex cursor-pointer list-none flex-wrap items-start justify-between gap-4 p-4">
+        <span class="min-w-[180px] flex-1">
+            <span class="block text-lg font-semibold">${escapeHtml(module.name)}</span>
+            <span class="badge badge-outline mt-1">${escapeHtml(module.type)}</span>
+            <span class="mt-2 block text-sm opacity-80">${escapeHtml(module.description || "")}</span>
+        </span>
+  </summary>
+  <div class="border-t border-base-300 p-4 text-sm">
+    ${module.classDocs && module.classDocs.description ? `
+    <div class="mb-3">
+        <div class="font-semibold">Description</div>
+        <div>${escapeHtml(module.classDocs.description)}</div>
+    </div>` : ""}
+
+    ${module.inputs && module.inputs.length ? `
+    <div>
+        <div class="mb-2 font-semibold">Inputs</div>
+        <div class="overflow-x-auto">
+            <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                <tbody>
+                    ${module.inputs.map(input => `
+                    <tr>
+                        <td><code>${escapeHtml(input.name)}</code></td>
+                        <td><code>${escapeHtml(input.type || "unknown")}</code></td>
+                        <td>${input.required ? "yes" : "no"}</td>
+                        <td>${escapeHtml(input.description || "")}</td>
+                    </tr>`).join("")}
+                </tbody>
+            </table>
+        </div>
+    </div>` : ""}
+
+    ${module.outputs && module.outputs.length ? `
+    <div class="mt-4">
+        <div class="mb-2 font-semibold">Outputs</div>
+        <div class="overflow-x-auto">
+            <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+                <tbody>
+                    ${module.outputs.map(output => `
+                    <tr>
+                        <td><code>${escapeHtml(output.name)}</code></td>
+                        <td><code>${escapeHtml(output.type || "unknown")}</code></td>
+                        <td>${escapeHtml(output.description || "")}</td>
+                    </tr>`).join("")}
+                </tbody>
+            </table>
+        </div>
+    </div>` : ""}
+
+    ${module.controls && module.controls.length ? `
+    <div class="mt-4">
+        <div class="mb-2 font-semibold">Controls</div>
+        <div class="overflow-x-auto">
+            <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Supported UI types</th><th>Default</th></tr></thead>
+                <tbody>
+                    ${module.controls.map(control => `
+                    <tr>
+                        <td><code>${escapeHtml(control.name)}</code></td>
+                        <td>${escapeHtml(control.supportedTypes.join(", "))}</td>
+                        <td><pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(control.default || control.required || {}, null, 2))}</pre></td>
+                    </tr>`).join("")}
+                </tbody>
+            </table>
+        </div>
+    </div>` : ""}
+  </div>
+</details>`;
+
             return card;
         },
 
