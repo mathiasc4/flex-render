@@ -223,8 +223,10 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
 
     construct() {
         const config = this.getConfig();
-        const series = this.constructor._readWrapperParam(config, "series", []) || [];
-        const timeline = (config.params && config.params.timeline) || {};
+        const params = config.params || (config.params = {});
+        const rawSeries = this.constructor._readWrapperParam(config, "series", []);
+        const series = Array.isArray(rawSeries) ? rawSeries : [];
+        const timeline = params.timeline || (params.timeline = {});
         const min = Number(timeline.min) || 0;
         const step = Number(timeline.step) || 1;
         const defaultValue = Number(timeline.default);
@@ -233,7 +235,10 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
 
         super.construct();
 
-        timeline.default = this.timeline.encoded || this.timeline.raw || config.params.timeline.default;
+        timeline.default =
+            this.timeline.encoded !== undefined ? this.timeline.encoded :
+                this.timeline.raw !== undefined ? this.timeline.raw :
+                    Number.isFinite(defaultValue) ? defaultValue : min;
 
         const delegateConfig = this._getDelegateShaderConfig(activeEntry);
 
