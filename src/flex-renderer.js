@@ -861,7 +861,7 @@
             config.type = newType;
             config.error = false;
             this._sanitizeShaderParams(config, NewShader);
-            this.registerProgram(null, this.webglContext.secondPassProgramKey);
+            this.registerProgram(null, this.backend.secondPassProgramKey);
         }
 
         /**

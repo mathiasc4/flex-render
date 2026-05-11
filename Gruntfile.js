@@ -49,6 +49,7 @@ module.exports = function(grunt) {
             "src/flex-layers/colormap.js",
             "src/flex-layers/default.js",
             "src/flex-layers/edge.js",
+            "src/flex-layers/fisheye-lens.js",
             "src/flex-layers/grid.js",
             "src/flex-layers/group.js",
             "src/flex-layers/heatmap.js",

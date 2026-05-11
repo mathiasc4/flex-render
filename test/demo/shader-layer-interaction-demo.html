@@ -33,7 +33,7 @@
 
         .demo-layout {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 340px;
+            grid-template-columns: 320px minmax(0, 1fr) 340px;
             gap: 20px;
             align-items: stretch;
             flex: 0 0 auto;
@@ -69,6 +69,7 @@
             flex: 0 0 auto;
         }
 
+        .interaction-panel-stack,
         .side-panel-stack {
             min-width: 0;
             min-height: 0;
@@ -345,6 +346,7 @@
                 flex-basis: auto;
             }
 
+            .interaction-panel-stack,
             .side-panel-stack,
             .shader-controls-panel {
                 width: auto;
@@ -360,23 +362,7 @@
     <h3 id="title-w" class="viewer-title">Loading...</h3>
 
     <div class="demo-layout">
-        <main class="demo-main">
-            <section class="viewer-section">
-                <div id="drawer-canvas" class="viewer-container"></div>
-            </section>
-
-            <div class="configuration-panels">
-                <div id="image-source-index-panel" class="image-source-index-panel">
-                    Loading image source index...
-                </div>
-
-                <div id="shader-config-panel" class="shader-config-panel">
-                    Loading shader layer configuration...
-                </div>
-            </div>
-        </main>
-
-        <aside class="side-panel-stack">
+        <aside class="interaction-panel-stack">
             <section id="interaction-controls-panel" class="interaction-controls-panel">
                 <h3>Interaction controls</h3>
 
@@ -393,11 +379,11 @@
                         <input id="interaction-notify-on-move-toggle" type="checkbox">
                         Notify on pointer move
                     </label>
+                    <label class="interaction-control-label">
+                        <input id="interaction-capture-viewer-input-toggle" type="checkbox">
+                        Capture viewer input
+                    </label>
                 </div>
-                <label>
-                    <input id="interaction-capture-viewer-input-toggle" type="checkbox">
-                    Capture viewer input
-                </label>
 
                 <div class="interaction-action-row">
                     <button id="interaction-clear-button" type="button">Clear interaction state</button>
@@ -437,7 +423,25 @@
                     The demo readouts use only FlexDrawer/FlexRenderer APIs. They do not install independent pointer handlers.
                 </p>
             </section>
+        </aside>
 
+        <main class="demo-main">
+            <section class="viewer-section">
+                <div id="drawer-canvas" class="viewer-container"></div>
+            </section>
+
+            <div class="configuration-panels">
+                <div id="image-source-index-panel" class="image-source-index-panel">
+                    Loading image source index...
+                </div>
+
+                <div id="shader-config-panel" class="shader-config-panel">
+                    Loading shader layer configuration...
+                </div>
+            </div>
+        </main>
+
+        <aside class="side-panel-stack">
             <section class="shader-controls-panel">
                 <h3>Shader layer controls</h3>
                 <div id="my-shader-ui-container" class="shader-controls-list"></div>

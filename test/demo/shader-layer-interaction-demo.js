@@ -40,7 +40,7 @@ const drawerOptions = {
             enabled: true,
             preventContextMenu: true,
             notifyOnMove: false,
-            captureViewerInput: false
+            captureViewerInput: true
         },
         htmlHandler: renderShaderLayerControls,
         htmlReset: resetShaderLayerControls
@@ -81,21 +81,35 @@ const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
 }));
 
 let shaderLayerConfig = {
-    base_rainbow: makeLayerConfig("Rainbow", "identity", [0], "show"),
-    below_leaves: makeLayerConfig("Leaves", "identity", [1], "blend", "source-over"),
+    base_rainbow: {
+        name: "Rainbow",
+        type: "identity",
+        visible: 1,
+        fixed: false,
+        tiledImages: [0]
+    },
+    below_leaves: {
+        name: "Leaves",
+        type: "fisheye-lens",
+        visible: 1,
+        fixed: false,
+        tiledImages: [1]
+    },
     interaction_debug: {
         name: "Interaction Debug",
         type: "interaction-debug",
         visible: 1,
         fixed: false,
         tiledImages: [],
-        params: {
-            use_mode: "blend",
-            use_blend: "source-over"
-        },
         cache: {}
     },
-    above_bblue: makeLayerConfig("Blue B", "identity", [3], "blend", "source-over")
+    above_bblue: {
+        name: "Blue B",
+        type: "identity",
+        visible: 0,
+        fixed: false,
+        tiledImages: [3]
+    },
 };
 
 let shaderLayerOrder = [
@@ -106,18 +120,7 @@ let shaderLayerOrder = [
 ];
 
 function makeLayerConfig(name, type, tiledImages, mode = "show", blend = "source-over") {
-    return {
-        name,
-        type,
-        visible: 1,
-        fixed: false,
-        tiledImages,
-        params: {
-            use_mode: mode,
-            use_blend: blend
-        },
-        cache: {}
-    };
+    return
 }
 
 function renderShaderLayerControls(shaderLayer, shaderConfig) {
