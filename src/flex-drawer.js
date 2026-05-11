@@ -1463,8 +1463,23 @@
                 return true;
             }
 
+            if (
+                this.viewer.innerTracker &&
+                typeof this.viewer.innerTracker.isTracking === "function"
+            ) {
+                const tracking = this.viewer.innerTracker.isTracking();
+
+                if (typeof tracking === "boolean") {
+                    return tracking;
+                }
+            }
+
             if (typeof this.viewer.isMouseNavEnabled === "function") {
-                return !!this.viewer.isMouseNavEnabled();
+                const enabled = this.viewer.isMouseNavEnabled();
+
+                if (typeof enabled === "boolean") {
+                    return enabled;
+                }
             }
 
             if (typeof this.viewer.mouseNavEnabled === "boolean") {
@@ -1506,6 +1521,7 @@
          * Restore OpenSeadragon mouse navigation after interaction input capture.
          *
          * @private
+         * @param {boolean} [force=false] - Attempt restoration even if the local capture flag is stale.
          * @return {void}
          */
         _releaseInteractionViewerInputCapture() {
