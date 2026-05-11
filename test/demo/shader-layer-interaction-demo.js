@@ -40,7 +40,7 @@ const drawerOptions = {
             enabled: true,
             preventContextMenu: true,
             notifyOnMove: false,
-            captureViewerInput: true
+            viewerInputCaptureMode: "drag"
         },
         htmlHandler: renderShaderLayerControls,
         htmlReset: resetShaderLayerControls
@@ -465,7 +465,7 @@ function setupInteractionPanel() {
     const enabledToggle = document.getElementById("interaction-enabled-toggle");
     const preventContextMenuToggle = document.getElementById("interaction-prevent-context-menu-toggle");
     const notifyOnMoveToggle = document.getElementById("interaction-notify-on-move-toggle");
-    const captureViewerInputToggle = document.getElementById("interaction-capture-viewer-input-toggle");
+    const viewerInputCaptureModeSelect = document.getElementById("interaction-viewer-input-capture-mode-select");
     const clearButton = document.getElementById("interaction-clear-button");
 
     const syncControls = () => {
@@ -485,8 +485,8 @@ function setupInteractionPanel() {
             notifyOnMoveToggle.checked = !!options.notifyOnMove;
         }
 
-        if (captureViewerInputToggle) {
-            captureViewerInputToggle.checked = !!options.captureViewerInput;
+        if (viewerInputCaptureModeSelect) {
+            viewerInputCaptureModeSelect.value = options.viewerInputCaptureMode || "none";
         }
     };
 
@@ -517,10 +517,10 @@ function setupInteractionPanel() {
         });
     }
 
-    if (captureViewerInputToggle) {
-        captureViewerInputToggle.addEventListener("change", () => {
+    if (viewerInputCaptureModeSelect) {
+        viewerInputCaptureModeSelect.addEventListener("change", () => {
             viewer.drawer.setInteractionOptions({
-                captureViewerInput: captureViewerInputToggle.checked
+                viewerInputCaptureMode: viewerInputCaptureModeSelect.value
             });
             syncControls();
         });

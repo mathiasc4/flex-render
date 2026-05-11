@@ -380,8 +380,12 @@
                         Notify on pointer move
                     </label>
                     <label class="interaction-control-label">
-                        <input id="interaction-capture-viewer-input-toggle" type="checkbox">
-                        Capture viewer input
+                        <span>Capture mode</span>
+                        <select id="interaction-viewer-input-capture-mode-select">
+                            <option value="none">None / normal viewer input</option>
+                            <option value="drag">Drag/click only, keep wheel zoom</option>
+                            <option value="all">All viewer input</option>
+                        </select>
                     </label>
                 </div>
 
@@ -416,6 +420,9 @@
                     <li>Drag and release to verify drag start/current/end state.</li>
                     <li>Toggle interaction forwarding off; all shader-visible interaction state should clear.</li>
                     <li>Toggle <code>notifyOnMove</code> to compare event-driven and polled readouts.</li>
+                    <li>Use capture mode <code>none</code> to leave normal viewer navigation unchanged.</li>
+                    <li>Use capture mode <code>drag</code> to block panning/click zoom while keeping wheel zoom available.</li>
+                    <li>Use capture mode <code>all</code> to block normal viewer navigation completely.</li>
                     <li>Reorder the interaction-debug layer above/below other layers to test composition.</li>
                 </ol>
 

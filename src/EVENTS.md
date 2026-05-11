@@ -201,6 +201,38 @@ Button fields use the browser `MouseEvent.buttons` / `PointerEvent.buttons` bitm
 16 = fifth button, usually browser forward
 ```
 
+### FlexDrawer viewer input capture
+
+FlexDrawer can optionally suppress normal OpenSeadragon viewer input while interaction forwarding is enabled. This is controlled by drawer-level interaction options, not renderer-owned interaction state.
+
+```js
+interaction: {
+    enabled: true,
+    captureViewerInput: true,
+    viewerInputCaptureMode: "drag"
+}
+```
+
+Supported `viewerInputCaptureMode` values:
+
+```txt
+all
+  Disables OpenSeadragon mouse navigation through setMouseNavEnabled(false).
+  This blocks panning, wheel zoom, click zoom, and other normal mouse-navigation handling.
+
+drag
+  Keeps OpenSeadragon mouse navigation tracking enabled, but temporarily disables
+  mouse drag/click/flick gesture settings. This blocks normal drag panning and
+  click/double-click zoom while preserving wheel zoom.
+
+none
+  Disables viewer input capture. Equivalent to captureViewerInput: false.
+```
+
+`captureViewerInput` remains the master switch. `viewerInputCaptureMode` only has an effect while both interaction forwarding and viewer input capture are enabled.
+
+This behavior is implemented by FlexDrawer because it is OpenSeadragon input policy. FlexRenderer still only owns normalized shader-visible interaction state.
+
 Multiple pressed buttons are represented by bitwise OR:
 
 ```txt

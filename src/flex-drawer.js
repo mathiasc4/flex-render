@@ -74,6 +74,8 @@
             this._interactionDragActive = false;
             this._interactionMouseNavCaptured = false;
             this._interactionPreviousMouseNavEnabled = null;
+            this._interactionGestureSettingsCaptured = false;
+            this._interactionPreviousGestureSettings = null;
 
             // reject listening for the tile-drawing and tile-drawn events, which this drawer does not fire
             this.viewer.rejectEventHandler("tile-drawn", "The WebGLDrawer does not raise the tile-drawn event");
@@ -1091,8 +1093,19 @@
          * @property {boolean} [enabled=false] - Whether FlexDrawer observes pointer/mouse events and forwards interaction state.
          * @property {boolean} [preventContextMenu=false] - Prevent the browser context menu on interaction right-click/contextmenu events.
          * @property {boolean} [notifyOnMove=false] - Emit `interaction-change` notifications for high-frequency pointermove updates.
-         * @property {boolean} [captureViewerInput=false] - Disable OpenSeadragon mouse navigation while drawer-side interaction forwarding is enabled.
+         * @property {"all"|"drag"|"none"} [viewerInputCaptureMode="none"] - Viewer input suppression mode. `"none"` leaves OpenSeadragon viewer input unchanged. `"all"` disables OpenSeadragon mouse navigation. `"drag"` disables drag/click/flick gestures but leaves wheel zoom enabled.
          */
+
+        /**
+         * Normalize viewer input capture mode.
+         *
+         * @private
+         * @param {*} mode
+         * @return {"all"|"drag"|"none"}
+         */
+        _normalizeViewerInputCaptureMode(mode) {
+            return mode === "all" || mode === "drag" ? mode : "none";
+        }
 
         /**
          * Normalize drawer-level interaction configuration.
@@ -1107,7 +1120,7 @@
                     enabled: true,
                     preventContextMenu: false,
                     notifyOnMove: false,
-                    captureViewerInput: false,
+                    viewerInputCaptureMode: "none",
                 };
             }
 
@@ -1116,15 +1129,19 @@
                     enabled: false,
                     preventContextMenu: false,
                     notifyOnMove: false,
-                    captureViewerInput: false,
+                    viewerInputCaptureMode: "none",
                 };
             }
+
+            const viewerInputCaptureMode = this._normalizeViewerInputCaptureMode(
+                interaction.viewerInputCaptureMode
+            );
 
             return {
                 enabled: !!interaction.enabled,
                 preventContextMenu: !!interaction.preventContextMenu,
                 notifyOnMove: !!interaction.notifyOnMove,
-                captureViewerInput: !!interaction.captureViewerInput,
+                viewerInputCaptureMode: viewerInputCaptureMode,
             };
         }
 
@@ -1492,55 +1509,202 @@
         /**
          * Disable OpenSeadragon mouse navigation while interaction forwarding is active.
          *
-         * This is drawer policy, not renderer state. The previous viewer mouse-navigation
-         * state is restored by `_releaseInteractionViewerInputCapture()`.
+         * This is the `"all"` capture mode. It disables the OpenSeadragon mouse
+         * tracker as a whole and restores its previous tracking state on release.
          *
          * @private
          * @return {void}
          */
-        _captureInteractionViewerInput() {
+        _captureInteractionMouseNavigation() {
             if (this._interactionMouseNavCaptured || !this.viewer) {
                 return;
             }
 
+            // Mark as captured before mutating OpenSeadragon state. This prevents a
+            // synchronous re-entrant capture path from overwriting the saved previous
+            // value after setMouseNavEnabled(false) has already disabled navigation.
             this._interactionPreviousMouseNavEnabled = this._getViewerMouseNavEnabled();
+            this._interactionMouseNavCaptured = true;
 
             if (typeof this.viewer.setMouseNavEnabled === "function") {
                 this.viewer.setMouseNavEnabled(false);
-                this._interactionMouseNavCaptured = true;
                 return;
             }
 
             if (typeof this.viewer.mouseNavEnabled === "boolean") {
                 this.viewer.mouseNavEnabled = false;
-                this._interactionMouseNavCaptured = true;
+                return;
             }
+
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
         }
 
         /**
-         * Restore OpenSeadragon mouse navigation after interaction input capture.
+         * Restore OpenSeadragon mouse navigation after `"all"` input capture.
          *
          * @private
          * @param {boolean} [force=false] - Attempt restoration even if the local capture flag is stale.
+         * @param {boolean|null} [forceEnabled=null] - Explicit restored mouse-navigation state.
          * @return {void}
          */
-        _releaseInteractionViewerInputCapture() {
-            if (!this._interactionMouseNavCaptured || !this.viewer) {
+        _releaseInteractionMouseNavigationCapture(force = false, forceEnabled = null) {
+            if ((!this._interactionMouseNavCaptured && !force) || !this.viewer) {
                 this._interactionMouseNavCaptured = false;
                 this._interactionPreviousMouseNavEnabled = null;
                 return;
             }
 
-            const restoreEnabled = this._interactionPreviousMouseNavEnabled !== false;
+            const restoreEnabled = typeof forceEnabled === "boolean" ?
+                forceEnabled :
+                this._interactionPreviousMouseNavEnabled !== false;
+
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
 
             if (typeof this.viewer.setMouseNavEnabled === "function") {
                 this.viewer.setMouseNavEnabled(restoreEnabled);
             } else if (typeof this.viewer.mouseNavEnabled === "boolean") {
                 this.viewer.mouseNavEnabled = restoreEnabled;
             }
+        }
 
-            this._interactionMouseNavCaptured = false;
-            this._interactionPreviousMouseNavEnabled = null;
+        /**
+         * Disable drag/click OpenSeadragon gestures while keeping wheel zoom available.
+         *
+         * This is the `"drag"` capture mode. It keeps the OpenSeadragon mouse tracker
+         * active, but temporarily disables mouse gesture settings that would conflict
+         * with shader interaction tools.
+         *
+         * @private
+         * @return {void}
+         */
+        _captureInteractionGestureSettings() {
+            if (this._interactionGestureSettingsCaptured || !this.viewer) {
+                return;
+            }
+
+            const settings = this.viewer.gestureSettingsMouse;
+
+            if (!settings || typeof settings !== "object") {
+                return;
+            }
+
+            this._interactionPreviousGestureSettings = {
+                dragToPan: settings.dragToPan,
+                clickToZoom: settings.clickToZoom,
+                dblClickToZoom: settings.dblClickToZoom,
+                dblClickDragToZoom: settings.dblClickDragToZoom,
+                flickEnabled: settings.flickEnabled,
+            };
+            this._interactionGestureSettingsCaptured = true;
+
+            settings.dragToPan = false;
+            settings.clickToZoom = false;
+            settings.dblClickToZoom = false;
+
+            if ("dblClickDragToZoom" in settings) {
+                settings.dblClickDragToZoom = false;
+            }
+
+            if ("flickEnabled" in settings) {
+                settings.flickEnabled = false;
+            }
+        }
+
+        /**
+         * Restore OpenSeadragon gesture settings after `"drag"` input capture.
+         *
+         * @private
+         * @param {boolean} [force=false] - Attempt restoration even if the local capture flag is stale.
+         * @param {Object|null} [forceSettings=null] - Explicit gesture settings to restore.
+         * @return {void}
+         */
+        _releaseInteractionGestureSettingsCapture(force = false, forceSettings = null) {
+            if ((!this._interactionGestureSettingsCaptured && !force) || !this.viewer) {
+                this._interactionGestureSettingsCaptured = false;
+                this._interactionPreviousGestureSettings = null;
+                return;
+            }
+
+            const settings = this.viewer.gestureSettingsMouse;
+            const previous = forceSettings || this._interactionPreviousGestureSettings || {};
+
+            this._interactionGestureSettingsCaptured = false;
+            this._interactionPreviousGestureSettings = null;
+
+            if (!settings || typeof settings !== "object") {
+                return;
+            }
+
+            for (const key of Object.keys(previous)) {
+                if (previous[key] !== undefined) {
+                    settings[key] = previous[key];
+                }
+            }
+        }
+
+        /**
+         * Suppress OpenSeadragon viewer input according to current interaction options.
+         *
+         * @private
+         * @return {void}
+         */
+        _captureInteractionViewerInput() {
+            if (!this._interactionOptions) {
+                this._restoreInteractionViewerInputDefaults();
+                return;
+            }
+
+            const mode = this._interactionOptions.viewerInputCaptureMode || "none";
+
+            if (mode === "drag") {
+                this._releaseInteractionMouseNavigationCapture();
+                this._captureInteractionGestureSettings();
+                return;
+            }
+
+            if (mode === "all") {
+                this._releaseInteractionGestureSettingsCapture();
+                this._captureInteractionMouseNavigation();
+                return;
+            }
+
+            this._restoreInteractionViewerInputDefaults();
+        }
+
+        /**
+         * Restore all OpenSeadragon viewer input modified by interaction capture.
+         *
+         * @private
+         * @return {void}
+         */
+        _releaseInteractionViewerInputCapture() {
+            this._releaseInteractionMouseNavigationCapture();
+            this._releaseInteractionGestureSettingsCapture();
+        }
+
+        /**
+         * Restore normal OpenSeadragon mouse input after viewer input capture is
+         * explicitly set to `"none"`.
+         *
+         * This is intentionally stronger than restoring only the saved capture
+         * snapshot. It prevents stale or already-mutated gesture snapshots from
+         * leaving the viewer unable to pan or click-zoom after capture is turned off.
+         *
+         * @private
+         * @return {void}
+         */
+        _restoreInteractionViewerInputDefaults() {
+            this._releaseInteractionMouseNavigationCapture(true, true);
+
+            this._releaseInteractionGestureSettingsCapture(true, {
+                dragToPan: true,
+                clickToZoom: true,
+                dblClickToZoom: true,
+                dblClickDragToZoom: true,
+                flickEnabled: true,
+            });
         }
 
         /**
@@ -1552,8 +1716,7 @@
         _syncInteractionViewerInputCapture() {
             if (
                 this._interactionEnabled &&
-                this._interactionOptions &&
-                this._interactionOptions.captureViewerInput
+                this._interactionOptions
             ) {
                 this._captureInteractionViewerInput();
                 return;
@@ -1578,6 +1741,9 @@
          */
         setInteractionOptions(interaction, stateOptions = {}) {
             const previousEnabled = this._interactionEnabled;
+            const previousOptions = this.getInteractionOptions();
+            const previousViewerInputCaptureMode = previousOptions.viewerInputCaptureMode || "none";
+
             const nextOptions = this._normalizeInteractionOptions(
                 interaction && typeof interaction === "object" ?
                     $.extend(true, {}, this._interactionOptions, interaction) :
@@ -1599,7 +1765,15 @@
 
                 this._interactionEnabled = true;
                 this._interactionOptions.enabled = true;
-                this._syncInteractionViewerInputCapture();
+
+                if (
+                    previousViewerInputCaptureMode !== "none" &&
+                    this._interactionOptions.viewerInputCaptureMode === "none"
+                ) {
+                    this._restoreInteractionViewerInputDefaults();
+                } else {
+                    this._syncInteractionViewerInputCapture();
+                }
 
                 if (!previousEnabled) {
                     this.setInteractionState({
