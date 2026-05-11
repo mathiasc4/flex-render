@@ -72,6 +72,344 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
         return `osd_texture_size(${index})`;
     }
 
+    /**
+     * Return the backend-owned GLSL function name used to compute one ShaderLayer.
+     *
+     * This keeps generated layer execution functions namespaced to FlexRenderer
+     * while still preserving the stable shader uid suffix.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @returns {string}
+     */
+    getShaderLayerComputeName(shaderLayer) {
+        return `fr_compute_${shaderLayer.uid}`;
+    }
+
+    /**
+     * Return the backend-owned GLSL function name used to compute a ShaderLayer stack.
+     *
+     * Root stacks use a stable root name. Group stacks use the group layer uid,
+     * so nested stack functions remain deterministic without WebGL20 special-casing
+     * the group shader type.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer|null} [ownerShader=null]
+     * @returns {string}
+     */
+    getShaderLayerStackComputeName(ownerShader = null) {
+        return ownerShader ? `fr_compute_${ownerShader.uid}_stack` : "fr_compute_root_stack";
+    }
+
+    /**
+     * Emit a safe placeholder compute function for a disabled or failed ShaderLayer.
+     *
+     * Disabled layers are still represented by a valid compute function, but stack
+     * execution skips them. This prevents missing-function failures if future
+     * composition code accidentally references a disabled layer.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @param {string} reason
+     * @returns {string}
+     */
+    getShaderLayerPlaceholderDefinition(shaderLayer, reason) {
+        return `
+// ${shaderLayer.uid} - ${reason}
+vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
+    return vec4(0.0);
+}
+`;
+    }
+
+    /**
+     * Emit the GLSL definitions needed to compute one ShaderLayer.
+     *
+     * Invisible, "none", and error layers intentionally receive placeholder
+     * functions rather than full shader bodies. Their execution remains a no-op
+     * in stack composition.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @returns {string}
+     */
+    getShaderLayerComputeDefinition(shaderLayer) {
+        let shaderConfig = null;
+
+        try {
+            shaderConfig = shaderLayer.getConfig();
+        } catch (e) {
+            $.console.error(`Failed to read shader config for '${shaderLayer.id}'. Emitting placeholder.`, e);
+            return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Config read failed placeholder");
+        }
+
+        if (!shaderConfig || shaderConfig.type === "none" || shaderConfig.error || !shaderConfig.visible) {
+            return this.getShaderLayerPlaceholderDefinition(
+                shaderLayer,
+                "Disabled, hidden, or error placeholder"
+            );
+        }
+
+        try {
+            return `
+// ${shaderLayer.uid} - Definition
+${shaderLayer.getFragmentShaderDefinition()}
+
+// ${shaderLayer.uid} - Custom blending function for a given shader
+${shaderLayer.getCustomBlendFunction(shaderLayer.uid + "_blend_func")}
+
+// ${shaderLayer.uid} - Shader code execution
+vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
+${shaderLayer.getFragmentShaderExecution()}
+}
+`;
+        } catch (e) {
+            $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderConfig.type}). Emitting placeholder.`, e);
+            shaderConfig.error = true;
+            return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Assembly error placeholder");
+        }
+    }
+
+    /**
+     * Emit the stencil-pass setup code for a ShaderLayer.
+     *
+     * Layers without tiled-image sources are treated as always passing stencil.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @returns {string}
+     */
+    getShaderLayerStencilPassCode(shaderLayer) {
+        const shaderConfig = shaderLayer.getConfig();
+        const hasSources = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length > 0;
+
+        if (!hasSources) {
+            return "    stencilPasses = true;";
+        }
+
+        return `    stencilPasses = osd_stencil_texture(${shaderLayer.__renderSlot}, 0, v_texture_coords).r > 0.995;`;
+    }
+
+    /**
+     * Emit GLSL definitions for a complete ShaderLayer stack, including:
+     * - one compute function for each child layer;
+     * - one named stack compute function returning the composed vec4.
+     *
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer|null} [options.ownerShader=null]
+     * @param {string} [options.stackName] explicit GLSL stack function name
+     * @param {string} [options.initialColor="vec4(0.0)"] initial stack color expression
+     * @param {boolean} [options.useInspectorAlpha=false] apply root inspector alpha to layer opacity
+     * @returns {string}
+     */
+    getShaderLayerStackDefinition(shaderMap, keyOrder, options = {}) {
+        let definition = "";
+
+        for (const shaderLayerId of keyOrder || []) {
+            const shaderLayer = shaderMap && shaderMap[shaderLayerId];
+            if (!shaderLayer) {
+                continue;
+            }
+
+            definition += this.getShaderLayerComputeDefinition(shaderLayer);
+        }
+
+        const stackName = options.stackName || this.getShaderLayerStackComputeName(options.ownerShader || null);
+
+        definition += `
+// ${stackName} - ShaderLayer stack composition
+vec4 ${stackName}() {
+${this._getShaderLayerStackFunctionBody(shaderMap, keyOrder, options)}
+}
+`;
+
+        return definition;
+    }
+
+    /**
+     * Return the GLSL expression that invokes a generated ShaderLayer stack.
+     *
+     * The stack body itself is emitted by getShaderLayerStackDefinition(...).
+     *
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer|null} [options.ownerShader=null]
+     * @param {string} [options.stackName] explicit GLSL stack function name
+     * @returns {string}
+     */
+    getShaderLayerStackExecution(shaderMap, keyOrder, options = {}) {
+        const stackName = options.stackName || this.getShaderLayerStackComputeName(options.ownerShader || null);
+        return `${stackName}()`;
+    }
+
+    /**
+     * Convenience wrapper returning both stack definition source and the stack call expression.
+     *
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @returns {{definition: string, execution: string}}
+     */
+    composeShaderLayerStack(shaderMap, keyOrder, options = {}) {
+        return {
+            definition: this.getShaderLayerStackDefinition(shaderMap, keyOrder, options),
+            execution: this.getShaderLayerStackExecution(shaderMap, keyOrder, options)
+        };
+    }
+
+    /**
+     * Emit the body of a named returning ShaderLayer stack function.
+     *
+     * This is the single source of truth for WebGL2 GLSL stack composition:
+     * hidden layers are no-ops, hidden non-clip layers break the clip target,
+     * and visible clip layers only affect the nearest visible non-clip target.
+     *
+     * @private
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @param {string} [options.initialColor="vec4(0.0)"]
+     * @param {boolean} [options.useInspectorAlpha=false]
+     * @returns {string}
+     */
+    _getShaderLayerStackFunctionBody(shaderMap, keyOrder, options = {}) {
+        const initialColor = options.initialColor || "vec4(0.0)";
+        const useInspectorAlpha = options.useInspectorAlpha === true;
+
+        let execution = `
+    vec4 intermediate_color = ${initialColor};
+    vec4 overall_color = intermediate_color;
+    vec4 clip_color = vec4(.0);
+    vec4 attrs;
+`;
+
+        let remainingBlendShader = null;
+        let clipTargetAvailable = false;
+
+        const getRemainingBlending = () => {
+            if (!remainingBlendShader) {
+                return "";
+            }
+
+            return `
+${this.getShaderLayerStencilPassCode(remainingBlendShader)}
+    overall_color = ${remainingBlendShader.mode === "show" ? "blend_source_over" : remainingBlendShader.uid + "_blend_func"}(intermediate_color, overall_color);
+`;
+        };
+
+        for (const shaderLayerId of keyOrder || []) {
+            const shaderLayer = shaderMap && shaderMap[shaderLayerId];
+            if (!shaderLayer) {
+                continue;
+            }
+
+            const executionSnapshot = execution;
+            const remainingBlendSnapshot = remainingBlendShader;
+            const clipTargetAvailableSnapshot = clipTargetAvailable;
+
+            let shaderLayerConfig = null;
+            let isClipLayer = false;
+
+            try {
+                shaderLayerConfig = shaderLayer.getConfig();
+                isClipLayer = shaderLayer._mode === "clip";
+
+                const slot = shaderLayer.__renderSlot;
+                const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
+                const opacityModifier = useInspectorAlpha ?
+                    `(${opacityModifierBase}) * inspector_layer_alpha(${slot})` :
+                    opacityModifierBase;
+
+                execution += `\n    // ${shaderLayer.uid}\n`;
+
+                if (!shaderLayerConfig || shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
+                    if (!isClipLayer) {
+                        // A hidden non-clip layer breaks the clip chain. Clip layers above it
+                        // must not accidentally modify the previous visible non-clip layer.
+                        clipTargetAvailable = false;
+                    }
+
+                    execution += `
+    // ${shaderLayer.uid} - Disabled (type none, error, or visible = false)
+    // Intentionally skipped. Disabled layers do not emit blending,
+    // clipping, or composition-boundary code.
+`;
+
+                    continue;
+                }
+
+                if (isClipLayer && !clipTargetAvailable) {
+                    execution += `
+    // ${shaderLayer.uid} - Clip skipped because there is no visible non-clip layer to clip.
+`;
+
+                    continue;
+                }
+
+                execution += `
+    instance_id = ${slot};
+${this.getShaderLayerStencilPassCode(shaderLayer)}
+    attrs = u_shaderVariables[${slot}];
+    opacity = attrs.x;
+    pixelSize = attrs.y;
+    imageOriginPx = attrs.zw;
+    zoom = u_zoom;
+`;
+
+                if (!isClipLayer) {
+                    execution += `${getRemainingBlending()}
+    // ${shaderLayer.uid} - blending
+    intermediate_color = ${this.getShaderLayerComputeName(shaderLayer)}();
+    intermediate_color.a = intermediate_color.a * ${opacityModifier};
+`;
+
+                    remainingBlendShader = shaderLayer;
+                    clipTargetAvailable = true;
+                } else {
+                    execution += `
+    // ${shaderLayer.uid} - clipping
+    clip_color = ${this.getShaderLayerComputeName(shaderLayer)}();
+    clip_color.a = clip_color.a * ${opacityModifier};
+    intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
+`;
+                }
+            } catch (e) {
+                $.console.error(
+                    `Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig ? shaderLayerConfig.type : "unknown"}). Hiding layer.`,
+                    e
+                );
+
+                if (shaderLayerConfig) {
+                    shaderLayerConfig.error = true;
+                }
+
+                execution = executionSnapshot;
+                remainingBlendShader = remainingBlendSnapshot;
+                clipTargetAvailable = clipTargetAvailableSnapshot;
+
+                if (!isClipLayer) {
+                    // Treat a failed non-clip layer like a hidden non-clip layer.
+                    // Following clip layers must not retarget the previous visible layer.
+                    clipTargetAvailable = false;
+                }
+
+                execution += `
+    // ${shaderLayer.uid} - Disabled after assembly error
+    // Intentionally skipped. Failed layers do not emit blending,
+    // clipping, or composition-boundary code.
+`;
+            }
+        }
+
+        if (remainingBlendShader) {
+            execution += getRemainingBlending();
+        }
+
+        execution += `
+    return overall_color;
+`;
+
+        return execution;
+    }
+
     setDimensions(x, y, width, height, levels, tiledImageCount) {
         this.renderer.getProgram(this.firstPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
         this.renderer.getProgram(this.secondPassProgramKey).setDimensions(x, y, width, height, levels, tiledImageCount);
@@ -777,164 +1115,19 @@ ${execution}
             flatShaders[slot].__renderSlot = slot;
         }
 
-        let definition = "";
-        let execution = `
-    vec4 intermediate_color = ${this._bgColor};
-    vec4 overall_color = intermediate_color;
-    vec4 clip_color = vec4(.0);
+        const stackSource = this.context.composeShaderLayerStack(shaderMap, keyOrder, {
+            ownerShader: null,
+            initialColor: this._bgColor,
+            useInspectorAlpha: true
+        });
 
-    vec4 attrs;
-`;
-        let customBlendFunctions = "";
-
-        const addShaderDefinition = shader => {
-            definition += `
-// ${shader.uid} - Definition
-${shader.getFragmentShaderDefinition()}
-
-// ${shader.uid} - Custom blending function for a given shader
-${shader.getCustomBlendFunction(shader.uid + "_blend_func")}
-
-// ${shader.uid} - Shader code execution
-vec4 ${shader.uid}_execution() {
-${shader.getFragmentShaderExecution()}
-}
-`;
-        };
-
-        const getStencilPassCode = shader => {
-            const shaderConfig = shader.getConfig();
-            const hasSources = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length > 0;
-
-            if (!hasSources) {
-                return "    stencilPasses = true;";
-            }
-
-            return `    stencilPasses = osd_stencil_texture(${shader.__renderSlot}, 0, v_texture_coords).r > 0.995;`;
-        };
-
-        let remainingBlendShader = null;
-        let clipTargetAvailable = false;
-
-        const getRemainingBlending = () => {
-            if (!remainingBlendShader) {
-                return "";
-            }
-
-            return `
-${getStencilPassCode(remainingBlendShader)}
-    overall_color = ${remainingBlendShader.mode === "show" ? "blend_source_over" : remainingBlendShader.uid + "_blend_func"}(intermediate_color, overall_color);
-`;
-        };
-
-        for (const shaderLayerId of keyOrder) {
-            const shaderLayer = shaderMap[shaderLayerId];
-            const shaderLayerConfig = shaderLayer.getConfig();
-            const isClipLayer = shaderLayer._mode === "clip";
-
-            // Snapshot mutable assembly state so a throw mid-iteration (e.g. an
-            // incompatible control's sample() throws from getFragmentShaderExecution)
-            // can be rolled back cleanly and the offending layer emitted as disabled
-            // instead of corrupting the GLSL source.
-            const definitionSnapshot = definition;
-            const executionSnapshot = execution;
-            const customBlendSnapshot = customBlendFunctions;
-            const remainingBlendSnapshot = remainingBlendShader;
-            const clipTargetAvailableSnapshot = clipTargetAvailable;
-
-            try {
-                const slot = shaderLayer.__renderSlot;
-                const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
-                const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
-
-            execution += `\n    // ${shaderLayer.uid}\n`;
-
-                if (shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
-                    if (!isClipLayer) {
-                        // A hidden non-clip layer breaks the clip chain. Clip layers above it
-                        // must not accidentally modify the previous visible non-clip layer.
-                        clipTargetAvailable = false;
-                    }
-
-                    execution += `
-    // ${shaderLayer.uid} - Disabled (type none, error, or visible = false)
-    // Intentionally skipped. Disabled layers do not emit blending,
-    // clipping, or composition-boundary code.
-`;
-
-                    continue;
-                }
-
-                if (isClipLayer && !clipTargetAvailable) {
-                    execution += `
-    // ${shaderLayer.uid} - Clip skipped because there is no visible non-clip layer to clip.
-`;
-
-                    continue;
-                }
-
-            addShaderDefinition(shaderLayer);
-
-            execution += `
-    instance_id = ${slot};
-${getStencilPassCode(shaderLayer)}
-    attrs = u_shaderVariables[${slot}];
-    opacity = attrs.x;
-    pixelSize = attrs.y;
-    imageOriginPx = attrs.zw;
-    zoom = u_zoom;
-`;
-
-                if (!isClipLayer) {
-                    execution += `${getRemainingBlending()}
-    // ${shaderLayer.uid} - blending
-    intermediate_color = ${shaderLayer.uid}_execution();
-    intermediate_color.a = intermediate_color.a * ${opacityModifier};
-`;
-                    remainingBlendShader = shaderLayer;
-                    clipTargetAvailable = true;
-                } else {
-                execution += `
-    // ${shaderLayer.uid} - clipping
-    clip_color = ${shaderLayer.uid}_execution();
-    clip_color.a = clip_color.a * ${opacityModifier};
-    intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
-`;
-                }
-            } catch (e) {
-                $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig.type}). Hiding layer.`, e);
-                shaderLayerConfig.error = true;
-                definition = definitionSnapshot;
-                execution = executionSnapshot;
-                customBlendFunctions = customBlendSnapshot;
-                remainingBlendShader = remainingBlendSnapshot;
-                clipTargetAvailable = clipTargetAvailableSnapshot;
-
-                if (!isClipLayer) {
-                    // Treat a failed non-clip layer like a hidden non-clip layer.
-                    // Following clip layers must not retarget the previous visible layer.
-                    clipTargetAvailable = false;
-                }
-
-                execution += `
-    // ${shaderLayer.uid} - Disabled after assembly error
-    // Intentionally skipped. Failed layers do not emit blending,
-    // clipping, or composition-boundary code.
-`;
-            }
-        }
-
-        if (remainingBlendShader) {
-            execution += getRemainingBlending();
-        }
-
-        execution += "\n    final_color = overall_color;\n";
+        const execution = `final_color = ${stackSource.execution};`;
 
         this.vertexShader = this._getVertexShaderSource();
         this.fragmentShader = this._getFragmentShaderSource(
-            definition,
+            stackSource.definition,
             execution,
-            customBlendFunctions,
+            "",
             $.FlexRenderer.ShaderLayer.__globalIncludes
         );
     }

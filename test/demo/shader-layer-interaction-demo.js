@@ -394,7 +394,7 @@ function bindShaderConfigPanelEvents() {
 
             shaderConfig.type = this.value;
             shaderConfig.params = {
-                use_mode: previousParams.use_mode || "blend",
+                use_mode: previousParams.use_mode || "show",
                 use_blend: previousParams.use_blend || "mask"
             };
             shaderConfig.cache = {};
