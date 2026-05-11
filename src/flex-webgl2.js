@@ -1236,6 +1236,8 @@ ${execution}
             "lens-zoom": 3
         }[inspectorState.mode] || 0;
 
+        // TODO: Possibly send inspector and interaction data only on an actual change.
+
         gl.uniform4f(
             this._inspectorALocation,
             inspectorState.centerPx.x,
