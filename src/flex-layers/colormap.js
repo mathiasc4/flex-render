@@ -219,7 +219,6 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             }
         };
 
-        syncColor();
         this.color.init();
 
         if (this.connect) {
