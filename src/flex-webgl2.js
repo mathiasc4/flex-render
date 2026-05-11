@@ -495,6 +495,56 @@ uniform sampler2DArray u_stencilTextures;
 uniform vec4 u_inspectorA;
 uniform vec4 u_inspectorB;
 
+// Packed renderer-owned interaction state.
+//
+// u_interactionPointer:
+//   xy = pointerPositionPx
+//   zw = lastClickPositionPx
+//
+// u_interactionDragStartCurrent:
+//   xy = dragStartPositionPx
+//   zw = dragCurrentPositionPx
+//
+// u_interactionDragEnd:
+//   xy = dragEndPositionPx
+//   zw = reserved
+//
+// u_interactionState:
+//   x = enabled ? 1 : 0
+//   y = pointerInside ? 1 : 0
+//   z = activeButtons
+//   w = lastClickButtons
+//
+// u_interactionDragState:
+//   x = dragActive ? 1 : 0
+//   y = dragButtons
+//   z = clickSerial
+//   w = dragSerial
+//
+// Button fields use the browser MouseEvent.buttons / PointerEvent.buttons bitmask:
+//   0  = no button active
+//   1  = primary button, usually left mouse button
+//   2  = secondary button, usually right mouse button
+//   4  = auxiliary button, usually middle mouse button
+//   8  = fourth button, usually browser back
+//   16 = fifth button, usually browser forward
+//
+// Multiple pressed buttons are represented by bitwise OR, e.g.
+//   3 = primary | secondary
+//   5 = primary | auxiliary
+//
+// Test button state in GLSL through:
+//   fr_interaction_button_active(buttonMask)
+
+uniform vec4 u_interactionPointer;
+uniform vec4 u_interactionDragStartCurrent;
+uniform vec4 u_interactionDragEnd;
+uniform ivec4 u_interactionState;
+uniform ivec4 u_interactionDragState;
+
+
+// INPUT VARIABLES
+
 
 // INPUT VARIABLES
 
@@ -611,6 +661,62 @@ float inspector_layer_alpha(int shaderSlot) {
 
     float mask = inspector_mask(gl_FragCoord.xy);
     return mode == 1 ? mask : (1.0 - mask);
+}
+
+bool fr_interaction_enabled() {
+    return u_interactionState.x != 0;
+}
+
+bool fr_interaction_pointer_inside() {
+    return u_interactionState.y != 0;
+}
+
+vec2 fr_interaction_pointer_position_px() {
+    return u_interactionPointer.xy;
+}
+
+int fr_interaction_active_buttons() {
+    return u_interactionState.z;
+}
+
+bool fr_interaction_button_active(int buttonMask) {
+    return (fr_interaction_active_buttons() & buttonMask) != 0;
+}
+
+vec2 fr_interaction_last_click_position_px() {
+    return u_interactionPointer.zw;
+}
+
+int fr_interaction_last_click_buttons() {
+    return u_interactionState.w;
+}
+
+int fr_interaction_click_serial() {
+    return u_interactionDragState.z;
+}
+
+bool fr_interaction_drag_active() {
+    return u_interactionDragState.x != 0;
+}
+
+vec2 fr_interaction_drag_start_position_px() {
+    return u_interactionDragStartCurrent.xy;
+}
+
+vec2 fr_interaction_drag_current_position_px() {
+    return u_interactionDragStartCurrent.zw;
+}
+
+vec2 fr_interaction_drag_end_position_px() {
+    return u_interactionDragEnd.xy;
+}
+
+int fr_interaction_drag_buttons() {
+    return u_interactionDragState.y;
+}
+
+int fr_interaction_drag_serial() {
+    return u_interactionDragState.w;
 }
 
 
@@ -843,6 +949,13 @@ ${getStencilPassCode(shaderLayer)}
         this._tiInfoLoc = gl.getUniformLocation(program, "u_tiInfo");
         this._inspectorALocation = gl.getUniformLocation(program, "u_inspectorA");
         this._inspectorBLocation = gl.getUniformLocation(program, "u_inspectorB");
+
+        this._interactionPointerLocation = gl.getUniformLocation(program, "u_interactionPointer");
+        this._interactionDragStartCurrentLocation = gl.getUniformLocation(program, "u_interactionDragStartCurrent");
+        this._interactionDragEndLocation = gl.getUniformLocation(program, "u_interactionDragEnd");
+        this._interactionStateLocation = gl.getUniformLocation(program, "u_interactionState");
+        this._interactionDragStateLocation = gl.getUniformLocation(program, "u_interactionDragState");
+
         this.vao = gl.createVertexArray();
 
         // TODO: is this refreshing logic necessary? if enableing this, delete the above refresh, not needed, will be done at use(...)
@@ -933,6 +1046,48 @@ ${getStencilPassCode(shaderLayer)}
             inspectorMode,
             inspectorState.shaderSplitIndex,
             inspectorState.lensZoom
+        );
+
+        const interactionState = this.context.renderer.getInteractionState();
+
+        gl.uniform4f(
+            this._interactionPointerLocation,
+            interactionState.pointerPositionPx.x,
+            interactionState.pointerPositionPx.y,
+            interactionState.lastClickPositionPx.x,
+            interactionState.lastClickPositionPx.y
+        );
+
+        gl.uniform4f(
+            this._interactionDragStartCurrentLocation,
+            interactionState.dragStartPositionPx.x,
+            interactionState.dragStartPositionPx.y,
+            interactionState.dragCurrentPositionPx.x,
+            interactionState.dragCurrentPositionPx.y
+        );
+
+        gl.uniform4f(
+            this._interactionDragEndLocation,
+            interactionState.dragEndPositionPx.x,
+            interactionState.dragEndPositionPx.y,
+            0,
+            0
+        );
+
+        gl.uniform4i(
+            this._interactionStateLocation,
+            interactionState.enabled ? 1 : 0,
+            interactionState.pointerInside ? 1 : 0,
+            interactionState.activeButtons,
+            interactionState.lastClickButtons
+        );
+
+        gl.uniform4i(
+            this._interactionDragStateLocation,
+            interactionState.dragActive ? 1 : 0,
+            interactionState.dragButtons,
+            interactionState.clickSerial,
+            interactionState.dragSerial
         );
 
         this.atlas.bind(gl.TEXTURE2, 2);

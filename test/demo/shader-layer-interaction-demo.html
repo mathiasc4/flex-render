@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Shader Layer Interaction Demo</title>
+
+    <script type="text/javascript" src='../../openseadragon/openseadragon.js'></script>
+    <script type="text/javascript" src='/build/openseadragon/flex-renderer.js'></script>
+    <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
+    <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
+    <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+
+    <script type="module" src="shader-layer-interaction-demo.js"></script>
+
+    <style>
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .content {
+            max-width: 1280px;
+            min-height: 100vh;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        .demo-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+            gap: 20px;
+            align-items: stretch;
+            flex: 0 0 auto;
+            margin-bottom: 12px;
+        }
+
+        .demo-main {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .viewer-section {
+            min-width: 0;
+        }
+
+        .viewer-container {
+            aspect-ratio: 4 / 3;
+            border: thin gray solid;
+            position: relative;
+        }
+
+        .viewer-title {
+            margin: 0 0 8px 0;
+        }
+
+        .configuration-panels {
+            display: flex;
+            align-items: stretch;
+            gap: 12px;
+            margin-top: 12px;
+            flex: 0 0 auto;
+        }
+
+        .side-panel-stack {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .interaction-controls-panel,
+        .interaction-guide-panel,
+        .shader-controls-panel,
+        .image-source-index-panel,
+        .shader-config-panel {
+            margin: 0;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        .interaction-controls-panel,
+        .interaction-guide-panel {
+            flex: 0 0 auto;
+        }
+
+        .shader-controls-panel {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .shader-controls-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .image-source-index-panel {
+            flex: 0 0 280px;
+            min-height: 0;
+        }
+
+        .shader-config-panel {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .interaction-controls-panel h3,
+        .interaction-guide-panel h3,
+        .interaction-controls-panel h4,
+        .interaction-guide-panel h4,
+        .image-source-index-panel h3,
+        .shader-config-panel h3,
+        .shader-controls-panel h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .interaction-controls-panel h4,
+        .interaction-guide-panel h4 {
+            margin-top: 10px;
+            font-size: 13px;
+        }
+
+        .interaction-control-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        .interaction-control-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            line-height: 1.3;
+        }
+
+        .interaction-action-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 8px 0;
+        }
+
+        .interaction-action-row button {
+            font-size: 13px;
+            padding: 4px 8px;
+        }
+
+        .interaction-state-readout {
+            max-height: 220px;
+            margin: 0 0 8px 0;
+            padding: 8px;
+            overflow: auto;
+            background: #ffffff;
+            border: 1px solid #d1d5db;
+            font-size: 11px;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .interaction-guide-panel ul,
+        .interaction-guide-panel ol {
+            margin: 0 0 8px 18px;
+            padding: 0;
+        }
+
+        .interaction-guide-panel li {
+            margin-bottom: 4px;
+        }
+
+        .interaction-guide-note {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .image-source-index-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .image-source-index-table th,
+        .image-source-index-table td {
+            border: 1px solid #d1d5db;
+            padding: 5px 6px;
+            vertical-align: top;
+            text-align: left;
+        }
+
+        .image-source-index-table th {
+            background: #eeeeee;
+        }
+
+        .image-source-index-table code {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .shader-config-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .shader-config-list--children {
+            margin-top: 8px;
+            margin-left: 18px;
+            padding-left: 10px;
+            border-left: 3px solid #d1d5db;
+        }
+
+        .shader-config-item {
+            margin: 0;
+            padding: 0;
+        }
+
+        .shader-config-row {
+            display: grid;
+            grid-template-columns: 24px 24px minmax(0, 1fr);
+            align-items: center;
+            gap: 6px 8px;
+            margin-bottom: 6px;
+            padding: 6px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+        }
+
+        .shader-config-row--group {
+            background: #f3f3f3;
+        }
+
+        .shader-config-row__name {
+            grid-column: 3;
+        }
+
+        .shader-config-row__selectors,
+        .shader-config-row__blend {
+            grid-column: 3 / 4;
+            display: grid;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .shader-config-row__selectors {
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        }
+
+        .shader-config-row__blend {
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        }
+
+        .shader-config-row__image,
+        .shader-config-row__type,
+        .shader-config-row__use-mode,
+        .shader-config-row__use-blend {
+            min-width: 0;
+        }
+
+        .shader-config-row__image select,
+        .shader-config-row__type select,
+        .shader-config-row__use-mode select,
+        .shader-config-row__use-blend select {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .shader-config-use-blend-select:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .shader-config-drag-handle {
+            cursor: move;
+            color: #555;
+            text-align: center;
+        }
+
+        .shader-config-field-label {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 11px;
+            color: #666;
+            min-width: 0;
+        }
+
+        .shader-config-field-label input,
+        .shader-config-field-label select {
+            font-size: 13px;
+            color: #111;
+            max-width: 100%;
+        }
+
+        .shader-config-name-input {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .shader-config-visible-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+        }
+
+        .shader-config-type-locked {
+            color: #666;
+            font-family: monospace;
+        }
+
+        .shader-config-help {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        @media (max-width: 1000px) {
+            .demo-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .configuration-panels {
+                flex-direction: column;
+            }
+
+            .image-source-index-panel {
+                flex-basis: auto;
+            }
+
+            .side-panel-stack,
+            .shader-controls-panel {
+                width: auto;
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="content">
+    <h2>Shader Layer Interaction Demo</h2>
+
+    <h3 id="title-w" class="viewer-title">Loading...</h3>
+
+    <div class="demo-layout">
+        <main class="demo-main">
+            <section class="viewer-section">
+                <div id="drawer-canvas" class="viewer-container"></div>
+            </section>
+
+            <div class="configuration-panels">
+                <div id="image-source-index-panel" class="image-source-index-panel">
+                    Loading image source index...
+                </div>
+
+                <div id="shader-config-panel" class="shader-config-panel">
+                    Loading shader layer configuration...
+                </div>
+            </div>
+        </main>
+
+        <aside class="side-panel-stack">
+            <section id="interaction-controls-panel" class="interaction-controls-panel">
+                <h3>Interaction controls</h3>
+
+                <div class="interaction-control-list">
+                    <label class="interaction-control-label">
+                        <input id="interaction-enabled-toggle" type="checkbox">
+                        Enable interaction forwarding
+                    </label>
+                    <label class="interaction-control-label">
+                        <input id="interaction-prevent-context-menu-toggle" type="checkbox" checked>
+                        Prevent context menu
+                    </label>
+                    <label class="interaction-control-label">
+                        <input id="interaction-notify-on-move-toggle" type="checkbox">
+                        Notify on pointer move
+                    </label>
+                </div>
+
+                <div class="interaction-action-row">
+                    <button id="interaction-clear-button" type="button">Clear interaction state</button>
+                </div>
+
+                <h4>Event-driven readout</h4>
+                <pre id="interaction-event-state-output" class="interaction-state-readout">No interaction-change event received yet.</pre>
+
+                <h4>Polled readout</h4>
+                <pre id="interaction-polled-state-output" class="interaction-state-readout">Waiting for drawer state...</pre>
+            </section>
+
+            <section id="interaction-guide-panel" class="interaction-guide-panel">
+                <h3>Interaction legend</h3>
+                <ul>
+                    <li><strong>Pointer:</strong> cyan marker when no button is pressed.</li>
+                    <li><strong>Primary button:</strong> red pointer marker and red button dot.</li>
+                    <li><strong>Secondary button:</strong> magenta pointer marker and magenta button dot.</li>
+                    <li><strong>Auxiliary button:</strong> green pointer marker and green button dot.</li>
+                    <li><strong>Last click:</strong> yellow/orange ring. Repeated clicks alternate color through <code>clickSerial</code>.</li>
+                    <li><strong>Active drag:</strong> cyan line/rectangle, green start marker, magenta current marker.</li>
+                    <li><strong>Completed drag:</strong> persistent line/rings. Repeated completed drags alternate color through <code>dragSerial</code>.</li>
+                </ul>
+
+                <h3>Instructions</h3>
+                <ol>
+                    <li>Move the pointer over the viewer.</li>
+                    <li>Hold left, right, or middle mouse buttons.</li>
+                    <li>Click repeatedly at the same position to verify <code>clickSerial</code>.</li>
+                    <li>Drag and release to verify drag start/current/end state.</li>
+                    <li>Toggle interaction forwarding off; all shader-visible interaction state should clear.</li>
+                    <li>Toggle <code>notifyOnMove</code> to compare event-driven and polled readouts.</li>
+                    <li>Reorder the interaction-debug layer above/below other layers to test composition.</li>
+                </ol>
+
+                <p class="interaction-guide-note">
+                    The demo readouts use only FlexDrawer/FlexRenderer APIs. They do not install independent pointer handlers.
+                </p>
+            </section>
+
+            <section class="shader-controls-panel">
+                <h3>Shader layer controls</h3>
+                <div id="my-shader-ui-container" class="shader-controls-list"></div>
+            </section>
+        </aside>
+    </div>
+</div>
+</body>
+</html>

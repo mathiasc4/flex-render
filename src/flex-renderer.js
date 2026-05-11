@@ -64,6 +64,35 @@
      */
 
     /**
+     * Renderer-owned interaction state exposed to generated GPU programs.
+     *
+     * Position fields use physical renderer framebuffer pixels with bottom-left origin,
+     * directly comparable to `gl_FragCoord.xy`.
+     *
+     * @typedef {Object} InteractionState
+     * @property {boolean} enabled - Whether shader-visible interaction state is enabled.
+     * @property {boolean} pointerInside - Whether the pointer is currently inside the interaction target.
+     * @property {{x: number, y: number}} pointerPositionPx - Current pointer position.
+     * @property {number} activeButtons - Current MouseEvent.buttons-compatible button bitmask.
+     * @property {{x: number, y: number}} lastClickPositionPx - Last accepted click position.
+     * @property {number} lastClickButtons - MouseEvent.buttons-compatible bitmask for the last click.
+     * @property {number} clickSerial - Monotonic serial incremented for each accepted click.
+     * @property {boolean} dragActive - Whether a drag is currently active.
+     * @property {{x: number, y: number}} dragStartPositionPx - Start position of the current or last drag.
+     * @property {{x: number, y: number}} dragCurrentPositionPx - Current drag position.
+     * @property {{x: number, y: number}} dragEndPositionPx - End position of the last completed drag.
+     * @property {number} dragButtons - MouseEvent.buttons-compatible bitmask associated with the drag.
+     * @property {number} dragSerial - Monotonic serial incremented for each completed drag.
+     */
+
+    /**
+     * @typedef {Object} InteractionStateUpdateOptions
+     * @property {boolean} [notify=true] emit the `interaction-change` event
+     * @property {boolean} [redraw=true] request a redraw after the state change
+     * @property {string} [reason="set-interaction-state"] semantic reason included in the emitted event
+     */
+
+    /**
      * @typedef {Object} SecondPassTextureOptions
      * @property {GLint|null} [framebuffer] optional framebuffer override for the final draw call
      * @property {Object|string} [target] backend-owned render target object or stable target key
@@ -190,7 +219,9 @@
             this._shadersOrder = null;
             this._programImplementations = {};
             this.__firstPassResult = null;
+
             this._inspectorState = this.constructor.normalizeInspectorState();
+            this._interactionState = this.constructor.normalizeInteractionState();
 
             this.canvasContextOptions = incomingOptions.canvasOptions;
             const canvas = document.createElement("canvas");
@@ -1223,6 +1254,197 @@
             return this.setInspectorState(undefined, $.extend(true, {
                 reason: 'clear-inspector-state'
             }, options));
+        }
+
+        /**
+         * Normalize a non-negative integer value used by interaction state.
+         *
+         * @private
+         * @param {*} value
+         * @return {number}
+         */
+        static _normalizeInteractionInteger(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
+        }
+
+        /**
+         * Normalize an interaction position object.
+         *
+         * @private
+         * @param {*} position
+         * @return {{x: number, y: number}}
+         */
+        static _normalizeInteractionPosition(position) {
+            position = position || {};
+
+            return {
+                x: Number.isFinite(position.x) ? position.x : 0,
+                y: Number.isFinite(position.y) ? position.y : 0,
+            };
+        }
+
+        /**
+         * Check whether two normalized interaction position objects are equal.
+         *
+         * @private
+         * @param {{x: number, y: number}} a
+         * @param {{x: number, y: number}} b
+         * @return {boolean}
+         */
+        static _interactionPositionsEqual(a, b) {
+            return a.x === b.x && a.y === b.y;
+        }
+
+        /**
+         * Check whether two normalized interaction states are equal.
+         *
+         * @private
+         * @param {InteractionState} a
+         * @param {InteractionState} b
+         * @return {boolean}
+         */
+        static _interactionStatesEqual(a, b) {
+            return a.enabled === b.enabled &&
+                a.pointerInside === b.pointerInside &&
+                this._interactionPositionsEqual(a.pointerPositionPx, b.pointerPositionPx) &&
+                a.activeButtons === b.activeButtons &&
+                this._interactionPositionsEqual(a.lastClickPositionPx, b.lastClickPositionPx) &&
+                a.lastClickButtons === b.lastClickButtons &&
+                a.clickSerial === b.clickSerial &&
+                a.dragActive === b.dragActive &&
+                this._interactionPositionsEqual(a.dragStartPositionPx, b.dragStartPositionPx) &&
+                this._interactionPositionsEqual(a.dragCurrentPositionPx, b.dragCurrentPositionPx) &&
+                this._interactionPositionsEqual(a.dragEndPositionPx, b.dragEndPositionPx) &&
+                a.dragButtons === b.dragButtons &&
+                a.dragSerial === b.dragSerial;
+        }
+
+        /**
+         * Normalize interaction state to the canonical backend-agnostic shape.
+         *
+         * Missing fields are filled with defaults. Position fields preserve floating-point
+         * framebuffer pixels and use bottom-left origin, directly comparable to `gl_FragCoord.xy`.
+         *
+         * @param {Partial<InteractionState>|undefined} state
+         * @return {InteractionState}
+         */
+        static normalizeInteractionState(state = undefined) {
+            const defaults = {
+                enabled: false,
+                pointerInside: false,
+                pointerPositionPx: { x: 0, y: 0 },
+                activeButtons: 0,
+                lastClickPositionPx: { x: 0, y: 0 },
+                lastClickButtons: 0,
+                clickSerial: 0,
+                dragActive: false,
+                dragStartPositionPx: { x: 0, y: 0 },
+                dragCurrentPositionPx: { x: 0, y: 0 },
+                dragEndPositionPx: { x: 0, y: 0 },
+                dragButtons: 0,
+                dragSerial: 0,
+            };
+
+            const merged = state && typeof state === "object" ?
+                $.extend(true, {}, defaults, state) :
+                $.extend(true, {}, defaults);
+
+            return {
+                enabled: !!merged.enabled,
+                pointerInside: !!merged.pointerInside,
+                pointerPositionPx: this._normalizeInteractionPosition(merged.pointerPositionPx),
+                activeButtons: this._normalizeInteractionInteger(merged.activeButtons),
+                lastClickPositionPx: this._normalizeInteractionPosition(merged.lastClickPositionPx),
+                lastClickButtons: this._normalizeInteractionInteger(merged.lastClickButtons),
+                clickSerial: this._normalizeInteractionInteger(merged.clickSerial),
+                dragActive: !!merged.dragActive,
+                dragStartPositionPx: this._normalizeInteractionPosition(merged.dragStartPositionPx),
+                dragCurrentPositionPx: this._normalizeInteractionPosition(merged.dragCurrentPositionPx),
+                dragEndPositionPx: this._normalizeInteractionPosition(merged.dragEndPositionPx),
+                dragButtons: this._normalizeInteractionInteger(merged.dragButtons),
+                dragSerial: this._normalizeInteractionInteger(merged.dragSerial),
+            };
+        }
+
+        /**
+         * Patch-update the renderer-owned interaction state.
+         *
+         * This method stores normalized state, optionally emits `interaction-change`,
+         * and optionally requests a redraw so the active backend can consume the new
+         * state during the next second pass.
+         *
+         * @param {Partial<InteractionState>|undefined} state
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        setInteractionState(state = undefined, options = {}) {
+            const previous = this.getInteractionState();
+            const patch = state && typeof state === "object" ? state : {};
+            const current = this.constructor.normalizeInteractionState($.extend(true, {}, previous, patch));
+            const changed = !this.constructor._interactionStatesEqual(previous, current);
+
+            if (changed) {
+                this._interactionState = current;
+            }
+
+            if (options.notify !== false) {
+                this.raiseEvent('interaction-change', {
+                    previous: previous,
+                    current: this.getInteractionState(),
+                    reason: options.reason || 'set-interaction-state',
+                    changed: changed
+                });
+            }
+
+            if (changed && options.redraw !== false && typeof this.redrawCallback === 'function') {
+                this.redrawCallback();
+            }
+
+            return this.getInteractionState();
+        }
+
+        /**
+         * Return a defensive copy of the current canonical interaction state.
+         * Backends should read interaction state through this method instead of caching mutable references.
+         *
+         * @return {InteractionState}
+         */
+        getInteractionState() {
+            return $.extend(true, {}, this._interactionState || this.constructor.normalizeInteractionState());
+        }
+
+        /**
+         * Reset interaction state to the normalized disabled state.
+         *
+         * Unlike `setInteractionState(...)`, this is a full reset rather than a patch update.
+         *
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        clearInteractionState(options = {}) {
+            const previous = this.getInteractionState();
+            const current = this.constructor.normalizeInteractionState();
+            const changed = !this.constructor._interactionStatesEqual(previous, current);
+
+            if (changed) {
+                this._interactionState = current;
+            }
+
+            if (options.notify !== false) {
+                this.raiseEvent('interaction-change', {
+                    previous: previous,
+                    current: this.getInteractionState(),
+                    reason: options.reason || 'clear-interaction-state',
+                    changed: changed
+                });
+            }
+
+            if (changed && options.redraw !== false && typeof this.redrawCallback === 'function') {
+                this.redrawCallback();
+            }
+
+            return this.getInteractionState();
         }
 
         /**

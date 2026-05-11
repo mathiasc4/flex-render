@@ -68,6 +68,11 @@
             this._pendingRebuildRequest = null;
             this._drawReady = false;
 
+            this._interactionOptions = this._normalizeInteractionOptions(this.options.interaction);
+            this._interactionEnabled = false;
+            this._interactionListeners = null;
+            this._interactionDragActive = false;
+
             // reject listening for the tile-drawing and tile-drawn events, which this drawer does not fire
             this.viewer.rejectEventHandler("tile-drawn", "The WebGLDrawer does not raise the tile-drawn event");
             this.viewer.rejectEventHandler("tile-drawing", "The WebGLDrawer does not raise the tile-drawing event");
@@ -118,6 +123,7 @@
                 copyShaderConfig: false,
                 handleNavigator: true,
                 shaderSourceResolver: null,
+                interaction: false,
                 // hex bg color, by default transparent
                 backgroundColor: undefined
             };
@@ -785,6 +791,20 @@
             if (this._destroyed) {
                 return;
             }
+
+            if (this._interactionEnabled) {
+                this.setInteractionOptions({
+                    enabled: false
+                }, {
+                    notify: false,
+                    redraw: false,
+                    reason: "drawer-destroy"
+                });
+            } else {
+                this._detachInteractionListeners();
+                this._resetInteractionTracking();
+            }
+
             const gl = this._gl;
 
             // clean all texture units; adapted from https://stackoverflow.com/a/23606581/1214731
@@ -1054,6 +1074,520 @@
          */
         clearInspectorState() {
             return this.setInspectorState(undefined);
+        }
+
+        /**
+         * Drawer-level interaction observer configuration.
+         *
+         * This controls whether `FlexDrawer` observes pointer/mouse events and how it
+         * forwards those events to the renderer-owned interaction state. These options
+         * are drawer configuration options, not `FlexRenderer` interaction-state update
+         * options.
+         *
+         * @typedef {Object} FlexDrawerInteractionOptions
+         * @property {boolean} [enabled=false] - Whether FlexDrawer observes pointer/mouse events and forwards interaction state.
+         * @property {boolean} [preventContextMenu=false] - Prevent the browser context menu on interaction right-click/contextmenu events.
+         * @property {boolean} [notifyOnMove=false] - Emit `interaction-change` notifications for high-frequency pointermove updates.
+         */
+
+        /**
+         * Normalize drawer-level interaction configuration.
+         *
+         * @private
+         * @param {boolean|Partial<FlexDrawerInteractionOptions>|undefined} interaction
+         * @return {FlexDrawerInteractionOptions}
+         */
+        _normalizeInteractionOptions(interaction = false) {
+            if (interaction === true) {
+                return {
+                    enabled: true,
+                    preventContextMenu: false,
+                    notifyOnMove: false,
+                };
+            }
+
+            if (!interaction || typeof interaction !== "object") {
+                return {
+                    enabled: false,
+                    preventContextMenu: false,
+                    notifyOnMove: false,
+                };
+            }
+
+            return {
+                enabled: !!interaction.enabled,
+                preventContextMenu: !!interaction.preventContextMenu,
+                notifyOnMove: !!interaction.notifyOnMove,
+            };
+        }
+
+        /**
+         * Return the DOM element used for interaction event observation.
+         *
+         * @private
+         * @return {HTMLElement|HTMLCanvasElement|null}
+         */
+        _getInteractionEventTarget() {
+            return this.canvas || this.container || this.element || (this.viewer && this.viewer.element) || null;
+        }
+
+        /**
+         * Convert a DOM pointer/mouse event into renderer framebuffer pixels.
+         *
+         * Returned coordinates use physical framebuffer pixels with bottom-left origin,
+         * directly comparable to `gl_FragCoord.xy`.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {{x: number, y: number}}
+         */
+        _getInteractionPositionPx(event) {
+            const canvas = this.renderer && this.renderer.canvas;
+            const target = this._getInteractionEventTarget();
+
+            if (!canvas || !target || typeof target.getBoundingClientRect !== "function") {
+                return { x: 0, y: 0 };
+            }
+
+            const rect = target.getBoundingClientRect();
+            const scaleX = rect.width ? canvas.width / rect.width : 1;
+            const scaleY = rect.height ? canvas.height / rect.height : 1;
+
+            return {
+                x: (event.clientX - rect.left) * scaleX,
+                y: (rect.bottom - event.clientY) * scaleY,
+            };
+        }
+
+        /**
+         * Convert a MouseEvent.button value into a MouseEvent.buttons-compatible bitmask.
+         *
+         * @private
+         * @param {number} button
+         * @return {number}
+         */
+        _buttonToButtonsMask(button) {
+            if (button === 0) {
+                return 1;
+            }
+            if (button === 1) {
+                return 4;
+            }
+            if (button === 2) {
+                return 2;
+            }
+            if (button === 3) {
+                return 8;
+            }
+            if (button === 4) {
+                return 16;
+            }
+            return 0;
+        }
+
+        /**
+         * Return the current button bitmask from an interaction event.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {number}
+         */
+        _getInteractionButtons(event) {
+            if (typeof event.buttons === "number") {
+                return event.buttons;
+            }
+
+            return this._buttonToButtonsMask(event.button);
+        }
+
+        /**
+         * Return whether this event should be ignored by the initial mouse-focused implementation.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {boolean}
+         */
+        _shouldIgnoreInteractionEvent(event) {
+            if (!this._interactionEnabled) {
+                return true;
+            }
+
+            return !!(event.pointerType && event.pointerType !== "mouse");
+        }
+
+        /**
+         * Reset drawer-local interaction tracking fields.
+         *
+         * @private
+         * @return {void}
+         */
+        _resetInteractionTracking() {
+            this._interactionDragActive = false;
+        }
+
+        /**
+         * Attach pointer or mouse observers used to forward interaction state to FlexRenderer.
+         *
+         * @private
+         * @return {void}
+         */
+        _attachInteractionListeners() {
+            if (this._interactionListeners) {
+                return;
+            }
+
+            const target = this._getInteractionEventTarget();
+            if (!target) {
+                return;
+            }
+
+            const supportsPointerEvents = typeof window !== "undefined" && !!window.PointerEvent;
+            const listeners = [];
+
+            const add = (type, handler) => {
+                target.addEventListener(type, handler, false);
+                listeners.push({ type, handler });
+            };
+
+            const handleEnter = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: this._getInteractionPositionPx(event),
+                    activeButtons: this._getInteractionButtons(event),
+                }, {
+                    notify: true,
+                    reason: "drawer-pointerenter"
+                });
+            };
+
+            const handleMove = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+                const patch = {
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    activeButtons: this._getInteractionButtons(event),
+                };
+
+                if (this._interactionDragActive) {
+                    patch.dragCurrentPositionPx = pointerPositionPx;
+                }
+
+                this.setInteractionState(patch, {
+                    notify: this._interactionOptions.notifyOnMove,
+                    reason: "drawer-pointermove"
+                });
+            };
+
+            const handleDown = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+                const activeButtons = this._getInteractionButtons(event);
+
+                this._interactionDragActive = true;
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    activeButtons: activeButtons,
+                    dragActive: true,
+                    dragStartPositionPx: pointerPositionPx,
+                    dragCurrentPositionPx: pointerPositionPx,
+                    dragButtons: activeButtons,
+                }, {
+                    notify: true,
+                    reason: "drawer-pointerdown"
+                });
+            };
+
+            const handleUp = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const previous = this.getInteractionState();
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+                const activeButtons = this._getInteractionButtons(event);
+                const completedDrag = this._interactionDragActive || previous.dragActive;
+
+                this._resetInteractionTracking();
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    activeButtons: activeButtons,
+                    dragActive: false,
+                    dragCurrentPositionPx: pointerPositionPx,
+                    dragEndPositionPx: pointerPositionPx,
+                    dragSerial: completedDrag ? previous.dragSerial + 1 : previous.dragSerial,
+                }, {
+                    notify: true,
+                    reason: completedDrag ? "drawer-drag-end" : "drawer-pointerup"
+                });
+            };
+
+            const handleLeave = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                this._resetInteractionTracking();
+
+                this.setInteractionState({
+                    pointerInside: false,
+                    activeButtons: 0,
+                    dragActive: false,
+                }, {
+                    notify: true,
+                    reason: "drawer-pointerleave"
+                });
+            };
+
+            const handleCancel = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                this._resetInteractionTracking();
+
+                this.setInteractionState({
+                    pointerInside: false,
+                    activeButtons: 0,
+                    dragActive: false,
+                }, {
+                    notify: true,
+                    reason: "drawer-pointercancel"
+                });
+            };
+
+            const handleClick = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const previous = this.getInteractionState();
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    lastClickPositionPx: pointerPositionPx,
+                    lastClickButtons: this._buttonToButtonsMask(event.button),
+                    clickSerial: previous.clickSerial + 1,
+                }, {
+                    notify: true,
+                    reason: "drawer-click"
+                });
+            };
+
+            const handleContextMenu = (event) => {
+                if (this._interactionEnabled && this._interactionOptions.preventContextMenu) {
+                    event.preventDefault();
+                }
+            };
+
+            if (supportsPointerEvents) {
+                add("pointerenter", handleEnter);
+                add("pointermove", handleMove);
+                add("pointerdown", handleDown);
+                add("pointerup", handleUp);
+                add("pointercancel", handleCancel);
+                add("pointerleave", handleLeave);
+                add("click", handleClick);
+            } else {
+                add("mouseenter", handleEnter);
+                add("mousemove", handleMove);
+                add("mousedown", handleDown);
+                add("mouseup", handleUp);
+                add("mouseleave", handleLeave);
+                add("click", handleClick);
+            }
+
+            add("contextmenu", handleContextMenu);
+
+            this._interactionListeners = {
+                target,
+                listeners
+            };
+        }
+
+        /**
+         * Detach pointer or mouse observers used for interaction forwarding.
+         *
+         * @private
+         * @return {void}
+         */
+        _detachInteractionListeners() {
+            if (!this._interactionListeners) {
+                return;
+            }
+
+            const target = this._interactionListeners.target;
+            for (const listener of this._interactionListeners.listeners) {
+                target.removeEventListener(listener.type, listener.handler, false);
+            }
+
+            this._interactionListeners = null;
+        }
+
+        /**
+         * Update drawer-level interaction observer options.
+         *
+         * This is the main implementation for drawer-side interaction configuration.
+         * It controls whether FlexDrawer observes pointer/mouse events and how those
+         * events are forwarded to the renderer-owned interaction state.
+         *
+         * The second argument is forwarded only when this method needs to mutate
+         * renderer-owned interaction state because `enabled` changed.
+         *
+         * @param {boolean|Partial<FlexDrawerInteractionOptions>} interaction
+         * @param {InteractionStateUpdateOptions} [stateOptions={}] - Renderer state update options used only when enabling/disabling forwarding.
+         * @return {FlexDrawerInteractionOptions}
+         */
+        setInteractionOptions(interaction, stateOptions = {}) {
+            const previousEnabled = this._interactionEnabled;
+            const nextOptions = this._normalizeInteractionOptions(
+                interaction && typeof interaction === "object" ?
+                    $.extend(true, {}, this._interactionOptions, interaction) :
+                    interaction
+            );
+
+            this._interactionOptions = nextOptions;
+
+            if (nextOptions.enabled) {
+                if (!this._interactionListeners) {
+                    this._attachInteractionListeners();
+                }
+
+                if (!this._interactionListeners) {
+                    this._interactionEnabled = false;
+                    this._interactionOptions.enabled = false;
+                    return this.getInteractionOptions();
+                }
+
+                this._interactionEnabled = true;
+                this._interactionOptions.enabled = true;
+
+                if (!previousEnabled) {
+                    this.setInteractionState({
+                        enabled: true
+                    }, $.extend(true, {
+                        reason: "drawer-enable-interaction"
+                    }, stateOptions));
+                }
+
+                return this.getInteractionOptions();
+            }
+
+            this._interactionEnabled = false;
+            this._interactionOptions.enabled = false;
+            this._detachInteractionListeners();
+            this._resetInteractionTracking();
+
+            this.clearInteractionState($.extend(true, {
+                reason: "drawer-disable-interaction"
+            }, stateOptions));
+
+            return this.getInteractionOptions();
+        }
+
+        /**
+         * Return drawer-level interaction observer options.
+         *
+         * @return {FlexDrawerInteractionOptions}
+         */
+        getInteractionOptions() {
+            return $.extend(true, {}, this._interactionOptions);
+        }
+
+        /**
+         * Enable or disable drawer-side interaction observation and forwarding.
+         *
+         * On FlexDrawer, "interaction enabled" means the drawer observes pointer/mouse
+         * events and forwards normalized interaction state to FlexRenderer.
+         *
+         * This is a convenience wrapper around `setInteractionOptions(...)`.
+         *
+         * @param {boolean} enabled
+         * @param {InteractionStateUpdateOptions} [stateOptions={}] - Renderer state update options used only for the enable/disable state mutation.
+         * @return {FlexDrawerInteractionOptions}
+         */
+        setInteractionEnabled(enabled, stateOptions = {}) {
+            return this.setInteractionOptions({
+                enabled: !!enabled
+            }, stateOptions);
+        }
+
+        /**
+         * Return whether drawer-side interaction observation and forwarding is enabled.
+         *
+         * @return {boolean}
+         */
+        isInteractionEnabled() {
+            return !!this.getInteractionOptions().enabled;
+        }
+
+        /**
+         * Forward an interaction-state patch to the renderer-owned interaction API.
+         *
+         * @param {Partial<InteractionState>|undefined} state
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        setInteractionState(state = undefined, options = {}) {
+            if (!this.renderer || typeof this.renderer.setInteractionState !== "function") {
+                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+            }
+
+            return this.renderer.setInteractionState(state, $.extend(true, {
+                reason: "drawer-set-interaction-state"
+            }, options));
+        }
+
+        /**
+         * Return the renderer-owned canonical interaction state.
+         *
+         * @return {InteractionState}
+         */
+        getInteractionState() {
+            if (!this.renderer || typeof this.renderer.getInteractionState !== "function") {
+                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+            }
+
+            return this.renderer.getInteractionState();
+        }
+
+        /**
+         * Clear drawer-local interaction tracking and renderer-owned interaction state.
+         *
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        clearInteractionState(options = {}) {
+            this._resetInteractionTracking();
+
+            if (!this.renderer || typeof this.renderer.clearInteractionState !== "function") {
+                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+            }
+
+            return this.renderer.clearInteractionState($.extend(true, {
+                reason: "drawer-clear-interaction-state"
+            }, options));
         }
 
         // DRAWING METHODS
@@ -1540,6 +2074,19 @@
             canvas.width = viewportSize.x;
             canvas.height = viewportSize.y;
             this._refreshDrawReadyState();
+
+            this._interactionOptions = this._normalizeInteractionOptions(
+                this._isNavigatorDrawer ? false : this.options.interaction
+            );
+
+            if (this._interactionOptions.enabled) {
+                this.setInteractionOptions(this._interactionOptions, {
+                    notify: true,
+                    redraw: false,
+                    reason: "drawer-init-interaction"
+                });
+            }
+
             return canvas;
         }
 
