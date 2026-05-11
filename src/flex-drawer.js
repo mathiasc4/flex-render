@@ -72,6 +72,8 @@
             this._interactionEnabled = false;
             this._interactionListeners = null;
             this._interactionDragActive = false;
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
 
             // reject listening for the tile-drawing and tile-drawn events, which this drawer does not fire
             this.viewer.rejectEventHandler("tile-drawn", "The WebGLDrawer does not raise the tile-drawn event");
@@ -803,6 +805,7 @@
             } else {
                 this._detachInteractionListeners();
                 this._resetInteractionTracking();
+                this._releaseInteractionViewerInputCapture();
             }
 
             const gl = this._gl;
@@ -1088,6 +1091,7 @@
          * @property {boolean} [enabled=false] - Whether FlexDrawer observes pointer/mouse events and forwards interaction state.
          * @property {boolean} [preventContextMenu=false] - Prevent the browser context menu on interaction right-click/contextmenu events.
          * @property {boolean} [notifyOnMove=false] - Emit `interaction-change` notifications for high-frequency pointermove updates.
+         * @property {boolean} [captureViewerInput=false] - Disable OpenSeadragon mouse navigation while drawer-side interaction forwarding is enabled.
          */
 
         /**
@@ -1103,6 +1107,7 @@
                     enabled: true,
                     preventContextMenu: false,
                     notifyOnMove: false,
+                    captureViewerInput: false,
                 };
             }
 
@@ -1111,6 +1116,7 @@
                     enabled: false,
                     preventContextMenu: false,
                     notifyOnMove: false,
+                    captureViewerInput: false,
                 };
             }
 
@@ -1118,6 +1124,7 @@
                 enabled: !!interaction.enabled,
                 preventContextMenu: !!interaction.preventContextMenu,
                 notifyOnMove: !!interaction.notifyOnMove,
+                captureViewerInput: !!interaction.captureViewerInput,
             };
         }
 
@@ -1446,6 +1453,100 @@
         }
 
         /**
+         * Return whether OpenSeadragon mouse navigation is currently enabled.
+         *
+         * @private
+         * @return {boolean}
+         */
+        _getViewerMouseNavEnabled() {
+            if (!this.viewer) {
+                return true;
+            }
+
+            if (typeof this.viewer.isMouseNavEnabled === "function") {
+                return !!this.viewer.isMouseNavEnabled();
+            }
+
+            if (typeof this.viewer.mouseNavEnabled === "boolean") {
+                return this.viewer.mouseNavEnabled;
+            }
+
+            return true;
+        }
+
+        /**
+         * Disable OpenSeadragon mouse navigation while interaction forwarding is active.
+         *
+         * This is drawer policy, not renderer state. The previous viewer mouse-navigation
+         * state is restored by `_releaseInteractionViewerInputCapture()`.
+         *
+         * @private
+         * @return {void}
+         */
+        _captureInteractionViewerInput() {
+            if (this._interactionMouseNavCaptured || !this.viewer) {
+                return;
+            }
+
+            this._interactionPreviousMouseNavEnabled = this._getViewerMouseNavEnabled();
+
+            if (typeof this.viewer.setMouseNavEnabled === "function") {
+                this.viewer.setMouseNavEnabled(false);
+                this._interactionMouseNavCaptured = true;
+                return;
+            }
+
+            if (typeof this.viewer.mouseNavEnabled === "boolean") {
+                this.viewer.mouseNavEnabled = false;
+                this._interactionMouseNavCaptured = true;
+            }
+        }
+
+        /**
+         * Restore OpenSeadragon mouse navigation after interaction input capture.
+         *
+         * @private
+         * @return {void}
+         */
+        _releaseInteractionViewerInputCapture() {
+            if (!this._interactionMouseNavCaptured || !this.viewer) {
+                this._interactionMouseNavCaptured = false;
+                this._interactionPreviousMouseNavEnabled = null;
+                return;
+            }
+
+            const restoreEnabled = this._interactionPreviousMouseNavEnabled !== false;
+
+            if (typeof this.viewer.setMouseNavEnabled === "function") {
+                this.viewer.setMouseNavEnabled(restoreEnabled);
+            } else if (typeof this.viewer.mouseNavEnabled === "boolean") {
+                this.viewer.mouseNavEnabled = restoreEnabled;
+            }
+
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
+        }
+
+        /**
+         * Synchronize OpenSeadragon input capture with current drawer interaction options.
+         *
+         * @private
+         * @return {void}
+         */
+        _syncInteractionViewerInputCapture() {
+            if (
+                this._interactionEnabled &&
+                this._interactionOptions &&
+                this._interactionOptions.captureViewerInput
+            ) {
+                this._captureInteractionViewerInput();
+                return;
+            }
+
+            this._releaseInteractionViewerInputCapture();
+        }
+
+        /**
          * Update drawer-level interaction observer options.
          *
          * This is the main implementation for drawer-side interaction configuration.
@@ -1482,6 +1583,7 @@
 
                 this._interactionEnabled = true;
                 this._interactionOptions.enabled = true;
+                this._syncInteractionViewerInputCapture();
 
                 if (!previousEnabled) {
                     this.setInteractionState({
@@ -1498,6 +1600,7 @@
             this._interactionOptions.enabled = false;
             this._detachInteractionListeners();
             this._resetInteractionTracking();
+            this._releaseInteractionViewerInputCapture();
 
             this.clearInteractionState($.extend(true, {
                 reason: "drawer-disable-interaction"
