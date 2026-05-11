@@ -119,10 +119,6 @@ let shaderLayerOrder = [
     "above_bblue"
 ];
 
-function makeLayerConfig(name, type, tiledImages, mode = "show", blend = "source-over") {
-    return
-}
-
 function renderShaderLayerControls(shaderLayer, shaderConfig) {
     const container = document.getElementById("my-shader-ui-container");
 
@@ -157,28 +153,6 @@ function resetShaderLayerControls() {
     if (container) {
         container.innerHTML = "";
     }
-}
-
-function renderImageSourceIndexPanel() {
-    const rows = indexedImageSources.map((source) => `
-        <tr>
-            <td>${escapeHtml(source.label)}</td>
-            <td><code>${source.index}</code></td>
-        </tr>
-    `).join("");
-
-    setPanelHtml("image-source-index-panel", `
-        <h3>Image sources</h3>
-        <table class="image-source-index-table">
-            <thead>
-                <tr>
-                    <th>Label</th>
-                    <th>Index</th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
-    `);
 }
 
 function renderShaderConfigPanel() {
@@ -313,7 +287,7 @@ function renderImageIndexControl(shaderConfig, shaderId) {
 function renderBlendControls(shaderConfig, shaderId) {
     const params = shaderConfig.params || {};
     const selectedMode = params.use_mode || "show";
-    const selectedBlend = params.use_blend || "source-over";
+    const selectedBlend = params.use_blend || "mask";
     const blendDisabled = selectedMode === "show" ? "disabled" : "";
 
     return `
@@ -421,7 +395,7 @@ function bindShaderConfigPanelEvents() {
             shaderConfig.type = this.value;
             shaderConfig.params = {
                 use_mode: previousParams.use_mode || "blend",
-                use_blend: previousParams.use_blend || "source-over"
+                use_blend: previousParams.use_blend || "mask"
             };
             shaderConfig.cache = {};
 
@@ -590,6 +564,5 @@ function escapeHtml(value) {
 }
 
 applyShaderLayerGuiConfig();
-renderImageSourceIndexPanel();
 renderShaderConfigPanel();
 setupInteractionPanel();

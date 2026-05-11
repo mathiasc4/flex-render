@@ -814,6 +814,8 @@ ${shader.getFragmentShaderExecution()}
         };
 
         let remainingBlendShader = null;
+        let clipTargetAvailable = false;
+
         const getRemainingBlending = () => {
             if (!remainingBlendShader) {
                 return "";
@@ -828,6 +830,7 @@ ${getStencilPassCode(remainingBlendShader)}
         for (const shaderLayerId of keyOrder) {
             const shaderLayer = shaderMap[shaderLayerId];
             const shaderLayerConfig = shaderLayer.getConfig();
+            const isClipLayer = shaderLayer._mode === "clip";
 
             // Snapshot mutable assembly state so a throw mid-iteration (e.g. an
             // incompatible control's sample() throws from getFragmentShaderExecution)
@@ -837,6 +840,7 @@ ${getStencilPassCode(remainingBlendShader)}
             const executionSnapshot = execution;
             const customBlendSnapshot = customBlendFunctions;
             const remainingBlendSnapshot = remainingBlendShader;
+            const clipTargetAvailableSnapshot = clipTargetAvailable;
 
             try {
                 const slot = shaderLayer.__renderSlot;
@@ -845,22 +849,29 @@ ${getStencilPassCode(remainingBlendShader)}
 
             execution += `\n    // ${shaderLayer.uid}\n`;
 
-            if (shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
-                if (shaderLayer._mode !== "clip") {
-                    execution += `${getRemainingBlending()}
-    // ${shaderLayer.uid} - Disabled (error or visible = false)
-    intermediate_color = vec4(0.0);
-`;
-                    remainingBlendShader = shaderLayer;
-                } else {
+                if (shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
+                    if (!isClipLayer) {
+                        // A hidden non-clip layer breaks the clip chain. Clip layers above it
+                        // must not accidentally modify the previous visible non-clip layer.
+                        clipTargetAvailable = false;
+                    }
+
                     execution += `
-    // ${shaderLayer.uid} - Disabled with Clipmask (error or visible = false)
-    intermediate_color = ${shaderLayer.uid}_blend_func(vec4(0.0), intermediate_color);
+    // ${shaderLayer.uid} - Disabled (type none, error, or visible = false)
+    // Intentionally skipped. Disabled layers do not emit blending,
+    // clipping, or composition-boundary code.
 `;
+
+                    continue;
                 }
 
-                continue;
-            }
+                if (isClipLayer && !clipTargetAvailable) {
+                    execution += `
+    // ${shaderLayer.uid} - Clip skipped because there is no visible non-clip layer to clip.
+`;
+
+                    continue;
+                }
 
             addShaderDefinition(shaderLayer);
 
@@ -874,14 +885,15 @@ ${getStencilPassCode(shaderLayer)}
     zoom = u_zoom;
 `;
 
-            if (shaderLayer._mode !== "clip") {
-                execution += `${getRemainingBlending()}
+                if (!isClipLayer) {
+                    execution += `${getRemainingBlending()}
     // ${shaderLayer.uid} - blending
     intermediate_color = ${shaderLayer.uid}_execution();
     intermediate_color.a = intermediate_color.a * ${opacityModifier};
 `;
-                remainingBlendShader = shaderLayer;
-            } else {
+                    remainingBlendShader = shaderLayer;
+                    clipTargetAvailable = true;
+                } else {
                 execution += `
     // ${shaderLayer.uid} - clipping
     clip_color = ${shaderLayer.uid}_execution();
@@ -896,20 +908,19 @@ ${getStencilPassCode(shaderLayer)}
                 execution = executionSnapshot;
                 customBlendFunctions = customBlendSnapshot;
                 remainingBlendShader = remainingBlendSnapshot;
+                clipTargetAvailable = clipTargetAvailableSnapshot;
 
-                execution += `\n    // ${shaderLayer.uid}\n`;
-                if (shaderLayer._mode !== "clip") {
-                    execution += `${getRemainingBlending()}
-    // ${shaderLayer.uid} - Disabled (assembly error)
-    intermediate_color = vec4(0.0);
-`;
-                    remainingBlendShader = shaderLayer;
-                } else {
-                    execution += `
-    // ${shaderLayer.uid} - Disabled with Clipmask (assembly error)
-    intermediate_color = vec4(0.0);
-`;
+                if (!isClipLayer) {
+                    // Treat a failed non-clip layer like a hidden non-clip layer.
+                    // Following clip layers must not retarget the previous visible layer.
+                    clipTargetAvailable = false;
                 }
+
+                execution += `
+    // ${shaderLayer.uid} - Disabled after assembly error
+    // Intentionally skipped. Failed layers do not emit blending,
+    // clipping, or composition-boundary code.
+`;
             }
         }
 

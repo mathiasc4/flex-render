@@ -183,6 +183,8 @@ vec4 compute_${shaderLayer.uid}() {
                 };
 
                 let remainingBlendShader = null;
+                let clipTargetAvailable = false;
+
                 const getRemainingBlending = () => {
                     if (!remainingBlendShader) {
                         return "";
@@ -197,20 +199,28 @@ ${getStencilPassCode(remainingBlendShader)}
                 for (const shaderId of keyOrder) {
                     const shaderLayer = shaderMap[shaderId];
                     const shaderConf = shaderLayer.getConfig();
+                    const isClipLayer = shaderLayer._mode === "clip";
                     const slot = shaderLayer.__renderSlot;
                     const opacityModifier = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
 
                     if (shaderConf.type === "none" || shaderConf.error || !shaderConf.visible) {
-                        if (shaderLayer._mode !== "clip") {
-                            execution += `${getRemainingBlending()}
-// ${shaderLayer.constructor.type()} - Disabled (error or visible = false)
-new_color = vec4(0.0);`;
-                            remainingBlendShader = shaderLayer;
-                        } else {
-                            execution += `
-// ${shaderLayer.constructor.type()} - Disabled with Clipmask (error or visible = false)
-new_color = ${shaderLayer.uid}_blend_func(vec4(0.0), new_color);`;
+                        if (!isClipLayer) {
+                            // A hidden non-clip child breaks the clip chain. Clip children above it
+                            // must not accidentally modify the previous visible non-clip child.
+                            clipTargetAvailable = false;
                         }
+
+                        execution += `
+// ${shaderLayer.constructor.type()} - Disabled (type none, error, or visible = false)
+// Intentionally skipped. Disabled layers do not emit blending,
+// clipping, or composition-boundary code.`;
+
+                        continue;
+                    }
+
+                    if (isClipLayer && !clipTargetAvailable) {
+                        execution += `
+// ${shaderLayer.constructor.type()} - Clip skipped because there is no visible non-clip layer to clip.`;
 
                         continue;
                     }
@@ -224,13 +234,14 @@ ${getStencilPassCode(shaderLayer)}
     imageOriginPx = attrs_${slot}.zw;
     zoom = u_zoom;`;
 
-                    if (shaderLayer._mode !== "clip") {
+                    if (!isClipLayer) {
                         execution += `${getRemainingBlending()}
 // ${shaderLayer.constructor.type()} - Blending
 new_color = compute_${shaderLayer.uid}();
 new_color.a = new_color.a * ${opacityModifier};`;
 
                         remainingBlendShader = shaderLayer;
+                        clipTargetAvailable = true;
                     } else {
                         execution += `
 // ${shaderLayer.constructor.type()} - Clipping
