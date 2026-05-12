@@ -139,114 +139,19 @@
                 }
             }
 
-            constructShaderLayerCode(shaderLayer) {
-                return `
-// ${shaderLayer.constructor.type()} - definitions
-${shaderLayer.getFragmentShaderDefinition()}
-// ${shaderLayer.constructor.type()} - blending function
-${shaderLayer.getCustomBlendFunction(shaderLayer.uid + "_blend_func")}
-// ${shaderLayer.constructor.type()} - final function definition
-vec4 compute_${shaderLayer.uid}() {
-    ${shaderLayer.getFragmentShaderExecution()}
-}
-`;
-            }
-
             getFragmentShaderDefinition() {
-                let definition = super.getFragmentShaderDefinition() + "\n";
-
-                for (let id of this.shaderLayerOrder) {
-                    let shaderLayer = this.shaderLayers[id];
-
-                    definition += this.constructShaderLayerCode(shaderLayer);
-                }
-
-                return definition;
+                return super.getFragmentShaderDefinition() + "\n" +
+                    this.backend.getShaderLayerStackDefinition(this.shaderLayers, this.shaderLayerOrder, {
+                        ownerShader: this,
+                        initialColor: "vec4(0.0)",
+                        useInspectorAlpha: false
+                    });
             }
 
-            // TODO: move the grouping logic into WebGLImplementation
             getFragmentShaderExecution() {
-                let execution = "vec4 new_color = vec4(0.0);\nvec4 combined_color = vec4(0.0);\nvec4 clip_color = vec4(0.0);";
-
-                const shaderMap = this.shaderLayers;
-                const keyOrder = this.shaderLayerOrder;
-
-                const getStencilPassCode = shader => {
-                    const shaderConfig = shader.getConfig();
-                    const hasSources = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length > 0;
-
-                    if (!hasSources) {
-                        return "    stencilPasses = true;";
-                    }
-
-                    return `    stencilPasses = osd_stencil_texture(${shader.__renderSlot}, 0, v_texture_coords).r > 0.995;`;
-                };
-
-                let remainingBlendShader = null;
-                const getRemainingBlending = () => {
-                    if (!remainingBlendShader) {
-                        return "";
-                    }
-
-                    return `
-${getStencilPassCode(remainingBlendShader)}
-    combined_color = ${remainingBlendShader.mode === "show" ? "blend_source_over" : remainingBlendShader.uid + "_blend_func"}(new_color, combined_color);
-`;
-                };
-
-                for (const shaderId of keyOrder) {
-                    const shaderLayer = shaderMap[shaderId];
-                    const shaderConf = shaderLayer.getConfig();
-                    const slot = shaderLayer.__renderSlot;
-                    const opacityModifier = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
-
-                    if (shaderConf.type === "none" || shaderConf.error || !shaderConf.visible) {
-                        if (shaderLayer._mode !== "clip") {
-                            execution += `${getRemainingBlending()}
-// ${shaderLayer.constructor.type()} - Disabled (error or visible = false)
-new_color = vec4(0.0);`;
-                            remainingBlendShader = shaderLayer;
-                        } else {
-                            execution += `
-// ${shaderLayer.constructor.type()} - Disabled with Clipmask (error or visible = false)
-new_color = ${shaderLayer.uid}_blend_func(vec4(0.0), new_color);`;
-                        }
-
-                        continue;
-                    }
-
-                    execution += `
-    instance_id = ${slot};
-${getStencilPassCode(shaderLayer)}
-    vec4 attrs_${slot} = u_shaderVariables[${slot}];
-    opacity = attrs_${slot}.x;
-    pixelSize = attrs_${slot}.y;
-    imageOriginPx = attrs_${slot}.zw;
-    zoom = u_zoom;`;
-
-                    if (shaderLayer._mode !== "clip") {
-                        execution += `${getRemainingBlending()}
-// ${shaderLayer.constructor.type()} - Blending
-new_color = compute_${shaderLayer.uid}();
-new_color.a = new_color.a * ${opacityModifier};`;
-
-                        remainingBlendShader = shaderLayer;
-                    } else {
-                        execution += `
-// ${shaderLayer.constructor.type()} - Clipping
-clip_color = compute_${shaderLayer.uid}();
-clip_color.a = clip_color.a * ${opacityModifier};
-new_color = ${shaderLayer.uid}_blend_func(clip_color, new_color);`;
-                    }
-                }
-
-                if (remainingBlendShader) {
-                    execution += getRemainingBlending();
-                }
-
-                execution += "\nreturn combined_color;";
-
-                return execution;
+                return `return ${this.backend.getShaderLayerStackExecution(this.shaderLayers, this.shaderLayerOrder, {
+                    ownerShader: this
+                })};`;
             }
         }
     );

@@ -219,6 +219,8 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             }
         };
 
+        this.color.init();
+
         if (this.connect) {
             this.connect.on('default', function() {
                 syncColor();
@@ -232,8 +234,6 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
         this.threshold.init();
 
         syncColor();
-
-        this.color.init();
     }
 });
 })(OpenSeadragon);
