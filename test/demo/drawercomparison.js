@@ -366,7 +366,7 @@ function makeImagePickerElement(key, label){
     let shaderSelector = "";
     if (drawer1 === "flex-renderer" || drawer2 === "flex-renderer") {
         const map = {};
-        for (let shader of OpenSeadragon.FlexRenderer.ShaderMediator.availableShaders()) {
+        for (let shader of OpenSeadragon.FlexRenderer.ShaderLayerRegistry.availableShaderLayers()) {
             map[shader.type()] = shader.name();
         }
         shaderSelector = `<label>Shader: ${getSelectForValues("shader-type", "identity", map)}</label>`;

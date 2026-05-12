@@ -1,6 +1,6 @@
 (function($) {
 
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static type() {
         return "time-series";
@@ -258,7 +258,7 @@ $.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderL
             delegateConfig.tiledImages = liveTiledImages;
         }
 
-        const DelegateShader = $.FlexRenderer.ShaderMediator.getClass(delegateConfig.type);
+        const DelegateShader = $.FlexRenderer.ShaderLayerRegistry.get(delegateConfig.type);
         if (!DelegateShader) {
             throw new Error(`time-series: unknown child shader type '${delegateConfig.type}'.`);
         }

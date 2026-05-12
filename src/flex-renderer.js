@@ -1,52 +1,15 @@
 (function($) {
     /**
-     * @typedef {Object} ShaderConfig
-     * @property {String} shaderConfig.id
-     * @property {String} shaderConfig.name
-     * @property {String} shaderConfig.type         equal to ShaderLayer.type(), e.g. "identity"
-     * @property {Number} shaderConfig.visible      1 = use for rendering, 0 = do not use for rendering
-     * @property {Boolean} shaderConfig.fixed
-     * @property {Object} shaderConfig.params          settings for the ShaderLayer
-     * @property {OpenSeadragon.TiledImage[]|number[]} tiledImages images that provide the data
-     * @property {Object} shaderConfig._controls       storage for the ShaderLayer's controls
-     * @property {Object} shaderConfig.cache          cache object used by the ShaderLayer's controls
-     */
-
-    /**
-     * @typedef {Object} FPRenderPackageItem
-     * @property {WebGLTexture[]} texture           [TEXTURE_2D]
-     * @property {Float32Array} textureCoords
-     * @property {Float32Array} transformMatrix
-     * //todo provide also opacity per tile?
-     */
-
-    /**
-     * @typedef {Object} FPRenderPackage
-     * @property {FPRenderPackageItem[]} tiles
-     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
-     * @property {Number[][]} stencilPolygons
-     */
-
-    /**
-     * @typedef {Object} SPRenderPackage
-     * @property {Number} zoom
-     * @property {Number} pixelsize
-     * @property {Number} opacity
-     * @property {ShaderLayer} shader
-     * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
-     */
-
-    /**
      * @typedef HTMLControlsHandler
      * Function that attaches HTML controls for ShaderLayer's controls to DOM.
      * @type function
      * @param {OpenSeadragon.FlexRenderer.ShaderLayer} [shaderLayer]
-     * @param {ShaderConfig} [shaderConfig]
+     * @param {ShaderLayerConfig} [shaderConfig]
      * @returns {String}
      */
 
     /**
-     * @typedef {Object} InspectorState
+     * @typedef {object} InspectorState
      * @property {boolean} enabled master switch for inspector logic
      * @property {"reveal-inside"|"reveal-outside"|"lens-zoom"} mode interaction mode
      * @property {{x: number, y: number}} centerPx inspector center in canvas pixel space
@@ -57,7 +20,7 @@
      */
 
     /**
-     * @typedef {Object} InspectorStateUpdateOptions
+     * @typedef {object} InspectorStateUpdateOptions
      * @property {boolean} [notify=true] emit the `inspector-change` event
      * @property {boolean} [redraw=true] request a redraw after the state change
      * @property {string} [reason="set-inspector-state"] semantic reason included in the emitted event
@@ -69,7 +32,7 @@
      * Position fields use physical renderer framebuffer pixels with bottom-left origin,
      * directly comparable to `gl_FragCoord.xy`.
      *
-     * @typedef {Object} InteractionState
+     * @typedef {object} InteractionState
      * @property {boolean} enabled - Whether shader-visible interaction state is enabled.
      * @property {boolean} pointerInside - Whether the pointer is currently inside the interaction target.
      * @property {{x: number, y: number}} pointerPositionPx - Current pointer position.
@@ -103,6 +66,49 @@
      */
 
     /**
+     * @typedef {object} FPRenderRasterTile
+     * @property {WebGLTexture[]} texture           [TEXTURE_2D]
+     * @property {Float32Array} textureCoords
+     * @property {Float32Array} transformMatrix
+     * //todo provide also opacity per tile?
+     */
+
+    /**
+     * @typedef {object} FPRenderVectorTileBatch
+     * @property {WebGLBuffer} vboPos
+     * @property {WebGLBuffer} vboParam
+     * @property {WebGLBuffer} ibo
+     * @property {number} count
+     * @property {number} [lineWidth]
+     */
+
+    /**
+     * Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
+     *
+     * @typedef {object} FPRenderVectorTile
+     * @property {FPRenderVectorTileBatch} [fills]
+     * @property {FPRenderVectorTileBatch} [lines]
+     * @property {FPRenderVectorTileBatch} [linePrimitives]
+     * @property {FPRenderVectorTileBatch} [points]
+     */
+
+    /**
+     * @typedef {object} FPRenderPackage
+     * @property {FPRenderRasterTile[]} tiles
+     * @property {FPRenderVectorTile[]} [vectors]
+     * @property {number[][]} stencilPolygons
+     */
+
+    /**
+     * @typedef {object} SPRenderPackage
+     * @property {number} zoom
+     * @property {number} pixelsize
+     * @property {number} opacity
+     * @property {ShaderLayer} shader
+     * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
+     */
+
+    /**
      * Prepared two-pass renderer frame.
      *
      * This object is the main public boundary between `FlexDrawer` and
@@ -114,16 +120,14 @@
      * executes the render passes.
      *
      * @typedef {object} RenderFrame
-     * @memberof OpenSeadragon.FlexRenderer
-     * @property {Array<FPRenderPackage>} firstPass - First-pass render packages.
-     * @property {Array<SPRenderPackage>} secondPass - Second-pass render packages.
+     * @property {FPRenderPackage[]} firstPass - First-pass render packages.
+     * @property {SPRenderPackage[]} secondPass - Second-pass render packages.
      */
 
     /**
      * Options for `OpenSeadragon.FlexRenderer#render`.
      *
      * @typedef {object} RenderOptions
-     * @memberof OpenSeadragon.FlexRenderer
      * @property {object} [secondPassOptions] - Backend-specific options forwarded to `renderSecondPass(...)`.
      */
 
@@ -136,7 +140,6 @@
      * submitted render work and a valid no-op.
      *
      * @typedef {object} RenderOutput
-     * @memberof OpenSeadragon.FlexRenderer
      * @property {number} textureDepth - Number of color/intermediate texture layers exposed by this output.
      * @property {number} stencilDepth - Number of stencil/source-mask texture layers exposed by this output.
      * @property {WebGLTexture|undefined} [texture] - Backend-owned color/intermediate TEXTURE_2D_ARRAY texture, when exposed.
@@ -147,68 +150,72 @@
      */
 
     /**
+     * @typedef {object} FlexRendererOptions
+     *
+     * @property {string} uniqueId
+     *
+     * @property {string} webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
+     *
+     * @property {boolean} debug                   debug mode on/off
+     *
+     * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
+     *
+     * @property {boolean} interactive             if true (default), the layers are configured for interactive changes (not applied by default)
+     *
+     * @property {HTMLControlsHandler} htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
+     * @property {function} htmlReset              callback called when a program is reset - html needs to be cleaned
+     *
+     * @property {Function} redrawCallback          function called when user input changed; triggers re-render of the viewport
+     * @property {Function} refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
+     *
+     * @property {object} canvasOptions
+     * @property {boolean} canvasOptions.alpha
+     * @property {boolean} canvasOptions.premultipliedAlpha
+     * @property {boolean} canvasOptions.stencil
+     */
+
+    /**
      * WebGL Renderer for OpenSeadragon.
+     *
+     * Manages ShaderLayers, their controls, and a WebGL context to allow rendering using WebGL.
      *
      * Renders in two passes:
      *  1st pass joins tiles and creates masks where we should draw
      *  2nd pass draws the actual data using shaders
      *
      * @property {RegExp} idPattern
-     * @property {Object} BLEND_MODE
+     * @property {string[]} SUPPORTED_BLEND_MODES
      *
-     * @class OpenSeadragon.FlexRenderer
-     * @classdesc class that manages ShaderLayers, their controls, and WebGLContext to allow rendering using WebGL
      * @memberof OpenSeadragon
      */
-    $.FlexRenderer = class extends $.EventSource {
-
+    class FlexRenderer extends $.EventSource {
         /**
-         * @param {Object} incomingOptions
-         *
-         * @param {String} incomingOptions.uniqueId
-         *
-         * @param {String} incomingOptions.webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
-         *
-         * @param {Function} incomingOptions.redrawCallback          function called when user input changed; triggers re-render of the viewport
-         * @param {Function} incomingOptions.refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
-         * @param {Boolean} incomingOptions.debug                   debug mode on/off
-         * @param {Boolean} incomingOptions.interactive             if true (default), the layers are configured for interactive changes (not applied by default)
-         * @param {HTMLControlsHandler} incomingOptions.htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
-         * @param {function} incomingOptions.htmlReset              callback called when a program is reset - html needs to be cleaned
-         * @param {string|undefined} incomingOptions.backgroundColor #RGB or #RGBA hex, default undefined - transparent
-         *
-         * @param {Object} incomingOptions.canvasOptions
-         * @param {Boolean} incomingOptions.canvasOptions.alpha
-         * @param {Boolean} incomingOptions.canvasOptions.premultipliedAlpha
-         * @param {Boolean} incomingOptions.canvasOptions.stencil
-         *
-         *
-         * @constructor
-         * @memberof FlexRenderer
+         * @param {FlexRendererOptions} options
          */
-        constructor(incomingOptions) {
+        constructor(options) {
             super();
 
-            if (!this.constructor.idPattern.test(incomingOptions.uniqueId)) {
-                throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + incomingOptions.uniqueId);
+            if (!this.constructor.idPattern.test(options.uniqueId)) {
+                throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + options.uniqueId);
             }
-            this.uniqueId = incomingOptions.uniqueId;
+            this.uniqueId = options.uniqueId;
 
-            this.webGLPreferredVersion = incomingOptions.webGLPreferredVersion;
+            this.webGLPreferredVersion = options.webGLPreferredVersion;
 
-            this.redrawCallback = incomingOptions.redrawCallback;
-            this.refetchCallback = incomingOptions.refetchCallback;
-            this.debug = incomingOptions.debug;
-            this.interactive = incomingOptions.interactive === undefined ?
-                !!incomingOptions.htmlHandler : !!incomingOptions.interactive;
-            this.htmlHandler = this.interactive ? incomingOptions.htmlHandler : null;
-            this._background = incomingOptions.backgroundColor || '#00000000';
+            this.debug = options.debug;
+
+            this._background = options.backgroundColor || "#00000000";
+
+            this.redrawCallback = options.redrawCallback;
+            this.refetchCallback = options.refetchCallback;
+            this.interactive = options.interactive === undefined ? !!options.htmlHandler : !!options.interactive;
+            this.htmlHandler = this.interactive ? options.htmlHandler : null;
 
             if (this.htmlHandler) {
-                if (!incomingOptions.htmlReset) {
+                if (!options.htmlReset) {
                     throw Error("$.FlexRenderer::constructor: htmlReset callback is required when htmlHandler is set!");
                 }
-                this.htmlReset = incomingOptions.htmlReset;
+                this.htmlReset = options.htmlReset;
             } else {
                 this.htmlReset = () => {};
             }
@@ -223,7 +230,7 @@
             this._inspectorState = this.constructor.normalizeInspectorState();
             this._interactionState = this.constructor.normalizeInteractionState();
 
-            this.canvasContextOptions = incomingOptions.canvasOptions;
+            this.canvasContextOptions = options.canvasOptions;
             const canvas = document.createElement("canvas");
             const WebGLImplementation = this.constructor.determineBackend(this.webGLPreferredVersion);
             const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
@@ -266,9 +273,9 @@
 
         /**
          * Pre-compilation shader configuration cleanup
-         * @param {ShaderConfig} config
+         * @param {ShaderLayerConfig} config
          * @param {NormalizationContext} context
-         * @return {ShaderConfig}
+         * @return {ShaderLayerConfig}
          */
         static normalizeShaderConfig(config, context = {}) {
             if (!config || typeof config !== "object") {
@@ -276,7 +283,7 @@
             }
 
             let normalized = config;
-            const Shader = normalized.type ? $.FlexRenderer.ShaderMediator.getClass(normalized.type) : null;
+            const Shader = normalized.type ? $.FlexRenderer.ShaderLayerRegistry.get(normalized.type) : null;
 
             if (Shader && typeof Shader.normalizeConfig === "function") {
                 const next = Shader.normalizeConfig(normalized, context);
@@ -297,9 +304,9 @@
 
         /**
          * Normalize shader configuration map - all shaders at once.
-         * @param {Record<string, ShaderConfig>} shaderMap
+         * @param {Record<string, ShaderLayerConfig>} shaderMap
          * @param {NormalizationContext} context
-         * @return {Record<string, ShaderConfig>}
+         * @return {Record<string, ShaderLayerConfig>}
          */
         static normalizeShaderMap(shaderMap, context = {}) {
             if (!shaderMap || typeof shaderMap !== "object" || Array.isArray(shaderMap)) {
@@ -583,7 +590,7 @@
                 const config = shader.getConfig();
                 // Check explicitly type of the config, if updated, recreate shader
                 if (shader.constructor.type() !== config.type) {
-                    const NewShader = $.FlexRenderer.ShaderMediator.getClass(config.type);
+                    const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
                     if (NewShader) {
                         // Drop orphan params from the previous shader type before re-instantiation,
                         // otherwise stale keys (color, threshold, connect, incompatible use_channelN, ...)
@@ -743,20 +750,18 @@
 
         /**
          * Create and initialize new ShaderLayer instance and its controls.
-         * @param id
-         * @param {ShaderConfig} shaderConfig object bound to a concrete ShaderLayer instance
-         * @param {boolean} [copyConfig=false] if true, deep copy of the config is used to avoid modification of the parameter
-         * @returns {ShaderLayer} instance of the created shaderLayer
          *
-         * @instance
-         * @memberof FlexRenderer
+         * @param id
+         * @param {ShaderLayerConfig} config - object bound to a concrete ShaderLayer instance
+         * @param {boolean} [copyConfig=false] - if true, deep copy of the config is used to avoid modification of the parameter
+         * @returns {ShaderLayer} A new ShaderLayer instance.
          */
-        createShaderLayer(id, shaderConfig, copyConfig = false) {
+        createShaderLayer(id, config, copyConfig = false) {
             id = $.FlexRenderer.sanitizeKey(id);
 
-            const Shader = $.FlexRenderer.ShaderMediator.getClass(shaderConfig.type);
-            if (!Shader) {
-                throw new Error(`$.FlexRenderer::createShaderLayer: Unknown shader type '${shaderConfig.type}'!`);
+            const ShaderLayerClass = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
+            if (!ShaderLayerClass) {
+                throw new Error(`$.FlexRenderer::createShaderLayer: Unknown shader type '${config.type}'!`);
             }
 
             const defaultConfig = {
@@ -764,19 +769,19 @@
                 name: "Layer",
                 type: "identity",
                 visible: 1,
-                fixed: false,
                 tiledImages: [],
                 params: {},
                 cache: {},
             };
+
             if (copyConfig) {
                 // Deep copy to avoid modification propagation
-                shaderConfig = $.extend(true, defaultConfig, shaderConfig);
+                config = $.extend(true, defaultConfig, config);
             } else {
                 // Ensure we keep references where possible -> this will make shader object within drawers (e.g. navigator VS main)
                 for (let propName in defaultConfig) {
-                    if (shaderConfig[propName] === undefined) {
-                        shaderConfig[propName] = defaultConfig[propName];
+                    if (config[propName] === undefined) {
+                        config[propName] = defaultConfig[propName];
                     }
                 }
             }
@@ -786,10 +791,10 @@
             }
 
             // TODO a bit dirty approach, make the program key usable from outside
-            const shader = new Shader(id, {
-                shaderConfig: shaderConfig,
+            const shader = new ShaderLayerClass(id, {
+                shaderConfig: config,
                 backend: this.backend,
-                params: shaderConfig.params,
+                params: config.params,
                 interactive: this.interactive,
 
                 // callback to re-render the viewport
@@ -812,7 +817,7 @@
                 return shader;
             } catch (e) {
                 delete this._shaders[id];
-                console.error(`Failed to construct shader '${id}' (${shaderConfig.type}).`, e, shaderConfig);
+                console.error(`Failed to construct shader '${id}' (${config.type}).`, e, config);
                 return undefined;
             }
         }
@@ -849,7 +854,7 @@
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
             }
 
-            const NewShader = $.FlexRenderer.ShaderMediator.getClass(newType);
+            const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(newType);
             if (!NewShader) {
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown shader type '${newType}'.`);
             }
@@ -871,7 +876,7 @@
          * channel values would otherwise cause parseChannel warnings or sample()-time
          * GLSL incompatibilities once the new shader is constructed.
          *
-         * @param {ShaderConfig} shaderConfig    config whose .params object will be mutated
+         * @param {ShaderLayerConfig} shaderConfig    config whose .params object will be mutated
          * @param {Function}     NewShaderClass  the target shader class
          * @private
          */
@@ -1120,7 +1125,7 @@
          *
          * @returns {{
          *   order: string[],
-         *   shaders: Object<string, ShaderConfig>
+         *   shaders: Object<string, ShaderLayerConfig>
          * }}
          */
         getVisualizationSnapshot() {
@@ -1140,7 +1145,7 @@
 
         /**
          * Alias that makes intent explicit when used by application code.
-         * @returns {{order: string[], shaders: Object<string, ShaderConfig>}}
+         * @returns {{order: string[], shaders: Object<string, ShaderLayerConfig>}}
          */
         exportVisualization() {
             return this.getVisualizationSnapshot();
@@ -2218,8 +2223,7 @@
             w.document.body.appendChild(cnv);
             w.__debugCtx = cnv.getContext('2d');
         }
-    };
-
+    }
 
     // STATIC PROPERTIES
     /**
@@ -2228,10 +2232,11 @@
      * @type {RegExp}
      * @memberof FlexRenderer
      */
-    $.FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
-    $.FlexRenderer.__runtimeSupportCache = null;
+    FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
 
-    $.FlexRenderer.BLEND_MODE = [
+    FlexRenderer.__runtimeSupportCache = null;
+
+    FlexRenderer.SUPPORTED_BLEND_MODES = [
         'mask',
         'source-over',
         'source-in',
@@ -2260,7 +2265,7 @@
         'luminosity',
     ];
 
-    $.FlexRenderer.jsonReplacer = function (key, value) {
+    FlexRenderer.jsonReplacer = function (key, value) {
         return key.startsWith("_") || ["eventSource"].includes(key) ? undefined : value;
     };
 
@@ -2268,7 +2273,7 @@
      * Generic computational program interface
      * @type {{new(*): $.FlexRenderer.Program, context: *, _requiresLoad: boolean, prototype: Program}}
      */
-    $.FlexRenderer.Program = class {
+     class Program {
         constructor(context) {
             this.context = context;
             this._requiresLoad = true;
@@ -2346,38 +2351,45 @@
          * Destroy program. No arguments.
          */
         destroy() {}
-    };
+    }
+
+    FlexRenderer.Program = Program;
+
+    $.FlexRenderer = FlexRenderer;
+
 
     /**
      * Blank layer that takes almost no memory and current renderer skips it.
-     * @type {OpenSeadragon.BlankTileSource}
      */
-    $.BlankTileSource = class extends $.TileSource {
+     class BlankTileSource extends $.TileSource {
         supports(data, url) {
             return (data && data.type === "_blank") || (url && url.type === "_blank");
         }
-        configure(options, dataUrl, postData) {
+
+        configure(options, _dataUrl, _postData) {
             return $.extend(options, {
                 width: 512,
                 height: 512,
-                _tileWidth: 512,
-                _tileHeight: 512,
                 tileSize: 512,
                 tileOverlap: 0,
                 minLevel: 0,
                 maxLevel: 0,
-                dimensions: new $.Point(512, 512),
             });
         }
-        downloadTileStart(context) {
-            return context.finish("_blank", undefined, "undefined");
-        }
-        getMetadata() {
-            return this;
-        }
+
         getTileUrl(level, x, y) {
             return "_blank";
         }
-    };
+
+        downloadTileStart(context) {
+            return context.finish("_blank", undefined, "undefined");
+        }
+
+        getMetadata() {
+            return this;
+        }
+    }
+
+    $.BlankTileSource = BlankTileSource;
 
 })(OpenSeadragon);

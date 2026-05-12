@@ -224,8 +224,8 @@ function renderShaderConfigItem(shaderId, shaderConfig) {
 }
 
 function renderShaderTypeControl(shaderConfig, shaderId) {
-    const options = OpenSeadragon.FlexRenderer.ShaderMediator
-        .availableShaders()
+    const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry
+        .availableShaderLayers()
         .filter((Shader) => Shader.type() !== "group")
         .map((Shader) => {
             const type = Shader.type();
@@ -422,7 +422,7 @@ function updateShaderConfig(element, update) {
 }
 
 function shaderTypeHasSources(type) {
-    const Shader = OpenSeadragon.FlexRenderer.ShaderMediator.getClass(type);
+    const Shader = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.get(type);
 
     if (!Shader || typeof Shader.sources !== "function") {
         return true;

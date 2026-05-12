@@ -212,6 +212,6 @@ vec3 ${this.uid}_serial_color(int serialValue, vec3 evenColor, vec3 oddColor) {
         }
     }
 
-    $.FlexRenderer.ShaderMediator.registerLayer(InteractionDebug);
+    $.FlexRenderer.ShaderLayerRegistry.register(InteractionDebug);
 
 })(OpenSeadragon);

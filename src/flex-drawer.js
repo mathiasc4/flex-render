@@ -137,7 +137,7 @@
          * Override the default configuration: the renderer will use given shaders,
          * supplied with data from collection of TiledImages, to render.
          * TiledImages are treated only as data sources, the rendering outcome is fully in controls of the shader specs.
-         * @param {Object.<string, ShaderConfig>} shaders map of id -> shader config value
+         * @param {Object.<string, ShaderLayerConfig>} shaders map of id -> shader config value
          * @param {Array<string>} [shaderOrder=undefined] custom order of shader ids to render.
          * @param {Object} [options]
          * @param {Boolean} [options.immediate=false] if true, run the rebuild synchronously
@@ -198,7 +198,7 @@
          * Retrieve shader config by its key. Shader IDs are known only
          * when overrideConfigureAll() called
          * @param key
-         * @return {ShaderConfig|*|undefined}
+         * @return {ShaderLayerConfig|*|undefined}
          */
         getOverriddenShaderConfig(key) {
             const shaderLayer = this.renderer.getAllShaders()[key];
@@ -209,8 +209,8 @@
          * If shaders are managed internally, tiled image can be configured a single custom
          * shader if desired. This shader is ignored if overrideConfigureAll({...}) used.
          * @param {OpenSeadragon.TiledImage} tiledImage
-         * @param {ShaderConfig} shader
-         * @return {ShaderConfig} shader config used, a copy if options.copyShaderConfig is true, otherwise a modified argument
+         * @param {ShaderLayerConfig} shader
+         * @return {ShaderLayerConfig} shader config used, a copy if options.copyShaderConfig is true, otherwise a modified argument
          */
         configureTiledImage(tiledImage, shader) {
             if (this.options.copyShaderConfig) {
