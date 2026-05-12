@@ -131,6 +131,133 @@ Semantic event fired when the canonical inspector state changes.
 
 ---
 
+### `interaction-change`
+
+Semantic event fired when the canonical renderer-owned interaction state is updated.
+
+This event is intended for observers, debug UI, instrumentation, tests, and future tooling. Backend implementations should read interaction state from `renderer.getInteractionState()` during rendering, not from cached event payloads.
+
+### Payload
+
+```js
+{
+    reason: "set-interaction-state" | "clear-interaction-state" | "drawer-enable-interaction" | "drawer-disable-interaction" | string,
+    changed: true,
+    previous: {
+        enabled: false,
+        pointerInside: false,
+        pointerPositionPx: { x: 0, y: 0 },
+        activeButtons: 0,
+        lastClickPositionPx: { x: 0, y: 0 },
+        lastClickButtons: 0,
+        clickSerial: 0,
+        dragActive: false,
+        dragStartPositionPx: { x: 0, y: 0 },
+        dragCurrentPositionPx: { x: 0, y: 0 },
+        dragEndPositionPx: { x: 0, y: 0 },
+        dragButtons: 0,
+        dragSerial: 0
+    },
+    current: {
+        enabled: true,
+        pointerInside: true,
+        pointerPositionPx: { x: 320, y: 180 },
+        activeButtons: 1,
+        lastClickPositionPx: { x: 300, y: 180 },
+        lastClickButtons: 1,
+        clickSerial: 2,
+        dragActive: true,
+        dragStartPositionPx: { x: 260, y: 160 },
+        dragCurrentPositionPx: { x: 320, y: 180 },
+        dragEndPositionPx: { x: 0, y: 0 },
+        dragButtons: 1,
+        dragSerial: 0
+    }
+}
+```
+
+### Interaction state coordinates
+
+All interaction position fields use physical renderer framebuffer pixels with bottom-left origin. They are directly comparable to `gl_FragCoord.xy` in generated GLSL code.
+
+This applies to:
+
+- `pointerPositionPx`
+- `lastClickPositionPx`
+- `dragStartPositionPx`
+- `dragCurrentPositionPx`
+- `dragEndPositionPx`
+
+### Button bitmasks
+
+Button fields use the browser `MouseEvent.buttons` / `PointerEvent.buttons` bitmask:
+
+```txt
+0  = no button active
+1  = primary button, usually left mouse button
+2  = secondary button, usually right mouse button
+4  = auxiliary button, usually middle mouse button
+8  = fourth button, usually browser back
+16 = fifth button, usually browser forward
+```
+
+### FlexDrawer viewer input capture
+
+FlexDrawer can optionally suppress normal OpenSeadragon viewer input while interaction forwarding is enabled. This is controlled by drawer-level interaction options, not renderer-owned interaction state.
+
+```js
+interaction: {
+    enabled: true,
+    captureViewerInput: true,
+    viewerInputCaptureMode: "drag"
+}
+```
+
+Supported `viewerInputCaptureMode` values:
+
+```txt
+all
+  Disables OpenSeadragon mouse navigation through setMouseNavEnabled(false).
+  This blocks panning, wheel zoom, click zoom, and other normal mouse-navigation handling.
+
+drag
+  Keeps OpenSeadragon mouse navigation tracking enabled, but temporarily disables
+  mouse drag/click/flick gesture settings. This blocks normal drag panning and
+  click/double-click zoom while preserving wheel zoom.
+
+none
+  Disables viewer input capture. Equivalent to captureViewerInput: false.
+```
+
+`captureViewerInput` remains the master switch. `viewerInputCaptureMode` only has an effect while both interaction forwarding and viewer input capture are enabled.
+
+This behavior is implemented by FlexDrawer because it is OpenSeadragon input policy. FlexRenderer still only owns normalized shader-visible interaction state.
+
+Multiple pressed buttons are represented by bitwise OR:
+
+```txt
+3 = primary | secondary
+5 = primary | auxiliary
+```
+
+The relevant state fields are:
+
+- `activeButtons`
+- `lastClickButtons`
+- `dragButtons`
+
+### Notes
+
+- `previous` and `current` are normalized defensive snapshots of the canonical interaction state.
+- `changed` is `true` when the full normalized state changed and `false` when an attempted update normalized to the same state.
+- `setInteractionState(...)` uses patch semantics.
+- `clearInteractionState(...)` performs a full reset to the disabled default state.
+- FlexDrawer may suppress notifications for high-frequency pointer movement by using `notify: false`.
+- FlexDrawer disables interaction by detaching observer listeners, resetting drawer-local tracking state, and clearing the renderer-owned interaction state.
+- Backend uniform upload does not depend on this event. It reads the latest state through `renderer.getInteractionState()`.
+
+---
+
 ### `program-used`
 
 Fired after a WebGL program is switched to and before shader-layer JS initialization runs.
