@@ -7,6 +7,12 @@ const state = {
     viewerA: null,
     viewerB: null,
     viewerPrivate: null,
+    loaded: {
+        sharedA: false,
+        sharedB: false,
+        privateViewer: false
+    },
+    clearCheckActive: false,
     lastAction: "No action yet."
 };
 
@@ -43,6 +49,8 @@ createViewers();
 
 function createViewers() {
     destroyViewers();
+    resetLoadState();
+    state.clearCheckActive = false;
 
     const key = getSharedContextKey();
 
@@ -80,6 +88,8 @@ function createViewer({
                           variant,
                           sharedContextKey
                       }) {
+    const loadStateKey = getLoadStateKey(variant);
+
     const drawerConfig = {
         debug: false,
         webGLPreferredVersion: "2.0",
@@ -113,11 +123,19 @@ function createViewer({
     });
 
     viewer.addHandler("open", () => {
+        if (loadStateKey) {
+            state.loaded[loadStateKey] = false;
+        }
+
         writeState(`Opened ${label}.`);
     });
 
     viewer.addHandler("fully-loaded-change", (event) => {
         if (event.fullyLoaded) {
+            if (loadStateKey) {
+                state.loaded[loadStateKey] = true;
+            }
+
             setTimeout(() => {
                 writeState(`Fully loaded ${label}.`);
             }, 50);
@@ -143,12 +161,18 @@ function destroyViewers() {
     clearElement("viewer-shared-a");
     clearElement("viewer-shared-b");
     clearElement("viewer-private");
+
+    resetLoadState();
+    state.clearCheckActive = false;
 }
 
 function reloadSources() {
     if (!ensureViewers()) {
         return;
     }
+
+    resetLoadState();
+    state.clearCheckActive = false;
 
     state.viewerA.open(createDemoTileSourceOptions({
         label: "Shared viewer A",
@@ -187,6 +211,7 @@ function runClearCheck() {
     };
 
     rendererA.clear();
+    state.clearCheckActive = true;
 
     const after = {
         sharedAAlpha: readPresentationAlphaSum(rendererA),
@@ -211,6 +236,30 @@ function ensureViewers() {
 
     writeState("Create viewers first.");
     return false;
+}
+
+function resetLoadState() {
+    state.loaded = {
+        sharedA: false,
+        sharedB: false,
+        privateViewer: false
+    };
+}
+
+function getLoadStateKey(variant) {
+    if (variant === "shared-a") {
+        return "sharedA";
+    }
+
+    if (variant === "shared-b") {
+        return "sharedB";
+    }
+
+    if (variant === "private") {
+        return "privateViewer";
+    }
+
+    return null;
 }
 
 function getSharedContextKey() {
@@ -470,6 +519,76 @@ function getDimensionsForDisplay() {
     };
 }
 
+function getRendererEntries() {
+    return [
+        {
+            key: "sharedA",
+            label: "Shared viewer A",
+            renderer: getRenderer(state.viewerA)
+        },
+        {
+            key: "sharedB",
+            label: "Shared viewer B",
+            renderer: getRenderer(state.viewerB)
+        },
+        {
+            key: "privateViewer",
+            label: "Private viewer",
+            renderer: getRenderer(state.viewerPrivate)
+        }
+    ];
+}
+
+function getWebGLContextUsageForDisplay() {
+    const entries = getRendererEntries();
+    const contextLabels = [];
+    const contexts = [];
+
+    for (const entry of entries) {
+        const renderer = entry.renderer;
+        const gl = renderer && renderer.gl ? renderer.gl : null;
+
+        if (!gl) {
+            contextLabels.push({
+                renderer: entry.label,
+                contextIndex: null,
+                sharedContext: null
+            });
+            continue;
+        }
+
+        let contextIndex = contexts.indexOf(gl);
+
+        if (contextIndex === -1) {
+            contexts.push(gl);
+            contextIndex = contexts.length - 1;
+        }
+
+        contextLabels.push({
+            renderer: entry.label,
+            contextIndex: contextIndex + 1,
+            sharedContext: !!(
+                renderer &&
+                typeof renderer.isSharedContext === "function" &&
+                renderer.isSharedContext()
+            )
+        });
+    }
+
+    return {
+        ready: entries.every(entry => !!(entry.renderer && entry.renderer.gl)),
+        rendererCount: entries.filter(entry => !!entry.renderer).length,
+        webGLContextCount: contexts.length,
+        expectedWebGLContextCount: 2,
+        expected: "Shared viewer A and B reuse context #1; private viewer uses context #2.",
+        passed: contexts.length === 2 &&
+            contextLabels.length === 3 &&
+            contextLabels[0].contextIndex === contextLabels[1].contextIndex &&
+            contextLabels[2].contextIndex !== contextLabels[0].contextIndex,
+        renderers: contextLabels
+    };
+}
+
 function readPresentationAlphaSum(renderer) {
     const canvas = renderer.getPresentationCanvas();
     const ctx = canvas.getContext("2d");
@@ -488,8 +607,82 @@ function readPresentationAlphaSum(renderer) {
     return alpha;
 }
 
+function readDefaultFramebufferAlphaSum(renderer) {
+    const canvas = renderer && renderer.getWebGLCanvas ? renderer.getWebGLCanvas() : null;
+    const gl = renderer && renderer.gl;
+
+    if (!gl || !canvas || !canvas.width || !canvas.height) {
+        return -1;
+    }
+
+    const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.finish();
+    gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+    let alpha = 0;
+
+    for (let i = 3; i < pixels.length; i += 4) {
+        alpha += pixels[i];
+    }
+
+    return alpha;
+}
+
+function readRendererVisibleAlphaSum(renderer) {
+    if (!renderer) {
+        return -1;
+    }
+
+    if (typeof renderer.isSharedContext === "function" && renderer.isSharedContext()) {
+        return readPresentationAlphaSum(renderer);
+    }
+
+    return readDefaultFramebufferAlphaSum(renderer);
+}
+
+function getPresentationOutputForDisplay() {
+    const rendererA = getRenderer(state.viewerA);
+    const rendererB = getRenderer(state.viewerB);
+    const rendererPrivate = getRenderer(state.viewerPrivate);
+
+    const allLoaded =
+        !!state.loaded.sharedA &&
+        !!state.loaded.sharedB &&
+        !!state.loaded.privateViewer;
+
+    const alpha = {
+        sharedA: readRendererVisibleAlphaSum(rendererA),
+        sharedB: readRendererVisibleAlphaSum(rendererB),
+        privateViewer: readRendererVisibleAlphaSum(rendererPrivate)
+    };
+
+    const expectsSharedABlank = !!state.clearCheckActive;
+
+    return {
+        ready: !!rendererA && !!rendererB && !!rendererPrivate,
+        loaded: $.extend(true, {}, state.loaded),
+        allLoaded: allLoaded,
+        expectation: expectsSharedABlank ?
+            "after-clear-check: sharedA blank, sharedB visible, private visible" :
+            "normal: all viewers visible",
+        alpha: alpha,
+        checks: {
+            sharedA: expectsSharedABlank ?
+                alpha.sharedA === 0 :
+                alpha.sharedA > 0,
+            sharedB: alpha.sharedB > 0,
+            privateViewer: alpha.privateViewer > 0
+        }
+    };
+}
+
 function writeState(action, details = undefined) {
     state.lastAction = action;
+
+    const presentationOutput = getPresentationOutputForDisplay();
+    const webGLContextUsage = getWebGLContextUsageForDisplay();
 
     writeJson("action-output", {
         action,
@@ -498,12 +691,18 @@ function writeState(action, details = undefined) {
 
     writeJson("shared-context-status-output", getSharedContextStatusForDisplay());
     writeJson("identity-output", getIdentityChecks());
+    writeJson("webgl-context-output", webGLContextUsage);
+    writeJson("presentation-output", presentationOutput);
     writeJson("dimensions-output", getDimensionsForDisplay());
 
-    renderChecks(details);
+    renderChecks(details, presentationOutput, webGLContextUsage);
 }
 
-function renderChecks(details = undefined) {
+function renderChecks(
+    details = undefined,
+    presentationOutput = getPresentationOutputForDisplay(),
+    webGLContextUsage = getWebGLContextUsageForDisplay()
+) {
     const list = document.getElementById("checks-list");
     const identity = getIdentityChecks();
     const status = getSharedContextStatusForDisplay();
@@ -524,6 +723,11 @@ function renderChecks(details = undefined) {
     checks.push({
         label: "Shared context refCount is 2",
         pass: !!sharedEntry && sharedEntry.refCount === 2
+    });
+
+    checks.push({
+        label: "Three FlexRenderer instances use exactly two WebGL rendering contexts",
+        pass: !!webGLContextUsage.ready && webGLContextUsage.passed
     });
 
     checks.push({
@@ -581,6 +785,30 @@ function renderChecks(details = undefined) {
         pass: !!identity.ready && identity.drawerPrivateCanvasIsPresentation
     });
 
+    if (presentationOutput.ready && presentationOutput.allLoaded) {
+        checks.push({
+            label: state.clearCheckActive ?
+                "Shared viewer A presentation output is blank after clear check" :
+                "Shared viewer A presentation output has visible pixels",
+            pass: !!presentationOutput.checks.sharedA
+        });
+
+        checks.push({
+            label: "Shared viewer B presentation output has visible pixels",
+            pass: !!presentationOutput.checks.sharedB
+        });
+
+        checks.push({
+            label: "Private viewer output has visible pixels",
+            pass: !!presentationOutput.checks.privateViewer
+        });
+    } else {
+        checks.push({
+            label: "Visual output checks are pending until all viewers are fully loaded",
+            pending: true
+        });
+    }
+
     if (details && Object.prototype.hasOwnProperty.call(details, "passed")) {
         checks.push({
             label: `Latest action passed: ${state.lastAction}`,
@@ -588,11 +816,21 @@ function renderChecks(details = undefined) {
         });
     }
 
-    list.innerHTML = checks.map(check => `
-        <li class="${check.pass ? "validation-pass" : "validation-fail"}">
-            ${escapeHtml(check.pass ? "PASS" : "FAIL")} — ${escapeHtml(check.label)}
-        </li>
-    `).join("");
+    list.innerHTML = checks.map(check => {
+        const className = check.pending ?
+            "validation-neutral" :
+            (check.pass ? "validation-pass" : "validation-fail");
+
+        const statusText = check.pending ?
+            "PENDING" :
+            (check.pass ? "PASS" : "FAIL");
+
+        return `
+            <li class="${className}">
+                ${escapeHtml(statusText)} — ${escapeHtml(check.label)}
+            </li>
+        `;
+    }).join("");
 }
 
 function writeJson(id, value) {

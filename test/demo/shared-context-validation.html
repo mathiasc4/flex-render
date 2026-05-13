@@ -278,7 +278,8 @@
                     <li>Shared viewer A and B should share the same WebGL canvas.</li>
                     <li>Shared viewer A and B should use different presentation canvases.</li>
                     <li>The private viewer should report private-context mode.</li>
-                    <li>Every item in the Checks panel should pass.</li>
+                    <li>The WebGL context usage panel should report 3 renderers using 2 WebGL contexts.</li>
+                    <li>Every item in the Checks panel should pass after all viewers finish loading.</li>
                 </ol>
 
                 <h3>Expected after Run clear check</h3>
@@ -345,6 +346,16 @@
                 <ul id="checks-list">
                     <li class="validation-neutral">Waiting for viewers.</li>
                 </ul>
+            </section>
+
+            <section class="validation-status-panel">
+                <h3>WebGL context usage</h3>
+                <pre id="webgl-context-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+            </section>
+
+            <section class="validation-status-panel">
+                <h3>Presentation output</h3>
+                <pre id="presentation-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
             </section>
 
             <section class="validation-status-panel">
