@@ -1666,7 +1666,10 @@ void main() {
         outputStencil = stencil;
         gl_FragDepth = depth;
     } else if (isDiagnosticMode) {
-        if (!fr_diagnostic_pixel(clamp(v_texture_coords, vec2(0.0), vec2(1.0)))) {
+        vec2 diagnosticCoords = clamp(v_texture_coords, vec2(0.0), vec2(1.0));
+        diagnosticCoords.y = 1.0 - diagnosticCoords.y;
+
+        if (!fr_diagnostic_pixel(diagnosticCoords)) {
             discard;
         }
 
