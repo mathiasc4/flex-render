@@ -329,6 +329,8 @@
      *
      * @property {string} [sharedContextKey] optional page-global key used to share one WebGL context across renderer instances
      *
+     * @property {"warn-skip"|"throw"} [sharedContextBusyPolicy="warn-skip"] internal policy used when a shared context is already rendering
+     *
      * @property {boolean} debug                   debug mode on/off
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
@@ -380,6 +382,7 @@
             this.webGLPreferredVersion = options.webGLPreferredVersion;
 
             this.debug = options.debug;
+            this._sharedContextBusyPolicy = options.sharedContextBusyPolicy === "throw" ? "throw" : "warn-skip";
             this._warningsEmitted = new Set();
             this._warningCounts = {};
 
@@ -568,6 +571,8 @@
                 throw new Error("$.FlexRenderer::constructor: Could not create WebGLRenderingContext!");
             }
 
+            const presentationCanvas = this._sharedContextEntry ? document.createElement("canvas") : canvas;
+
             /**
              * @type {WebGLRenderingContext | WebGL2RenderingContext}
              */
@@ -579,10 +584,11 @@
             this.backend = new WebGLImplementationClass(this, webGLRenderingContext);
 
             this.webGLCanvas = canvas;
-            this.presentationCanvas = canvas;
+            this.presentationCanvas = presentationCanvas;
+            this._renderWidth = presentationCanvas.width;
+            this._renderHeight = presentationCanvas.height;
+
             this.canvas = this.presentationCanvas;
-            this._renderWidth = canvas.width;
-            this._renderHeight = canvas.height;
 
             // Should be last call of the constructor to make sure everything is initialized
             this.backend.init();
@@ -1111,13 +1117,81 @@
                 throw new TypeError("$.FlexRenderer::render: frame.secondPass must be an array.");
             }
 
-            this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
-            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+            const sharedEntry = this._sharedContextEntry;
 
-            this.renderFirstPass(frame.firstPass);
-            this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+            if (!sharedEntry) {
+                this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
-            this.gl.finish();
+                this.renderFirstPass(frame.firstPass);
+                this.__finalPassResult = this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+
+                this.gl.finish();
+                return;
+            }
+
+            if (sharedEntry.lost || this._contextLost) {
+                sharedEntry.contextLostSkipCount++;
+                this._warningCounts["shared-context-lost-render-skip"] =
+                    (this._warningCounts["shared-context-lost-render-skip"] || 0) + 1;
+
+                if (!this._warningsEmitted.has("shared-context-lost-render-skip")) {
+                    this._warningsEmitted.add("shared-context-lost-render-skip");
+                    $.console.warn(
+                        `FlexRenderer shared context '${sharedEntry.key}' is lost; skipping renderer '${this.uniqueId}'.`
+                    );
+                }
+
+                this.__firstPassResult = null;
+                this.__finalPassResult = null;
+                return;
+            }
+
+            if (sharedEntry.busy) {
+                sharedEntry.busySkipCount++;
+                this._warningCounts["shared-context-busy-render-skip"] =
+                    (this._warningCounts["shared-context-busy-render-skip"] || 0) + 1;
+
+                const activeRenderer = sharedEntry.activeRenderer;
+                const message =
+                    `FlexRenderer shared context '${sharedEntry.key}' is already rendering ` +
+                    `'${activeRenderer ? activeRenderer.uniqueId : "unknown"}'; skipping renderer '${this.uniqueId}'.`;
+
+                if (this.debug || this._sharedContextBusyPolicy === "throw") {
+                    throw new Error(message);
+                }
+
+                if (!this._warningsEmitted.has("shared-context-busy-render-skip")) {
+                    this._warningsEmitted.add("shared-context-busy-render-skip");
+                    $.console.warn(message);
+                }
+
+                return;
+            }
+
+            sharedEntry.busy = true;
+            sharedEntry.activeRenderer = this;
+
+            try {
+                this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+                this.gl.viewport(this._renderX, this._renderY, this._renderWidth, this._renderHeight);
+                this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+
+                this.renderFirstPass(frame.firstPass);
+                this.__finalPassResult = this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+
+                this.gl.finish();
+            } finally {
+                this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+
+                if (this.webglVersion === "2.0" && typeof this.gl.bindVertexArray === "function") {
+                    this.gl.bindVertexArray(null);
+                }
+
+                sharedEntry.activeRenderer = null;
+                sharedEntry.busy = false;
+            }
         }
 
         /**
@@ -1130,6 +1204,24 @@
          * @returns {void}
          */
         clear() {
+            this.__firstPassResult = null;
+            this.__finalPassResult = null;
+
+            if (this._sharedContextEntry) {
+                const canvas = this.getPresentationCanvas();
+
+                if (!canvas || !canvas.width || !canvas.height) {
+                    return;
+                }
+
+                const context = canvas.getContext("2d");
+                if (context) {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                }
+
+                return;
+            }
+
             const canvas = this.getWebGLCanvas();
 
             if (!this.gl || !canvas || !canvas.width || !canvas.height) {
@@ -1141,8 +1233,6 @@
             this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
             this.gl.clear(this.gl.COLOR_BUFFER_BIT);
             this.gl.finish();
-
-            this.__firstPassResult = null;
         }
 
         /**
@@ -1333,6 +1423,7 @@
             implementation.destroy();
             this.gl.deleteProgram(implementation._webGLProgram);
             this.__firstPassResult = null;
+            this.__finalPassResult = null;
             this._programImplementations[key] = null;
         }
 

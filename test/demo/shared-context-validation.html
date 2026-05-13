@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Shared Context Validation Demo</title>
+
+    <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+    <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
+    <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
+    <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
+    <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+
+    <script type="module" src="shared-context-validation.js"></script>
+
+    <style>
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .content {
+            max-width: 1280px;
+            min-height: 100vh;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        .demo-layout {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 1fr) 340px;
+            gap: 20px;
+            align-items: stretch;
+            flex: 0 0 auto;
+            margin-bottom: 12px;
+        }
+
+        .demo-main {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .viewer-title {
+            margin: 0 0 8px 0;
+        }
+
+        .validation-preview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .validation-preview-card {
+            min-width: 0;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            box-sizing: border-box;
+        }
+
+        .validation-preview-card h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+        }
+
+        .validation-preview-card canvas {
+            display: block;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+
+        .validation-preview-note {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
+        .diagnostics-panel-stack,
+        .side-panel-stack {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .diagnostics-controls-panel,
+        .diagnostics-guide-panel,
+        .validation-status-panel,
+        .validation-checks-panel {
+            margin: 0;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        .diagnostics-controls-panel h3,
+        .diagnostics-guide-panel h3,
+        .validation-status-panel h3,
+        .validation-checks-panel h3,
+        .diagnostics-controls-panel h4,
+        .diagnostics-guide-panel h4,
+        .validation-status-panel h4,
+        .validation-checks-panel h4 {
+            margin: 0 0 8px 0;
+        }
+
+        .diagnostics-controls-panel h4,
+        .diagnostics-guide-panel h4,
+        .validation-status-panel h4,
+        .validation-checks-panel h4 {
+            margin-top: 10px;
+            font-size: 13px;
+        }
+
+        .diagnostics-control-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        .diagnostics-control-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            line-height: 1.3;
+        }
+
+        .diagnostics-control-label input[type="text"] {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .diagnostics-action-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 8px 0;
+        }
+
+        .diagnostics-action-row button {
+            font-size: 13px;
+            padding: 4px 8px;
+        }
+
+        .diagnostics-state-readout {
+            max-height: 260px;
+            margin: 0 0 8px 0;
+            padding: 8px;
+            overflow: auto;
+            background: #ffffff;
+            border: 1px solid #d1d5db;
+            font-size: 11px;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .diagnostics-guide-panel ul,
+        .diagnostics-guide-panel ol,
+        .validation-checks-panel ul {
+            margin: 0 0 8px 18px;
+            padding: 0;
+        }
+
+        .diagnostics-guide-panel li,
+        .validation-checks-panel li {
+            margin-bottom: 4px;
+        }
+
+        .diagnostics-guide-note {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .validation-pass {
+            color: #166534;
+            font-weight: 600;
+        }
+
+        .validation-fail {
+            color: #991b1b;
+            font-weight: 600;
+        }
+
+        .validation-neutral {
+            color: #666;
+            font-weight: 600;
+        }
+
+        @media (max-width: 1000px) {
+            .demo-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .validation-preview-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .diagnostics-panel-stack,
+            .side-panel-stack {
+                width: auto;
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="content">
+    <h2>Shared WebGL Context Validation Demo</h2>
+
+    <h3 id="title-w" class="viewer-title">Loading...</h3>
+
+    <div class="demo-layout">
+        <aside class="diagnostics-panel-stack">
+            <section class="diagnostics-controls-panel">
+                <h3>Validation controls</h3>
+
+                <div class="diagnostics-control-list">
+                    <label class="diagnostics-control-label">
+                        <span>Shared key</span>
+                        <input id="shared-context-key-input" type="text" value="demo-shared-context">
+                    </label>
+
+                    <label class="diagnostics-control-label">
+                        <input id="throw-policy-toggle" type="checkbox">
+                        Use throw policy for renderer B
+                    </label>
+                </div>
+
+                <div class="diagnostics-action-row">
+                    <button id="create-renderers-button" type="button">Create renderers</button>
+                    <button id="destroy-renderers-button" type="button">Destroy renderers</button>
+                </div>
+
+                <div class="diagnostics-action-row">
+                    <button id="run-clear-check-button" type="button">Run clear check</button>
+                    <button id="run-busy-check-button" type="button">Run busy check</button>
+                </div>
+
+                <h4>Latest action</h4>
+                <pre id="action-output" class="diagnostics-state-readout">No action yet.</pre>
+            </section>
+
+            <section class="diagnostics-guide-panel">
+                <h3>What this demo shows</h3>
+                <ul>
+                    <li>Two direct FlexRenderer instances can attach to one shared WebGL context key.</li>
+                    <li>Each shared renderer should still have its own presentation canvas.</li>
+                    <li>A private renderer should still use one canvas for WebGL and presentation.</li>
+                    <li>Shared clear() should clear only the selected renderer-local presentation canvas.</li>
+                    <li>A busy shared context should skip or throw according to policy.</li>
+                </ul>
+
+                <h3>Expected after Create</h3>
+                <ol>
+                    <li>Shared refCount should be 2.</li>
+                    <li>Renderer A and B should share the same WebGL canvas.</li>
+                    <li>Renderer A and B should not share the same presentation canvas.</li>
+                    <li>The private renderer should have presentation canvas equal to WebGL canvas.</li>
+                </ol>
+
+                <p class="diagnostics-guide-note">
+                    This is a direct renderer validation demo for the current implementation phase.
+                    It does not use FlexDrawer sharedContextKey yet.
+                </p>
+            </section>
+        </aside>
+
+        <main class="demo-main">
+            <section class="validation-preview-grid">
+                <div class="validation-preview-card">
+                    <h3>Shared renderer A presentation canvas</h3>
+                    <canvas id="preview-shared-a"></canvas>
+                    <p class="validation-preview-note">
+                        This preview copies renderer A's presentation canvas.
+                    </p>
+                </div>
+
+                <div class="validation-preview-card">
+                    <h3>Shared renderer B presentation canvas</h3>
+                    <canvas id="preview-shared-b"></canvas>
+                    <p class="validation-preview-note">
+                        This preview should remain intact when renderer A is cleared.
+                    </p>
+                </div>
+
+                <div class="validation-preview-card">
+                    <h3>Private renderer canvas identity</h3>
+                    <canvas id="preview-private"></canvas>
+                    <p class="validation-preview-note">
+                        Private renderers should still alias WebGL and presentation canvas.
+                    </p>
+                </div>
+            </section>
+
+            <section class="validation-status-panel">
+                <h3>Shared context status</h3>
+                <pre id="shared-context-status-output" class="diagnostics-state-readout">Waiting for renderers...</pre>
+
+                <h3>Canvas identity checks</h3>
+                <pre id="identity-output" class="diagnostics-state-readout">Waiting for renderers...</pre>
+            </section>
+        </main>
+
+        <aside class="side-panel-stack">
+            <section class="validation-checks-panel">
+                <h3>Checks</h3>
+                <ul id="checks-list">
+                    <li class="validation-neutral">Waiting for renderers.</li>
+                </ul>
+            </section>
+
+            <section class="validation-status-panel">
+                <h3>Raw renderer dimensions</h3>
+                <pre id="dimensions-output" class="diagnostics-state-readout">Waiting for renderers...</pre>
+            </section>
+        </aside>
+    </div>
+</div>
+</body>
+</html>

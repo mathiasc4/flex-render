@@ -241,23 +241,23 @@ function packMesh(m) {
 }
 
 // TODO: make icons dynamic
-const iconMapping = {
-    country: {
-        textureId: 0,
-        width: 256,
-        height: 256,
-    },
-    city: {
-        textureId: 1,
-        width: 256,
-        height: 256,
-    },
-    village: {
-        textureId: 2,
-        width: 256,
-        height: 256,
-    },
-};
+// const iconMapping = {
+//     country: {
+//         textureId: 0,
+//         width: 256,
+//         height: 256,
+//     },
+//     city: {
+//         textureId: 1,
+//         width: 256,
+//         height: 256,
+//     },
+//     village: {
+//         textureId: 2,
+//         width: 256,
+//         height: 256,
+//     },
+// };
 
 function defaultStyle() {
     // Super-minimal style mapping; replace as needed.
@@ -276,12 +276,12 @@ function defaultStyle() {
             aeroway:        { type: 'fill', color: [0.10, 0.80, 0.60, 0.80] },
             poi:            { type: 'point', color: [0.00, 0.00, 0.00, 1.00], size: 10.0 },
             housenumber:    { type: 'point', color: [0.50, 0.00, 0.50, 1.00], size: 8.0 },
-            place:          {
-                type: 'icon',
-                color: [0.80, 0.10, 0.10, 1.00],
-                size: 0.8,
-                iconMapping: iconMapping, // TODO: somehow pass a function instead?
-            },
+            // place:          {
+            //     type: 'icon',
+            //     color: [0.80, 0.10, 0.10, 1.00],
+            //     size: 0.8,
+            //     iconMapping: iconMapping, // TODO: somehow pass a function instead?
+            // },
         },
         // Default if layer not listed
         fallback: { type: 'line', color: [0.50, 0.50, 0.50, 1.00], widthPx: 0.8, join: 'bevel', cap: 'butt' }
