@@ -1,0 +1,721 @@
+const DEMO_TILE_SIZE = 256;
+const DEMO_MAX_LEVEL = 2;
+
+const DEMO_SOURCE_OPTIONS = {
+    type: "diagnostic-demo",
+    width: DEMO_TILE_SIZE * 4,
+    height: DEMO_TILE_SIZE * 4,
+    tileSize: DEMO_TILE_SIZE,
+    tileOverlap: 0,
+    minLevel: 0,
+    maxLevel: DEMO_MAX_LEVEL,
+    invalidPattern: "center"
+};
+
+const drawerOptions = {
+    "flex-renderer": {
+        debug: false,
+        webGLPreferredVersion: "2.0",
+        renderDiagnostics: true,
+        htmlHandler: renderShaderLayerControls,
+        htmlReset: resetShaderLayerControls
+    }
+};
+
+$("#title-w").html("FlexRenderer tile diagnostics demo");
+
+installDiagnosticDemoTileSource(OpenSeadragon);
+
+const viewer = window.viewer = OpenSeadragon({
+    id: "drawer-canvas",
+    prefixUrl: "../../openseadragon/images/",
+    minZoomImageRatio: 0.01,
+    maxZoomPixelRatio: 100,
+    smoothTileEdgesMinZoom: 1.1,
+    crossOriginPolicy: "Anonymous",
+    ajaxWithCredentials: false,
+    drawer: "flex-renderer",
+    drawerOptions,
+    blendTime: 0,
+    showNavigator: true,
+    viewportMargins: {
+        left: 100,
+        top: 0,
+        right: 0,
+        bottom: 50
+    }
+});
+
+const IMAGE_SOURCES = [
+    {
+        key: "diagnostic-demo",
+        label: "Diagnostic Demo Source",
+        tileSource: DEMO_SOURCE_OPTIONS
+    }
+];
+
+const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
+    index,
+    label: source.label
+}));
+
+let shaderLayerConfig = {
+    diagnostic_source: {
+        name: "Diagnostic Demo Source",
+        type: "identity",
+        visible: 1,
+        tiledImages: [0],
+        params: {},
+        cache: {}
+    }
+};
+
+let shaderLayerOrder = [
+    "diagnostic_source"
+];
+
+function installDiagnosticDemoTileSource($) {
+    if ($.DiagnosticDemoTileSource) {
+        return;
+    }
+
+    class DiagnosticDemoTileSource extends $.TileSource {
+        supports(data, url) {
+            return !!(
+                data && typeof data === "object" &&
+                data.type === "diagnostic-demo"
+            ) || !!(
+                url && typeof url === "object" &&
+                url.type === "diagnostic-demo"
+            );
+        }
+
+        configure(options) {
+            const tileSize = Number(options.tileSize) || DEMO_TILE_SIZE;
+
+            this.invalidPattern = options.invalidPattern || "center";
+            this.tileSize = tileSize;
+            this.tileWidth = tileSize;
+            this.tileHeight = tileSize;
+            this.minLevel = Number.isFinite(Number(options.minLevel)) ? Number(options.minLevel) : 0;
+            this.maxLevel = Number.isFinite(Number(options.maxLevel)) ? Number(options.maxLevel) : DEMO_MAX_LEVEL;
+
+            return $.extend(options, {
+                width: Number(options.width) || tileSize * 4,
+                height: Number(options.height) || tileSize * 4,
+                tileSize: tileSize,
+                tileOverlap: Number(options.tileOverlap) || 0,
+                minLevel: this.minLevel,
+                maxLevel: this.maxLevel
+            });
+        }
+
+        getTileUrl(level, x, y) {
+            return [
+                "diagnostic-demo",
+                this.invalidPattern,
+                level,
+                x,
+                y
+            ].join(":");
+        }
+
+        downloadTileStart(context) {
+            const coords = this._parseTileCoordinates(context);
+
+            if (this._isInvalidTile(coords.level, coords.x, coords.y)) {
+                context.finish({
+                    invalid: true,
+                    level: coords.level,
+                    x: coords.x,
+                    y: coords.y,
+                    reason: "demo-invalid-data"
+                }, undefined, "image");
+                return;
+            }
+
+            context.finish(
+                this._createTileCanvas(coords.level, coords.x, coords.y),
+                undefined,
+                "image"
+            );
+        }
+
+        getMetadata() {
+            return {
+                type: "diagnostic-demo",
+                width: this.width,
+                height: this.height,
+                tileSize: this.tileSize,
+                invalidPattern: this.invalidPattern
+            };
+        }
+
+        _parseTileCoordinates(context) {
+            const src = String(
+                context.src ||
+                context.url ||
+                context.tileUrl ||
+                context.source ||
+                ""
+            );
+
+            const match = /diagnostic-demo:([^:]+):(\d+):(\d+):(\d+)/.exec(src);
+
+            if (match) {
+                return {
+                    pattern: match[1],
+                    level: Number(match[2]),
+                    x: Number(match[3]),
+                    y: Number(match[4])
+                };
+            }
+
+            const tile = context.tile || {};
+            return {
+                pattern: this.invalidPattern,
+                level: Number(tile.level) || this.maxLevel,
+                x: Number(tile.x) || 0,
+                y: Number(tile.y) || 0
+            };
+        }
+
+        _isInvalidTile(level, x, y) {
+            if (this.invalidPattern === "none") {
+                return false;
+            }
+
+            if (level !== this.maxLevel) {
+                return false;
+            }
+
+            if (this.invalidPattern === "center") {
+                return x === 1 && y === 1;
+            }
+
+            if (this.invalidPattern === "diagonal") {
+                return x === y;
+            }
+
+            if (this.invalidPattern === "checker") {
+                return (x + y) % 2 === 0;
+            }
+
+            return false;
+        }
+
+        _createTileCanvas(level, x, y) {
+            const canvas = document.createElement("canvas");
+            canvas.width = this.tileWidth || DEMO_TILE_SIZE;
+            canvas.height = this.tileHeight || DEMO_TILE_SIZE;
+
+            const ctx = canvas.getContext("2d");
+            const hue = (x * 67 + y * 37 + level * 29) % 360;
+
+            ctx.fillStyle = `hsl(${hue}, 65%, 78%)`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = `hsl(${hue}, 70%, 62%)`;
+            ctx.fillRect(0, 0, canvas.width, 28);
+            ctx.fillRect(0, 0, 28, canvas.height);
+
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+            ctx.lineWidth = 1;
+            for (let i = 32; i < canvas.width; i += 32) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, canvas.height);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(canvas.width, i);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
+            ctx.font = "bold 20px system-ui, sans-serif";
+            ctx.textBaseline = "top";
+            ctx.fillText(`L${level} / ${x},${y}`, 40, 42);
+
+            ctx.font = "13px system-ui, sans-serif";
+            ctx.fillText("valid tile data", 40, 72);
+
+            return canvas;
+        }
+    }
+
+    $.DiagnosticDemoTileSource = DiagnosticDemoTileSource;
+}
+
+function createDemoTileSourceOptions() {
+    const patternSelect = document.getElementById("invalid-pattern-select");
+
+    return {
+        ...DEMO_SOURCE_OPTIONS,
+        invalidPattern: patternSelect ? patternSelect.value : DEMO_SOURCE_OPTIONS.invalidPattern
+    };
+}
+
+function reloadDemoSource() {
+    viewer.close();
+
+    viewer.addTiledImage({
+        tileSource: createDemoTileSourceOptions(),
+        success: () => {
+            applyShaderLayerGuiConfig();
+            writeDiagnosticsState();
+            viewer.viewport.goHome(true);
+        }
+    });
+}
+
+function renderShaderLayerControls(shaderLayer, shaderConfig) {
+    const container = document.getElementById("my-shader-ui-container");
+
+    if (!container || !shaderLayer) {
+        return "";
+    }
+
+    const card = document.createElement("div");
+    card.style.marginBottom = "6px";
+    card.style.padding = "6px";
+    card.style.border = "1px solid #d1d5db";
+    card.style.background = "#ffffff";
+
+    const title = document.createElement("div");
+    title.style.fontWeight = "600";
+    title.style.marginBottom = "6px";
+    title.textContent = shaderConfig.name || shaderConfig.type;
+
+    const controls = document.createElement("div");
+    controls.innerHTML = shaderLayer.htmlControls();
+
+    card.appendChild(title);
+    card.appendChild(controls);
+    container.appendChild(card);
+
+    return "";
+}
+
+function resetShaderLayerControls() {
+    const container = document.getElementById("my-shader-ui-container");
+
+    if (container) {
+        container.innerHTML = "";
+    }
+}
+
+function renderShaderConfigPanel() {
+    const rows = shaderLayerOrder
+        .filter((shaderId) => shaderLayerConfig[shaderId])
+        .map((shaderId) => renderShaderConfigItem(shaderId, shaderLayerConfig[shaderId]))
+        .join("");
+
+    setPanelHtml("shader-config-panel", `
+        <h3>Shader layer configuration</h3>
+
+        <ul class="shader-config-list">
+            ${rows}
+        </ul>
+
+        <p class="shader-config-help">
+            Drag layers to reorder them. Toggle visibility, mode, blend, type, and image source
+            to verify that first-pass tile diagnostics still compose through normal shader layers.
+        </p>
+    `);
+
+    bindShaderConfigPanelEvents();
+}
+
+function renderShaderConfigItem(shaderId, shaderConfig) {
+    const visible = shaderConfig.visible !== 0;
+
+    return `
+        <li class="shader-config-item" data-shader-id="${escapeHtml(shaderId)}">
+            <div class="shader-config-row">
+                <span class="shader-config-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
+
+                <label class="shader-config-visible-label" title="Visible">
+                    <input
+                        type="checkbox"
+                        class="shader-config-visible-toggle"
+                        data-shader-id="${escapeHtml(shaderId)}"
+                        ${visible ? "checked" : ""}
+                    >
+                </label>
+
+                <label class="shader-config-field-label shader-config-row__name">
+                    Name
+                    <input
+                        type="text"
+                        class="shader-config-name-input"
+                        data-shader-id="${escapeHtml(shaderId)}"
+                        value="${escapeHtml(shaderConfig.name || shaderId)}"
+                    >
+                </label>
+
+                <div class="shader-config-row__selectors">
+                    <div class="shader-config-row__type">
+                        ${renderShaderTypeControl(shaderConfig, shaderId)}
+                    </div>
+
+                    <div class="shader-config-row__image">
+                        ${renderImageIndexControl(shaderConfig, shaderId)}
+                    </div>
+                </div>
+
+                <div class="shader-config-row__blend">
+                    ${renderBlendControls(shaderConfig, shaderId)}
+                </div>
+            </div>
+        </li>
+    `;
+}
+
+function renderShaderTypeControl(shaderConfig, shaderId) {
+    const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry
+        .availableShaderLayers()
+        .filter((Shader) => Shader.type() !== "group")
+        .map((Shader) => {
+            const type = Shader.type();
+            const name = Shader.name ? Shader.name() : type;
+            const selected = type === shaderConfig.type ? "selected" : "";
+
+            return `
+                <option value="${escapeHtml(type)}" ${selected}>
+                    ${escapeHtml(name)} (${escapeHtml(type)})
+                </option>
+            `;
+        })
+        .join("");
+
+    return `
+        <label class="shader-config-field-label">
+            Type
+            <select class="shader-config-type-select" data-shader-id="${escapeHtml(shaderId)}">
+                ${options}
+            </select>
+        </label>
+    `;
+}
+
+function renderImageIndexControl(shaderConfig, shaderId) {
+    if (!shaderTypeHasSources(shaderConfig.type)) {
+        return `
+            <label class="shader-config-field-label">
+                Image
+                <span class="shader-config-type-locked">—</span>
+            </label>
+        `;
+    }
+
+    const selectedIndex = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
+        Number(shaderConfig.tiledImages[0]) :
+        0;
+
+    const options = indexedImageSources.map((source) => {
+        const selected = source.index === selectedIndex ? "selected" : "";
+
+        return `
+            <option value="${source.index}" ${selected}>
+                ${escapeHtml(source.label)} (${source.index})
+            </option>
+        `;
+    }).join("");
+
+    return `
+        <label class="shader-config-field-label">
+            Image
+            <select class="shader-config-image-index-select" data-shader-id="${escapeHtml(shaderId)}">
+                ${options}
+            </select>
+        </label>
+    `;
+}
+
+function renderBlendControls(shaderConfig, shaderId) {
+    const params = shaderConfig.params || {};
+    const selectedMode = params.use_mode || "show";
+    const selectedBlend = params.use_blend || "mask";
+    const blendDisabled = selectedMode === "show" ? "disabled" : "";
+
+    return `
+        <div class="shader-config-row__use-mode">
+            <label class="shader-config-field-label">
+                Mode
+                <select class="shader-config-use-mode-select" data-shader-id="${escapeHtml(shaderId)}">
+                    ${renderOptions(["show", "blend", "clip"], selectedMode)}
+                </select>
+            </label>
+        </div>
+
+        <div class="shader-config-row__use-blend">
+            <label class="shader-config-field-label">
+                Blend
+                <select
+                    class="shader-config-use-blend-select"
+                    data-shader-id="${escapeHtml(shaderId)}"
+                    ${blendDisabled}
+                >
+                    ${renderOptions([
+        "mask",
+        "add",
+        "multiply",
+        "screen",
+        "overlay",
+        "darken",
+        "lighten",
+        "difference",
+        "exclusion",
+        "source-over",
+        "source-in",
+        "source-out",
+        "source-atop"
+    ], selectedBlend)}
+                </select>
+            </label>
+        </div>
+    `;
+}
+
+function renderOptions(values, selectedValue) {
+    return values.map((value) => {
+        const selected = value === selectedValue ? "selected" : "";
+
+        return `
+            <option value="${escapeHtml(value)}" ${selected}>
+                ${escapeHtml(value)}
+            </option>
+        `;
+    }).join("");
+}
+
+function bindShaderConfigPanelEvents() {
+    $(".shader-config-list").sortable({
+        handle: ".shader-config-drag-handle",
+        items: "> .shader-config-item",
+        update: function() {
+            shaderLayerOrder = $(this)
+                .children(".shader-config-item")
+                .map((_, item) => $(item).attr("data-shader-id"))
+                .get();
+
+            applyShaderLayerGuiConfig();
+            renderShaderConfigPanel();
+        }
+    });
+
+    $(".shader-config-visible-toggle").on("change", function() {
+        updateShaderConfig(this, (shaderConfig) => {
+            shaderConfig.visible = this.checked ? 1 : 0;
+        });
+    });
+
+    $(".shader-config-name-input").on("change", function() {
+        updateShaderConfig(this, (shaderConfig, shaderId) => {
+            shaderConfig.name = this.value.trim() || shaderId;
+        });
+    });
+
+    $(".shader-config-image-index-select").on("change", function() {
+        updateShaderConfig(this, (shaderConfig) => {
+            shaderConfig.tiledImages = [Number(this.value)];
+        });
+    });
+
+    $(".shader-config-use-mode-select").on("change", function() {
+        updateShaderConfig(this, (shaderConfig) => {
+            shaderConfig.params = shaderConfig.params || {};
+            shaderConfig.params.use_mode = this.value;
+        });
+    });
+
+    $(".shader-config-use-blend-select").on("change", function() {
+        updateShaderConfig(this, (shaderConfig) => {
+            shaderConfig.params = shaderConfig.params || {};
+            shaderConfig.params.use_blend = this.value;
+        });
+    });
+
+    $(".shader-config-type-select").on("change", function() {
+        updateShaderConfig(this, (shaderConfig) => {
+            const previousParams = shaderConfig.params || {};
+
+            shaderConfig.type = this.value;
+            shaderConfig.params = {
+                use_mode: previousParams.use_mode || "show",
+                use_blend: previousParams.use_blend || "mask"
+            };
+            shaderConfig.cache = {};
+
+            if (!shaderTypeHasSources(shaderConfig.type)) {
+                shaderConfig.tiledImages = [];
+            } else if (!Array.isArray(shaderConfig.tiledImages) || !shaderConfig.tiledImages.length) {
+                shaderConfig.tiledImages = [0];
+            }
+        });
+    });
+}
+
+function updateShaderConfig(element, update) {
+    const shaderId = $(element).attr("data-shader-id");
+    const shaderConfig = shaderLayerConfig[shaderId];
+
+    if (!shaderConfig) {
+        return;
+    }
+
+    update(shaderConfig, shaderId);
+    applyShaderLayerGuiConfig();
+    renderShaderConfigPanel();
+}
+
+function shaderTypeHasSources(type) {
+    const Shader = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.get(type);
+
+    if (!Shader || typeof Shader.sources !== "function") {
+        return true;
+    }
+
+    return (Shader.sources() || []).length > 0;
+}
+
+function applyShaderLayerGuiConfig() {
+    if (!viewer.drawer || typeof viewer.drawer.overrideConfigureAll !== "function") {
+        return;
+    }
+
+    viewer.drawer.overrideConfigureAll(shaderLayerConfig, shaderLayerOrder);
+}
+
+function setupDiagnosticsPanel() {
+    const renderDiagnosticsToggle = document.getElementById("render-diagnostics-toggle");
+    const invalidPatternSelect = document.getElementById("invalid-pattern-select");
+    const reloadSourceButton = document.getElementById("reload-source-button");
+
+    const syncControls = () => {
+        const renderer = viewer.drawer && viewer.drawer.renderer;
+
+        if (renderDiagnosticsToggle && renderer && typeof renderer.getRenderDiagnostics === "function") {
+            renderDiagnosticsToggle.checked = renderer.getRenderDiagnostics();
+        }
+
+        writeDiagnosticsState();
+    };
+
+    if (renderDiagnosticsToggle) {
+        renderDiagnosticsToggle.addEventListener("change", () => {
+            const renderer = viewer.drawer && viewer.drawer.renderer;
+
+            if (renderer && typeof renderer.setRenderDiagnostics === "function") {
+                renderer.setRenderDiagnostics(renderDiagnosticsToggle.checked);
+            }
+
+            syncControls();
+        });
+    }
+
+    if (invalidPatternSelect) {
+        invalidPatternSelect.value = DEMO_SOURCE_OPTIONS.invalidPattern;
+        invalidPatternSelect.addEventListener("change", () => {
+            reloadDemoSource();
+            syncControls();
+        });
+    }
+
+    if (reloadSourceButton) {
+        reloadSourceButton.addEventListener("click", () => {
+            reloadDemoSource();
+            syncControls();
+        });
+    }
+
+    syncControls();
+}
+
+function writeDiagnosticsState() {
+    const renderer = viewer.drawer && viewer.drawer.renderer;
+    const invalidPatternSelect = document.getElementById("invalid-pattern-select");
+
+    writeJson("diagnostics-state-output", {
+        renderDiagnostics: renderer && typeof renderer.getRenderDiagnostics === "function" ?
+            renderer.getRenderDiagnostics() :
+            null,
+        invalidPattern: invalidPatternSelect ? invalidPatternSelect.value : DEMO_SOURCE_OPTIONS.invalidPattern,
+        expectedReason: "invalid-data",
+        expectedDiagnosticSource: "conversion/build failure sentinel",
+        invalidTilesAtMaxLevel: describeInvalidTiles(invalidPatternSelect ? invalidPatternSelect.value : DEMO_SOURCE_OPTIONS.invalidPattern)
+    });
+}
+
+function describeInvalidTiles(pattern) {
+    if (pattern === "none") {
+        return [];
+    }
+
+    if (pattern === "center") {
+        return ["L2 / 1,1"];
+    }
+
+    if (pattern === "diagonal") {
+        return ["L2 / 0,0", "L2 / 1,1", "L2 / 2,2", "L2 / 3,3"];
+    }
+
+    if (pattern === "checker") {
+        return [
+            "L2 / 0,0",
+            "L2 / 2,0",
+            "L2 / 1,1",
+            "L2 / 3,1",
+            "L2 / 0,2",
+            "L2 / 2,2",
+            "L2 / 1,3",
+            "L2 / 3,3"
+        ];
+    }
+
+    return [];
+}
+
+function writeJson(id, value) {
+    const element = document.getElementById(id);
+
+    if (element) {
+        element.textContent = JSON.stringify(value, null, 2);
+    }
+}
+
+function setPanelHtml(id, html) {
+    const element = document.getElementById(id);
+
+    if (element) {
+        element.innerHTML = html;
+    }
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+viewer.addHandler("open", () => {
+    applyShaderLayerGuiConfig();
+    renderShaderConfigPanel();
+    setupDiagnosticsPanel();
+});
+
+viewer.addTiledImage({
+    tileSource: createDemoTileSourceOptions()
+});
+
+renderShaderConfigPanel();
+setupDiagnosticsPanel();

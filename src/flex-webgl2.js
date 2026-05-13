@@ -1545,7 +1545,11 @@ const vec3 viewport[4] = vec3[4] (
 );
 
 void main() {
-    if (u_renderClippingParams.y > 0.5) {
+    bool isRasterMode = u_renderClippingParams.y == 0.0;  // 0.0
+    bool isVectorMode = u_renderClippingParams.y > 0.0;  // 1.0
+    bool isDiagnosticMode = u_renderClippingParams.y < 0.0;  // -1.0
+
+    if (isVectorMode) {
         v_texture_coords = vec2((a_payload0.x - a_payload1.x) / a_payload1.z, (a_payload0.y - a_payload1.y) / a_payload1.w);
     } else {
         int vid = gl_VertexID & 3;
@@ -1554,11 +1558,9 @@ void main() {
                 (vid == 2) ? a_payload1.xy : a_payload1.zw;
     }
 
-    mat3 matrix = u_renderClippingParams.y > 0.5 ? u_geomMatrix : a_transform_matrix;
+    mat3 matrix = isVectorMode ? u_geomMatrix : a_transform_matrix;
 
-    vec3 space_2d = u_renderClippingParams.x > 0.5 ?
-        matrix * vec3(a_payload0.xy, 1.0) :
-        matrix * viewport[gl_VertexID];
+    vec3 space_2d = u_renderClippingParams.x > 0.5 ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];
 
     v_vecDepth = a_payload0.z;
     v_textureId = int(a_payload0.w);
@@ -1568,6 +1570,7 @@ void main() {
     instance_id = gl_InstanceID;
 }
 `;
+
         this.fragmentShader = `#version 300 es
 precision mediump int;
 precision mediump float;
@@ -1590,8 +1593,45 @@ ${this.atlas.getFragmentShaderDefinition()}
 layout(location=0) out vec4 outputColor;
 layout(location=1) out vec4 outputStencil;
 
+float fr_segment_distance(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a;
+    vec2 ba = b - a;
+    float denom = max(dot(ba, ba), 0.000001);
+    float h = clamp(dot(pa, ba) / denom, 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+bool fr_diagnostic_pixel(vec2 p) {
+    const float border = 0.035;
+    const float lineWidth = 0.022;
+
+    bool borderPixel = p.x <= border || p.x >= 1.0 - border || p.y <= border || p.y >= 1.0 - border;
+
+    vec2 top = vec2(0.5, 0.76);
+    vec2 left = vec2(0.28, 0.31);
+    vec2 right = vec2(0.72, 0.31);
+
+    float triangleDistance = min(
+        fr_segment_distance(p, top, left),
+        min(
+            fr_segment_distance(p, left, right),
+            fr_segment_distance(p, right, top)
+        )
+    );
+
+    bool trianglePixel = triangleDistance <= lineWidth;
+    bool exclamationBar = abs(p.x - 0.5) <= 0.018 && p.y >= 0.43 && p.y <= 0.61;
+    bool exclamationDot = distance(p, vec2(0.5, 0.36)) <= 0.026;
+
+    return borderPixel || trianglePixel || exclamationBar || exclamationDot;
+}
+
 void main() {
-    if (u_renderClippingParams.x < 0.5) {
+    bool isRasterMode = u_renderClippingParams.y == 0.0;  // 0.0
+    bool isVectorMode = u_renderClippingParams.y > 0.0;  // 1.0
+    bool isDiagnosticMode = u_renderClippingParams.y < 0.0;  // -1.0
+
+    if (isRasterMode) {
         for (int i = 0; i < ${this._maxTextures}; i++) {
             if (i == instance_id) {
                  switch (i) {
@@ -1605,7 +1645,7 @@ void main() {
 
         outputStencil = vec4(1.0);
         gl_FragDepth = gl_FragCoord.z;
-    } else if (u_renderClippingParams.y > 0.5) {
+    } else if (isVectorMode) {
         // Vector geometry draw path (per-vertex color)
 
         vec4 stencil = vec4(1.0);
@@ -1625,6 +1665,14 @@ void main() {
 
         outputStencil = stencil;
         gl_FragDepth = depth;
+    } else if (isDiagnosticMode) {
+        if (!fr_diagnostic_pixel(clamp(v_texture_coords, vec2(0.0), vec2(1.0)))) {
+            discard;
+        }
+
+        outputColor = vec4(1.0, 0.74, 0.05, 1.0);
+        outputStencil = vec4(1.0);
+        gl_FragDepth = gl_FragCoord.z;
     } else {
         // Pure clipping path: write only to stencil (color target value is undefined)
         outputStencil = vec4(0.0);
@@ -1790,6 +1838,8 @@ void main() {
 
         let wasClipping = true; // force first init (~ as if was clipping was true)
 
+        let diagnosticRegionCount = 0;
+
         for (const renderInfo of sourceArray) {
             const rasterTiles = renderInfo.tiles;
 
@@ -1826,7 +1876,6 @@ void main() {
                 gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
 
-                // Note: second param unused for now...
                 gl.uniform2f(this._renderClipping, 1, 0);
                 gl.bindVertexArray(this.firstPassVaoClip);
 
@@ -1841,7 +1890,7 @@ void main() {
 
                 gl.stencilFunc(gl.EQUAL, renderInfo.polygons.length, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-                // Note: second param unused for now...
+
                 gl.uniform2f(this._renderClipping, 0, 0);
                 wasClipping = true;
 
@@ -1990,6 +2039,47 @@ void main() {
 
                 gl.uniform2f(this._renderClipping, 0, 0);
             }
+
+            const diagnostics = renderInfo.diagnostics;
+            if (this.context.renderer.getRenderDiagnostics() && Array.isArray(diagnostics) && diagnostics.length) {
+                const gl = this.gl;
+
+                let currentIndex = 0;
+
+                gl.disable(gl.BLEND);
+                gl.uniform2f(this._renderClipping, 0, -1);
+                gl.bindVertexArray(this.firstPassVao);
+
+                while (currentIndex < diagnostics.length) {
+                    const batchSize = Math.min(this._maxTextures, diagnostics.length - currentIndex);
+
+                    for (let i = 0; i < batchSize; i++) {
+                        const diagnostic = diagnostics[currentIndex + i];
+
+                        this._tempMatrixData.set(diagnostic.transformMatrix, i * 9);
+                        this._tempTexCoords.set(diagnostic.position, i * 8);
+                    }
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordsBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._tempTexCoords.subarray(0, batchSize * 8));
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.matrixBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._tempMatrixData.subarray(0, batchSize * 9));
+
+                    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batchSize);
+                    currentIndex += batchSize;
+                }
+
+                gl.uniform2f(this._renderClipping, 0, 0);
+
+                diagnosticRegionCount += diagnostics.length;
+
+                isBlend = false;
+            }
+        }
+
+        if (this.context.renderer.debug && diagnosticRegionCount > 0) {
+            $.console.warn(`[flex-renderer] first-pass diagnostics: ${diagnosticRegionCount} invalid region(s)`);
         }
 
         gl.disable(gl.DEPTH_TEST);

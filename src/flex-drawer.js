@@ -1969,6 +1969,7 @@
                 const tiledImage = tiledImages[tiledImageIndex];
                 const payload = [];
                 const vecPayload = [];
+                const diagnosticPayload = [];
 
                 const tilesToDraw = tiledImage.getTilesToDraw();
 
@@ -2017,7 +2018,16 @@
 
                         const tileInfo = this.getDataToDraw(tile);
                         if (!tileInfo) {
-                            //TODO consider drawing some error if the tile is in erroneous state
+                            continue;
+                        }
+
+                        if (this._isDiagnosticTileInfo(tileInfo)) {
+                            diagnosticPayload.push(this._makeTileDiagnosticRegion(
+                                tile,
+                                tiledImage,
+                                overallMatrix,
+                                tileInfo.reason || "invalid-data"
+                            ));
                             continue;
                         }
 
@@ -2051,6 +2061,13 @@
                             }
 
                             vecPayload.push(tileInfo.vectors);
+                        } else {
+                            diagnosticPayload.push(this._makeTileDiagnosticRegion(
+                                tile,
+                                tiledImage,
+                                overallMatrix,
+                                "invalid-data"
+                            ));
                         }
                     }
                 }
@@ -2088,6 +2105,7 @@
                     TI_PAYLOAD.push({
                         tiles: payload,
                         vectors: vecPayload,
+                        diagnostics: diagnosticPayload,
                         polygons: polygons,
                         dataIndex: baseLayer + packIndex,
                         stencilIndex: tiledImageIndex,
@@ -2407,7 +2425,34 @@
                 tiledImage
             }).catch(e => {
                 $.console.error(`Unsupported data type! ${normalized.data}`, e);
+                return this._createDiagnosticTileInfo("invalid-data");
             });
+        }
+
+        /**
+         * Create an internal tile-info sentinel for tile data that was received but
+         * could not be converted into renderer-ready raster or vector data.
+         *
+         * @private
+         * @param {string} reason
+         * @return {{__flexDiagnostic: boolean, reason: string}}
+         */
+        _createDiagnosticTileInfo(reason = "invalid-data") {
+            return {
+                __flexDiagnostic: true,
+                reason: reason
+            };
+        }
+
+        /**
+         * Return whether tile info is an internal diagnostic sentinel.
+         *
+         * @private
+         * @param {*} tileInfo
+         * @return {boolean}
+         */
+        _isDiagnosticTileInfo(tileInfo) {
+            return !!(tileInfo && tileInfo.__flexDiagnostic === true);
         }
 
         async createTileInfoFromSource({ data, type, tile, tiledImage }) {
@@ -2445,6 +2490,68 @@
         //     this._updatePackLayout();
         //     this._packLayoutDirty = false;
         // }
+
+        /**
+         * Compute fallback dimensions for a diagnostic tile region.
+         *
+         * Diagnostic entries have no decoded image/texture dimensions, so this uses
+         * source bounds when OpenSeadragon exposes them and falls back to the tile
+         * source's nominal tile dimensions.
+         *
+         * @private
+         * @param {OpenSeadragon.Tile} tile
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @return {{width: number, height: number}}
+         */
+        _getDiagnosticTileDimensions(tile, tiledImage) {
+            const source = tiledImage && tiledImage.source ? tiledImage.source : {};
+            const sourceBounds = tile && tile.sourceBounds ? tile.sourceBounds : null;
+            const width = sourceBounds && Number.isFinite(sourceBounds.width) && sourceBounds.width > 0 ?
+                sourceBounds.width :
+                source.tileWidth || source.tileSize || 1;
+            const height = sourceBounds && Number.isFinite(sourceBounds.height) && sourceBounds.height > 0 ?
+                sourceBounds.height :
+                source.tileHeight || source.tileSize || width;
+
+            return {
+                width: width,
+                height: height
+            };
+        }
+
+        /**
+         * Create a renderer-ready diagnostic first-pass region for a tile.
+         *
+         * @private
+         * @param {OpenSeadragon.Tile} tile
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @param {OpenSeadragon.Mat3} overallMatrix
+         * @param {string} [reason="invalid-data"]
+         * @return {FPRenderDiagnosticTile}
+         */
+        _makeTileDiagnosticRegion(tile, tiledImage, overallMatrix, reason = "invalid-data") {
+            const dimensions = this._getDiagnosticTileDimensions(tile, tiledImage);
+            const position = this._computeTilePosition(
+                tile,
+                tiledImage,
+                dimensions.width,
+                dimensions.height
+            );
+            const diagnosticTileInfo = {
+                position: position
+            };
+
+            return {
+                reason: reason,
+                transformMatrix: this._updateTileMatrix(
+                    diagnosticTileInfo,
+                    tile,
+                    tiledImage,
+                    overallMatrix
+                ),
+                position: position
+            };
+        }
 
         /**
          * Compute normalized tile texture coordinates (UVs) in source image space,

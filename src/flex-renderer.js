@@ -66,6 +66,8 @@
      */
 
     /**
+     * Renderer-ready first-pass raster tile data.
+     *
      * @typedef {object} FPRenderRasterTile
      * @property {WebGLTexture[]} texture           [TEXTURE_2D]
      * @property {Float32Array} textureCoords
@@ -83,6 +85,8 @@
      */
 
     /**
+     * Renderer-ready first-pass vector tile data.
+     *
      * Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
      *
      * @typedef {object} FPRenderVectorTile
@@ -93,9 +97,23 @@
      */
 
     /**
+     * Renderer-ready first-pass diagnostic tile data.
+     *
+     * Entries in `FPRenderPackage.diagnostics` represent tiles that could not
+     * be rendered as normal raster or vector data. The containing first-pass
+     * package supplies the target source and stencil layers.
+     *
+     * @typedef {object} FPRenderDiagnosticTile
+     * @property {string} [reason] - Optional machine-readable diagnostic reason.
+     * @property {Float32Array | number[]} transformMatrix - Region transform used by the first pass.
+     * @property {Float32Array | number[]} position - Region corner positions, matching raster tile geometry.
+     */
+
+    /**
      * @typedef {object} FPRenderPackage
      * @property {FPRenderRasterTile[]} tiles
      * @property {FPRenderVectorTile[]} [vectors]
+     * @property {FPRenderDiagnosticTile[]} [diagnostics]
      * @property {number[][]} stencilPolygons
      */
 
@@ -158,6 +176,8 @@
      *
      * @property {boolean} debug                   debug mode on/off
      *
+     * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
+     *
      * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
      *
      * @property {boolean} interactive             if true (default), the layers are configured for interactive changes (not applied by default)
@@ -203,6 +223,8 @@
             this.webGLPreferredVersion = options.webGLPreferredVersion;
 
             this.debug = options.debug;
+
+            this._renderDiagnostics = options.renderDiagnostics !== false;
 
             this._background = options.backgroundColor || "#00000000";
 
@@ -369,6 +391,43 @@
          */
         supportsHtmlControls() {
             return typeof this.htmlHandler === "function";
+        }
+
+        /**
+         * Enable or disable rendering of first-pass diagnostic tiles.
+         *
+         * This controls only whether provided diagnostic tiles are drawn. It does
+         * not change first-pass package construction and does not rebuild WebGL
+         * programs.
+         *
+         * @param {boolean} enabled
+         * @param {object} [options={}]
+         * @param {boolean} [options.redraw=true] request a redraw after changing the setting
+         * @return {boolean} Current diagnostic rendering state.
+         */
+        setRenderDiagnostics(enabled, options = {}) {
+            const current = enabled !== false;
+
+            if (this._renderDiagnostics === current) {
+                return this.getRenderDiagnostics();
+            }
+
+            this._renderDiagnostics = current;
+
+            if (options.redraw !== false && typeof this.redrawCallback === "function") {
+                this.redrawCallback();
+            }
+
+            return this.getRenderDiagnostics();
+        }
+
+        /**
+         * Return whether first-pass diagnostic tiles should be rendered when provided.
+         *
+         * @return {boolean}
+         */
+        getRenderDiagnostics() {
+            return this._renderDiagnostics !== false;
         }
 
         /**
