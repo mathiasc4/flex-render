@@ -331,6 +331,8 @@
      *
      * @property {"warn-skip"|"throw"} [sharedContextBusyPolicy="warn-skip"] internal policy used when a shared context is already rendering
      *
+     * @property {"gpu-blit"|"read-pixels"} [presentationTransferMode="gpu-blit"] internal shared-context presentation transfer mode
+     *
      * @property {boolean} debug                   debug mode on/off
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
@@ -383,6 +385,7 @@
 
             this.debug = options.debug;
             this._sharedContextBusyPolicy = options.sharedContextBusyPolicy === "throw" ? "throw" : "warn-skip";
+            this._presentationTransferMode = options.presentationTransferMode === "read-pixels" ? "read-pixels" : "gpu-blit";
             this._warningsEmitted = new Set();
             this._warningCounts = {};
 
@@ -411,6 +414,7 @@
             this._programImplementations = {};
             this.__firstPassResult = null;
             this.__finalPassResult = null;
+            this._finalColorTarget = null;
 
             this._renderX = 0;
             this._renderY = 0;
@@ -683,7 +687,8 @@
                     return {
                         instanceId: renderer._rendererInstanceId,
                         uniqueId: renderer.uniqueId || null,
-                        viewerId: viewerId
+                        viewerId: viewerId,
+                        presentationTransferMode: renderer._presentationTransferMode
                     };
                 })
             }));
@@ -1173,13 +1178,57 @@
             sharedEntry.activeRenderer = this;
 
             try {
+                const width = Math.max(1, this._renderWidth || this.getPresentationCanvas().width || this.getWebGLCanvas().width || 1);
+                const height = Math.max(1, this._renderHeight || this.getPresentationCanvas().height || this.getWebGLCanvas().height || 1);
+                const webGLCanvas = this.getWebGLCanvas();
+
+                if (webGLCanvas.width !== width) {
+                    webGLCanvas.width = width;
+                }
+
+                if (webGLCanvas.height !== height) {
+                    webGLCanvas.height = height;
+                }
+
+                if (!this.backend || typeof this.backend.ensureColorTarget !== "function") {
+                    throw new Error("$.FlexRenderer::render: active backend does not support shared-context final color targets.");
+                }
+
+                if (!this.backend || typeof this.backend.presentColorTargetToCanvas !== "function") {
+                    throw new Error("$.FlexRenderer::render: active backend does not support shared-context presentation transfer.");
+                }
+
+                this._finalColorTarget = this.backend.ensureColorTarget(
+                    this._finalColorTarget,
+                    width,
+                    height,
+                    { filter: this.gl.LINEAR }
+                );
+
                 this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
-                this.gl.viewport(this._renderX, this._renderY, this._renderWidth, this._renderHeight);
+                this.gl.viewport(this._renderX, this._renderY, width, height);
                 this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
                 this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
                 this.renderFirstPass(frame.firstPass);
-                this.__finalPassResult = this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+
+                if (frame.secondPass.length) {
+                    this.renderSecondPass(frame.secondPass, $.extend(true, {}, options.secondPassOptions || {}, {
+                        framebuffer: this._finalColorTarget.framebuffer
+                    }));
+                } else if (typeof this.backend.clearColorTarget === "function") {
+                    this.backend.clearColorTarget(this._finalColorTarget, [0, 0, 0, 0]);
+                }
+
+                this.__finalPassResult = this._finalColorTarget;
+
+                this.backend.presentColorTargetToCanvas(
+                    this._finalColorTarget,
+                    this.getPresentationCanvas(),
+                    {
+                        mode: this._presentationTransferMode
+                    }
+                );
 
                 this.gl.finish();
             } finally {
@@ -2176,6 +2225,11 @@
                 if (this._debugPreviewColorRB) {
                     this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
                     this._debugPreviewColorRB = null;
+                }
+
+                if (this._finalColorTarget && this.backend && typeof this.backend.destroyColorTarget === "function") {
+                    this.backend.destroyColorTarget(this._finalColorTarget);
+                    this._finalColorTarget = null;
                 }
 
                 this.backend.destroy();

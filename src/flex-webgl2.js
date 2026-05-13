@@ -52,6 +52,13 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
 
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
+        this._presentationTransferScratch = {
+            canvas: null,
+            ctx: null,
+            pixels: null,
+            flippedPixels: null,
+            imageData: null
+        };
 
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.FirstPassProgram(this, this.gl, this.firstAtlas), "firstPass");
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.SecondPassProgram(this, this.gl, this.secondAtlas), "secondPass");
@@ -555,6 +562,194 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         gl.clearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * Ensure a renderer-owned color target.
+     *
+     * @param {object|null} target
+     * @param {number} width
+     * @param {number} height
+     * @param {object} [options={}]
+     * @return {object}
+     */
+    ensureColorTarget(target, width, height, options = {}) {
+        return this._ensureColorTarget(target, width, height, options);
+    }
+
+    /**
+     * Clear a renderer-owned color target.
+     *
+     * @param {object} target
+     * @param {number[]} [rgba=[0, 0, 0, 0]]
+     * @return {void}
+     */
+    clearColorTarget(target, rgba = [0, 0, 0, 0]) {
+        this._clearColorTarget(target, rgba);
+    }
+
+    /**
+     * Destroy a renderer-owned color target.
+     *
+     * @param {object|null} target
+     * @return {void}
+     */
+    destroyColorTarget(target) {
+        this._destroyColorTarget(target);
+    }
+
+    /**
+     * Copy a color target into a renderer-local presentation canvas.
+     *
+     * The default "gpu-blit" mode first blits the color target to the WebGL
+     * default framebuffer and then copies the WebGL canvas into the presentation
+     * canvas. The "read-pixels" mode is slower but useful for profiling and
+     * debugging transfer behavior.
+     *
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @param {object} [options={}]
+     * @param {"gpu-blit"|"read-pixels"} [options.mode="gpu-blit"]
+     * @return {string} Actual transfer mode used.
+     */
+    presentColorTargetToCanvas(target, canvas, options = {}) {
+        if (!target || !target.framebuffer || !canvas) {
+            return "none";
+        }
+
+        const mode = options.mode === "read-pixels" ? "read-pixels" : "gpu-blit";
+
+        if (mode === "read-pixels") {
+            return this._readColorTargetToCanvas(target, canvas);
+        }
+
+        const gl = this.gl;
+        const width = target.width || canvas.width || gl.drawingBufferWidth;
+        const height = target.height || canvas.height || gl.drawingBufferHeight;
+        const webGLCanvas = this.renderer.getWebGLCanvas();
+
+        try {
+            if (webGLCanvas.width !== width) {
+                webGLCanvas.width = width;
+            }
+
+            if (webGLCanvas.height !== height) {
+                webGLCanvas.height = height;
+            }
+
+            if (canvas.width !== width) {
+                canvas.width = width;
+            }
+
+            if (canvas.height !== height) {
+                canvas.height = height;
+            }
+
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+            gl.blitFramebuffer(
+                0,
+                0,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                gl.COLOR_BUFFER_BIT,
+                gl.NEAREST
+            );
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+
+            const context = canvas.getContext("2d");
+            if (context) {
+                context.clearRect(0, 0, width, height);
+                context.drawImage(webGLCanvas, 0, 0, width, height);
+            }
+
+            return "gpu-blit";
+        } catch (error) {
+            const renderer = this.renderer;
+
+            renderer._warningCounts["presentation-transfer-gpu-blit-fallback"] =
+                (renderer._warningCounts["presentation-transfer-gpu-blit-fallback"] || 0) + 1;
+
+            if (!renderer._warningsEmitted.has("presentation-transfer-gpu-blit-fallback")) {
+                renderer._warningsEmitted.add("presentation-transfer-gpu-blit-fallback");
+                $.console.warn(
+                    "FlexRenderer gpu-blit presentation transfer failed; falling back to read-pixels.",
+                    error
+                );
+            }
+
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+
+            return this._readColorTargetToCanvas(target, canvas);
+        }
+    }
+
+    /**
+     * Copy a color target into a presentation canvas through readPixels.
+     *
+     * @private
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @return {string}
+     */
+    _readColorTargetToCanvas(target, canvas) {
+        const gl = this.gl;
+        const width = target.width || canvas.width || gl.drawingBufferWidth;
+        const height = target.height || canvas.height || gl.drawingBufferHeight;
+        const scratch = this._presentationTransferScratch;
+
+        if (canvas.width !== width) {
+            canvas.width = width;
+        }
+
+        if (canvas.height !== height) {
+            canvas.height = height;
+        }
+
+        const length = width * height * 4;
+        const rowLength = width * 4;
+
+        if (!scratch.pixels || scratch.pixels.length !== length) {
+            scratch.pixels = new Uint8Array(length);
+        }
+
+        if (!scratch.flippedPixels || scratch.flippedPixels.length !== length) {
+            scratch.flippedPixels = new Uint8ClampedArray(length);
+        }
+
+        const context = canvas.getContext("2d");
+
+        if (!context) {
+            return "read-pixels";
+        }
+
+        if (!scratch.imageData || scratch.imageData.width !== width || scratch.imageData.height !== height) {
+            scratch.imageData = context.createImageData(width, height);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, scratch.pixels);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        for (let y = 0; y < height; y++) {
+            const srcStart = (height - 1 - y) * rowLength;
+            const dstStart = y * rowLength;
+            scratch.flippedPixels.set(
+                scratch.pixels.subarray(srcStart, srcStart + rowLength),
+                dstStart
+            );
+        }
+
+        scratch.imageData.data.set(scratch.flippedPixels);
+        context.putImageData(scratch.imageData, 0, 0);
+
+        return "read-pixels";
     }
 
     /**
