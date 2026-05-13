@@ -327,6 +327,8 @@
      *
      * @property {string} webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
      *
+     * @property {string} [sharedContextKey] optional page-global key used to share one WebGL context across renderer instances
+     *
      * @property {boolean} debug                   debug mode on/off
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
@@ -372,10 +374,14 @@
                 throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + options.uniqueId);
             }
             this.uniqueId = options.uniqueId;
+            this._rendererInstanceId = ++this.constructor._rendererInstanceIdSeed;
+            this._destroyed = false;
 
             this.webGLPreferredVersion = options.webGLPreferredVersion;
 
             this.debug = options.debug;
+            this._warningsEmitted = new Set();
+            this._warningCounts = {};
 
             this._renderDiagnostics = options.renderDiagnostics !== false;
 
@@ -401,6 +407,7 @@
             this._shadersOrder = null;
             this._programImplementations = {};
             this.__firstPassResult = null;
+            this.__finalPassResult = null;
 
             this._renderX = 0;
             this._renderY = 0;
@@ -412,10 +419,150 @@
             this._inspectorState = this.constructor.normalizeInspectorState();
             this._interactionState = this.constructor.normalizeInteractionState();
 
-            this.canvasContextOptions = options.canvasOptions;
-            const canvas = document.createElement("canvas");
+            this.canvasContextOptions = this.constructor.normalizeCanvasOptions(options.canvasOptions);
+            this._sharedContextKey = this.constructor.normalizeSharedContextKey(options.sharedContextKey);
+            this._sharedContextEntry = null;
+            this._contextLost = false;
+
+            let canvas = null;
+            let webGLRenderingContext = null;
             const WebGLImplementationClass = this.constructor.determineBackend(this.webGLPreferredVersion);
-            const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
+
+            if (this._sharedContextKey) {
+                let entry = this.constructor._sharedContexts.get(this._sharedContextKey);
+
+                if (entry) {
+                    if (entry.webGLPreferredVersion !== this.webGLPreferredVersion) {
+                        throw new Error(
+                            `$.FlexRenderer::constructor: shared context '${this._sharedContextKey}' already exists with ` +
+                            `WebGL version '${entry.webGLPreferredVersion}', but renderer '${this.uniqueId}' requested ` +
+                            `'${this.webGLPreferredVersion}'. Use the same webGLPreferredVersion or a different sharedContextKey.`
+                        );
+                    }
+
+                    const existingOptions = entry.canvasOptions || {};
+                    const requestedOptions = this.canvasContextOptions || {};
+                    const optionKeys = new Set(Object.keys(existingOptions).concat(Object.keys(requestedOptions)));
+                    let optionsMatch = true;
+
+                    for (const optionKey of optionKeys) {
+                        if (existingOptions[optionKey] !== requestedOptions[optionKey]) {
+                            optionsMatch = false;
+                            break;
+                        }
+                    }
+
+                    if (!optionsMatch) {
+                        entry.ignoredReconfigurationCount++;
+                        this._warningCounts["shared-context-options-ignored"] =
+                            (this._warningCounts["shared-context-options-ignored"] || 0) + 1;
+
+                        if (!this._warningsEmitted.has("shared-context-options-ignored")) {
+                            this._warningsEmitted.add("shared-context-options-ignored");
+                            $.console.warn(
+                                `FlexRenderer shared context '${this._sharedContextKey}' already exists. ` +
+                                `Ignoring canvasOptions requested by renderer '${this.uniqueId}'. First owner wins.`,
+                                {
+                                    existing: existingOptions,
+                                    requested: requestedOptions
+                                }
+                            );
+                        }
+                    }
+                } else {
+                    canvas = document.createElement("canvas");
+                    webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(
+                        canvas,
+                        this.webGLPreferredVersion,
+                        this.canvasContextOptions
+                    );
+
+                    if (webGLRenderingContext) {
+                        entry = {
+                            key: this._sharedContextKey,
+                            canvas: canvas,
+                            gl: webGLRenderingContext,
+                            webGLPreferredVersion: this.webGLPreferredVersion,
+                            canvasOptions: $.extend(true, {}, this.canvasContextOptions),
+                            refCount: 0,
+                            renderers: new Set(),
+                            lost: false,
+                            restored: false,
+                            busy: false,
+                            activeRenderer: null,
+                            ignoredReconfigurationCount: 0,
+                            busySkipCount: 0,
+                            contextLostSkipCount: 0
+                        };
+
+                        entry.handleContextLost = (event) => {
+                            if (event && typeof event.preventDefault === "function") {
+                                event.preventDefault();
+                            }
+
+                            entry.lost = true;
+                            entry.restored = false;
+
+                            for (const renderer of entry.renderers) {
+                                renderer._contextLost = true;
+                                renderer.__firstPassResult = null;
+                                renderer.__finalPassResult = null;
+
+                                renderer._warningCounts["shared-context-lost"] =
+                                    (renderer._warningCounts["shared-context-lost"] || 0) + 1;
+
+                                if (!renderer._warningsEmitted.has("shared-context-lost")) {
+                                    renderer._warningsEmitted.add("shared-context-lost");
+                                    $.console.warn(
+                                        `FlexRenderer shared context '${entry.key}' was lost. ` +
+                                        `Automatic restoration is not supported yet.`
+                                    );
+                                }
+                            }
+                        };
+
+                        entry.handleContextRestored = () => {
+                            entry.restored = true;
+
+                            for (const renderer of entry.renderers) {
+                                renderer._warningCounts["shared-context-restored"] =
+                                    (renderer._warningCounts["shared-context-restored"] || 0) + 1;
+
+                                if (!renderer._warningsEmitted.has("shared-context-restored")) {
+                                    renderer._warningsEmitted.add("shared-context-restored");
+                                    $.console.warn(
+                                        `FlexRenderer shared context '${entry.key}' was restored by the browser, ` +
+                                        `but automatic GPU resource rebuild is not supported yet. Recreate the renderer/viewer.`
+                                    );
+                                }
+                            }
+                        };
+
+                        canvas.addEventListener("webglcontextlost", entry.handleContextLost, false);
+                        canvas.addEventListener("webglcontextrestored", entry.handleContextRestored, false);
+
+                        this.constructor._sharedContexts.set(this._sharedContextKey, entry);
+                    }
+                }
+
+                if (entry) {
+                    entry.refCount++;
+                    entry.renderers.add(this);
+
+                    this._sharedContextEntry = entry;
+                    this.canvasContextOptions = entry.canvasOptions;
+
+                    canvas = entry.canvas;
+                    webGLRenderingContext = entry.gl;
+                }
+            } else {
+                canvas = document.createElement("canvas");
+                webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(
+                    canvas,
+                    this.webGLPreferredVersion,
+                    this.canvasContextOptions
+                );
+            }
 
             if (!webGLRenderingContext) {
                 throw new Error("$.FlexRenderer::constructor: Could not create WebGLRenderingContext!");
@@ -461,6 +608,79 @@
             }
 
             throw new Error("$.FlexRenderer::determineBackend: Could not find WebGLImplementation with version " + version);
+        }
+
+        /**
+         * Normalize a shared WebGL context key.
+         *
+         * Empty, null, undefined, and false values disable shared-context mode.
+         *
+         * @param {*} value
+         * @return {string|null}
+         */
+        static normalizeSharedContextKey(value) {
+            if (value === undefined || value === null || value === false) {
+                return null;
+            }
+
+            const key = String(value).trim();
+            return key || null;
+        }
+
+        /**
+         * Normalize WebGL context creation options.
+         *
+         * These defaults mirror WebGLImplementation.createWebglContext(...), but are
+         * normalized before shared-context comparison so omitted default values compare
+         * consistently.
+         *
+         * @param {object|undefined} options
+         * @return {object}
+         */
+        static normalizeCanvasOptions(options = undefined) {
+            const normalized = $.extend(true, {}, options || {});
+
+            normalized.alpha = true;
+            normalized.premultipliedAlpha = true;
+            normalized.preserveDrawingBuffer = true;
+
+            return normalized;
+        }
+
+        /**
+         * Return JSON-safe diagnostic information for page-global shared WebGL contexts.
+         *
+         * This does not expose WebGL contexts, canvases, textures, framebuffers, backend
+         * instances, or mutable registry entries.
+         *
+         * @return {object[]}
+         */
+        static getSharedContextStatus() {
+            return Array.from(this._sharedContexts.values()).map(entry => ({
+                key: entry.key,
+                webGLPreferredVersion: entry.webGLPreferredVersion,
+                canvasOptions: $.extend(true, {}, entry.canvasOptions),
+                refCount: entry.refCount,
+                lost: !!entry.lost,
+                restored: !!entry.restored,
+                busy: !!entry.busy,
+                activeRendererInstanceId: entry.activeRenderer ? entry.activeRenderer._rendererInstanceId : null,
+                width: entry.canvas ? entry.canvas.width : 0,
+                height: entry.canvas ? entry.canvas.height : 0,
+                ignoredReconfigurationCount: entry.ignoredReconfigurationCount || 0,
+                busySkipCount: entry.busySkipCount || 0,
+                contextLostSkipCount: entry.contextLostSkipCount || 0,
+                renderers: Array.from(entry.renderers || []).map(renderer => {
+                    const viewer = renderer.viewer;
+                    const viewerId = viewer && viewer.element && viewer.element.id ? viewer.element.id : null;
+
+                    return {
+                        instanceId: renderer._rendererInstanceId,
+                        uniqueId: renderer.uniqueId || null,
+                        viewerId: viewerId
+                    };
+                })
+            }));
         }
 
         /**
@@ -1838,30 +2058,64 @@
         }
 
         destroy() {
-            this.htmlReset();
-            this.deleteShaders();
-            for (let pId in this._programImplementations) {
-                this.deleteProgram(pId);
-            }
-            if (this._extractionFB) {
-                this.gl.deleteFramebuffer(this._extractionFB);
-                this._extractionFB = null;
-            }
-            if (this._debugPreviewFB) {
-                this.gl.deleteFramebuffer(this._debugPreviewFB);
-                this._debugPreviewFB = null;
-            }
-            if (this._debugPreviewColorRB) {
-                this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
-                this._debugPreviewColorRB = null;
+            if (this._destroyed) {
+                return;
             }
 
-            this.backend.destroy();
-            this._programImplementations = {};
+            this._destroyed = true;
 
-            let ext = this.gl.getExtension('WEBGL_lose_context');
-            if (ext) {
-                ext.loseContext();
+            try {
+                this.htmlReset();
+                this.deleteShaders();
+
+                for (let pId in this._programImplementations) {
+                    this.deleteProgram(pId);
+                }
+
+                if (this._extractionFB) {
+                    this.gl.deleteFramebuffer(this._extractionFB);
+                    this._extractionFB = null;
+                }
+
+                if (this._debugPreviewFB) {
+                    this.gl.deleteFramebuffer(this._debugPreviewFB);
+                    this._debugPreviewFB = null;
+                }
+
+                if (this._debugPreviewColorRB) {
+                    this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
+                    this._debugPreviewColorRB = null;
+                }
+
+                this.backend.destroy();
+                this._programImplementations = {};
+            } finally {
+                const entry = this._sharedContextEntry;
+
+                if (entry) {
+                    entry.renderers.delete(this);
+                    entry.refCount = Math.max(0, entry.refCount - 1);
+
+                    if (entry.activeRenderer === this) {
+                        entry.activeRenderer = null;
+                        entry.busy = false;
+                    }
+
+                    if (entry.refCount === 0) {
+                        if (entry.canvas && entry.handleContextLost) {
+                            entry.canvas.removeEventListener("webglcontextlost", entry.handleContextLost, false);
+                        }
+
+                        if (entry.canvas && entry.handleContextRestored) {
+                            entry.canvas.removeEventListener("webglcontextrestored", entry.handleContextRestored, false);
+                        }
+
+                        this.constructor._sharedContexts.delete(entry.key);
+                    }
+                }
+
+                this._sharedContextEntry = null;
+                this._sharedContextKey = null;
             }
         }
 
@@ -2615,6 +2869,9 @@
     FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
 
     FlexRenderer.__runtimeSupportCache = null;
+
+    FlexRenderer._sharedContexts = new Map();
+    FlexRenderer._rendererInstanceIdSeed = 0;
 
     FlexRenderer.SUPPORTED_BLEND_MODES = [
         'mask',
