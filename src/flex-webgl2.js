@@ -1545,9 +1545,10 @@ const vec3 viewport[4] = vec3[4] (
 );
 
 void main() {
-    bool isRasterMode = u_renderClippingParams.y == 0.0;  // 0.0
-    bool isVectorMode = u_renderClippingParams.y > 0.0;  // 1.0
-    bool isDiagnosticMode = u_renderClippingParams.y < 0.0;  // -1.0
+    bool isClipMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y == 0.0;
+    bool isRasterMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0;
+    bool isVectorMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0;
+    bool isDiagnosticMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0;
 
     if (isVectorMode) {
         v_texture_coords = vec2((a_payload0.x - a_payload1.x) / a_payload1.z, (a_payload0.y - a_payload1.y) / a_payload1.w);
@@ -1560,7 +1561,7 @@ void main() {
 
     mat3 matrix = isVectorMode ? u_geomMatrix : a_transform_matrix;
 
-    vec3 space_2d = u_renderClippingParams.x > 0.5 ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];
+    vec3 space_2d = (isVectorMode || isClipMode) ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];
 
     v_vecDepth = a_payload0.z;
     v_textureId = int(a_payload0.w);
@@ -1627,9 +1628,10 @@ bool fr_diagnostic_pixel(vec2 p) {
 }
 
 void main() {
-    bool isRasterMode = u_renderClippingParams.y == 0.0;  // 0.0
-    bool isVectorMode = u_renderClippingParams.y > 0.0;  // 1.0
-    bool isDiagnosticMode = u_renderClippingParams.y < 0.0;  // -1.0
+    bool isClipMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y == 0.0;
+    bool isRasterMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0;
+    bool isVectorMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0;
+    bool isDiagnosticMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0;
 
     if (isRasterMode) {
         for (int i = 0; i < ${this._maxTextures}; i++) {
@@ -1677,7 +1679,10 @@ void main() {
         outputStencil = vec4(1.0);
         gl_FragDepth = gl_FragCoord.z;
     } else {
-        // Pure clipping path: write only to stencil (color target value is undefined)
+        // Pure clipping path. Color writes are disabled during this draw,
+        // but keep outputs defined to avoid undefined MRT behavior if the
+        // path is reused incorrectly later.
+        outputColor = vec4(0.0);
         outputStencil = vec4(0.0);
         gl_FragDepth = 0.0;
     }
@@ -1879,6 +1884,12 @@ void main() {
                 gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
 
+                // The clipping pass should only update the GL stencil renderbuffer.
+                // Do not let the clipping shader write undefined color/source-mask data
+                // into the first-pass texture attachments.
+                gl.colorMask(false, false, false, false);
+                gl.depthMask(false);
+
                 gl.uniform2f(this._renderClipping, 1, 0);
                 gl.bindVertexArray(this.firstPassVaoClip);
 
@@ -1891,9 +1902,13 @@ void main() {
                     gl.drawArrays(gl.TRIANGLE_FAN, 0, polygon.length / 2);
                 }
 
+                // Re-enable color and depth writes before raster/vector/diagnostic rendering.
+                gl.colorMask(true, true, true, true);
+                gl.depthMask(true);
+
                 gl.stencilFunc(gl.EQUAL, renderInfo.polygons.length, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-
+                // Note: second param unused for now...
                 gl.uniform2f(this._renderClipping, 0, 0);
                 wasClipping = true;
 
