@@ -1874,12 +1874,6 @@ void main() {
                 gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
 
-                // The clipping pass should only update the GL stencil renderbuffer.
-                // Do not let the clipping shader write undefined color/source-mask data
-                // into the first-pass texture attachments.
-                gl.colorMask(false, false, false, false);
-                gl.depthMask(false);
-
                 gl.uniform2f(this._renderClipping, 1, 0);
                 gl.bindVertexArray(this.firstPassVaoClip);
 
@@ -1891,10 +1885,6 @@ void main() {
                     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(polygon), gl.STATIC_DRAW);
                     gl.drawArrays(gl.TRIANGLE_FAN, 0, polygon.length / 2);
                 }
-
-                // Re-enable color and depth writes before raster/vector/diagnostic rendering.
-                gl.colorMask(true, true, true, true);
-                gl.depthMask(true);
 
                 gl.stencilFunc(gl.EQUAL, renderInfo.polygons.length, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
