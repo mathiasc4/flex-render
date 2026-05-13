@@ -1545,12 +1545,7 @@ const vec3 viewport[4] = vec3[4] (
 );
 
 void main() {
-    bool isClipMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y == 0.0;
-    bool isRasterMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0;
-    bool isVectorMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0;
-    bool isDiagnosticMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0;
-
-    if (isVectorMode) {
+    if (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) {  // true for vector rendering
         v_texture_coords = vec2((a_payload0.x - a_payload1.x) / a_payload1.z, (a_payload0.y - a_payload1.y) / a_payload1.w);
     } else {
         int vid = gl_VertexID & 3;
@@ -1559,9 +1554,9 @@ void main() {
                 (vid == 2) ? a_payload1.xy : a_payload1.zw;
     }
 
-    mat3 matrix = isVectorMode ? u_geomMatrix : a_transform_matrix;
+    mat3 matrix = (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) ? u_geomMatrix : a_transform_matrix;  // true for vector rendering
 
-    vec3 space_2d = (isVectorMode || isClipMode) ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];
+    vec3 space_2d = (u_renderClippingParams.x > 0.5) ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];  // true for vector and clip rendering
 
     v_vecDepth = a_payload0.z;
     v_textureId = int(a_payload0.w);
@@ -1628,12 +1623,7 @@ bool fr_diagnostic_pixel(vec2 p) {
 }
 
 void main() {
-    bool isClipMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y == 0.0;
-    bool isRasterMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0;
-    bool isVectorMode = u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0;
-    bool isDiagnosticMode = u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0;
-
-    if (isRasterMode) {
+    if (u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0) {  // true for raster rendering
         for (int i = 0; i < ${this._maxTextures}; i++) {
             if (i == instance_id) {
                  switch (i) {
@@ -1647,7 +1637,7 @@ void main() {
 
         outputStencil = vec4(1.0);
         gl_FragDepth = gl_FragCoord.z;
-    } else if (isVectorMode) {
+    } else if (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) {  // true for vector rendering
         // Vector geometry draw path (per-vertex color)
 
         vec4 stencil = vec4(1.0);
@@ -1667,7 +1657,7 @@ void main() {
 
         outputStencil = stencil;
         gl_FragDepth = depth;
-    } else if (isDiagnosticMode) {
+    } else if (u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0) {  // true for diagnostic rendering mode
         vec2 diagnosticCoords = clamp(v_texture_coords, vec2(0.0), vec2(1.0));
         diagnosticCoords.y = 1.0 - diagnosticCoords.y;
 
