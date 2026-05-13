@@ -563,8 +563,9 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * but into a reusable color target.
      */
     renderSecondPassToTexture(renderArray, options = {}) {
-        const width = options.width || this.renderer.canvas.width || this.gl.drawingBufferWidth;
-        const height = options.height || this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const dimensions = this.renderer.getRenderDimensions();
+        const width = options.width || dimensions.width || this.gl.drawingBufferWidth;
+        const height = options.height || dimensions.height || this.gl.drawingBufferHeight;
         const target = options.target ?
             this._ensureColorTarget(options.target, width, height, options) :
             this._ensureColorTarget(options.targetKey || '__second_pass_texture', width, height, options);
@@ -590,8 +591,9 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * stays inside the normal second-pass shader.
      */
     processSecondPassWithInspector(renderArray, options = undefined) {
-        const width = this.renderer.canvas.width || this.gl.drawingBufferWidth;
-        const height = this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const dimensions = this.renderer.getRenderDimensions();
+        const width = dimensions.width || this.gl.drawingBufferWidth;
+        const height = dimensions.height || this.gl.drawingBufferHeight;
 
         const fullTarget = this._ensureColorTarget("__inspector_full", width, height, { filter: this.gl.LINEAR });
 

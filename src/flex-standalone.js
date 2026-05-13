@@ -109,8 +109,8 @@
         };
 
         target._readTextureArrayLayer = function(texArray, layerIndex, {
-            width = renderer.canvas.width,
-            height = renderer.canvas.height,
+            width = renderer.getRenderDimensions().width,
+            height = renderer.getRenderDimensions().height,
             level = 0,
             format = null,
             type = null,
@@ -477,7 +477,7 @@
                         const ctx = canvas.getContext('2d');
                         canvas.width = size.x;
                         canvas.height = size.y;
-                        ctx.drawImage(this.renderer.canvas, 0, 0);
+                        ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
                         return ctx;
                     }).catch(e => {
                         console.error(e);
@@ -542,7 +542,7 @@
                 const ctx = canvas.getContext('2d');
                 canvas.width = size.x;
                 canvas.height = size.y;
-                ctx.drawImage(this.renderer.canvas, 0, 0);
+                ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
                 return ctx;
             } finally {
                 if (viewportBindings) {
@@ -586,8 +586,8 @@
                 }
 
                 return this._readTextureArrayLayer(tex, layerIndex, {
-                    width: opts.width || this.renderer.canvas.width,
-                    height: opts.height || this.renderer.canvas.height,
+                    width: opts.width || this.renderer.getRenderDimensions().width,
+                    height: opts.height || this.renderer.getRenderDimensions().height,
                     level: opts.level || 0,
                     format: opts.format,
                     type: opts.type,
@@ -675,7 +675,7 @@
         });
         runtime.renderer.setDataBlendingEnabled(true);
         runtime.renderer.setDimensions(0, 0, width, height, 1, 1);
-        runtime.canvas = runtime.renderer.canvas;
+        runtime.canvas = runtime.renderer.getPresentationCanvas();
         runtime._inputState = {
             key: null,
             count: 0,
@@ -684,7 +684,7 @@
         };
 
         installExtractionApi(runtime, runtime.renderer, function(result = "imageData") {
-            return this._readCurrentCanvas(this.renderer.canvas, result);
+            return this._readCurrentCanvas(this.renderer.getPresentationCanvas(), result);
         });
 
         runtime.setSize = function(nextWidth, nextHeight) {
@@ -903,9 +903,10 @@
 
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
-                canvas.width = this.renderer.canvas.width;
-                canvas.height = this.renderer.canvas.height;
-                ctx.drawImage(this.renderer.canvas, 0, 0);
+                const presentationCanvas = this.renderer.getPresentationCanvas();
+                canvas.width = presentationCanvas.width;
+                canvas.height = presentationCanvas.height;
+                ctx.drawImage(presentationCanvas, 0, 0);
                 return ctx;
             } finally {
                 unlock();
@@ -931,8 +932,8 @@
                 }
 
                 return this._readTextureArrayLayer(tex, layerIndex, {
-                    width: opts.width || this.renderer.canvas.width,
-                    height: opts.height || this.renderer.canvas.height,
+                    width: opts.width || this.renderer.getRenderDimensions().width,
+                    height: opts.height || this.renderer.getRenderDimensions().height,
                     level: opts.level || 0,
                     format: opts.format,
                     type: opts.type,

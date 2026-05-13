@@ -402,33 +402,50 @@
             this._programImplementations = {};
             this.__firstPassResult = null;
 
+            this._renderX = 0;
+            this._renderY = 0;
+            this._renderWidth = 0;
+            this._renderHeight = 0;
+            this._renderLevels = 0;
+            this._renderTiledImageCount = 0;
+
             this._inspectorState = this.constructor.normalizeInspectorState();
             this._interactionState = this.constructor.normalizeInteractionState();
 
             this.canvasContextOptions = options.canvasOptions;
             const canvas = document.createElement("canvas");
-            const WebGLImplementation = this.constructor.determineBackend(this.webGLPreferredVersion);
+            const WebGLImplementationClass = this.constructor.determineBackend(this.webGLPreferredVersion);
             const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
 
-            if (webGLRenderingContext) {
-                this.gl = webGLRenderingContext;                                            // WebGLRenderingContext|WebGL2RenderingContext
-                this.backend = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
-                this.canvas = canvas;
-
-                // Should be last call of the constructor to make sure everything is initialized
-                this.backend.init();
-            } else {
+            if (!webGLRenderingContext) {
                 throw new Error("$.FlexRenderer::constructor: Could not create WebGLRenderingContext!");
             }
+
+            /**
+             * @type {WebGLRenderingContext | WebGL2RenderingContext}
+             */
+            this.gl = webGLRenderingContext;
+
+            /**
+             * @type {WebGLImplementation}
+             */
+            this.backend = new WebGLImplementationClass(this, webGLRenderingContext);
+
+            this.webGLCanvas = canvas;
+            this.presentationCanvas = canvas;
+            this.canvas = this.presentationCanvas;
+            this._renderWidth = canvas.width;
+            this._renderHeight = canvas.height;
+
+            // Should be last call of the constructor to make sure everything is initialized
+            this.backend.init();
         }
 
         /**
          * Search through all FlexRenderer properties to find one that extends WebGLImplementation and its getVersion() method returns <version> input parameter.
-         * @param {String} version WebGL version, "1.0" or "2.0"
-         * @returns {WebGLImplementation}
          *
-         * @instance
-         * @memberof FlexRenderer
+         * @param {String} version WebGL version, "1.0" or "2.0"
+         * @returns {typeof WebGLImplementation}
          */
         static determineBackend(version) {
             const namespace = $.FlexRenderer;
@@ -508,6 +525,42 @@
         }
 
         /**
+         * Return the backing canvas that owns the active WebGL context.
+         *
+         * @return {HTMLCanvasElement}
+         */
+        getWebGLCanvas() {
+            return this.webGLCanvas;
+        }
+
+        /**
+         * Return the renderer-local canvas that represents the latest presentable output.
+         *
+         * In private-context mode this is the same canvas as the WebGL backing canvas.
+         *
+         * @return {HTMLCanvasElement}
+         */
+        getPresentationCanvas() {
+            return this.presentationCanvas;
+        }
+
+        /**
+         * Return the last configured render dimensions in physical framebuffer pixels.
+         *
+         * @return {{x: number, y: number, width: number, height: number, levels: number, tiledImageCount: number}}
+         */
+        getRenderDimensions() {
+            return {
+                x: this._renderX || 0,
+                y: this._renderY || 0,
+                width: this._renderWidth || 0,
+                height: this._renderHeight || 0,
+                levels: this._renderLevels || 0,
+                tiledImageCount: this._renderTiledImageCount || 0,
+            };
+        }
+
+        /**
          * Set viewport dimensions.
          * @param {Number} x
          * @param {Number} y
@@ -519,8 +572,24 @@
          * @memberof FlexRenderer
          */
         setDimensions(x, y, width, height, levels, tiledImageCount) {
-            this.canvas.width = width;
-            this.canvas.height = height;
+            this._renderX = x || 0;
+            this._renderY = y || 0;
+            this._renderWidth = width || 0;
+            this._renderHeight = height || 0;
+            this._renderLevels = levels || 0;
+            this._renderTiledImageCount = tiledImageCount || 0;
+
+            const webGLCanvas = this.getWebGLCanvas();
+            const presentationCanvas = this.getPresentationCanvas();
+
+            webGLCanvas.width = width;
+            webGLCanvas.height = height;
+
+            if (presentationCanvas !== webGLCanvas) {
+                presentationCanvas.width = width;
+                presentationCanvas.height = height;
+            }
+
             this.gl.viewport(x, y, width, height);
             this.backend.setDimensions(x, y, width, height, levels, tiledImageCount);
         }
@@ -841,12 +910,14 @@
          * @returns {void}
          */
         clear() {
-            if (!this.gl || !this.canvas || !this.canvas.width || !this.canvas.height) {
+            const canvas = this.getWebGLCanvas();
+
+            if (!this.gl || !canvas || !canvas.width || !canvas.height) {
                 return;
             }
 
             this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
-            this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+            this.gl.viewport(0, 0, canvas.width, canvas.height);
             this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
             this.gl.clear(this.gl.COLOR_BUFFER_BIT);
             this.gl.finish();
@@ -915,9 +986,11 @@
                 webglProgram, this.gl, program, $.console.error, this.debug
             )) {
                 this.gl.useProgram(webglProgram);
-                program.created(this.canvas.width, this.canvas.height);
+                const canvas = this.getWebGLCanvas();
+                program.created(canvas.width, canvas.height);
                 return key;
             }
+
             // else todo consider some cleanup
             return undefined;
         }
@@ -2097,15 +2170,20 @@
             // Use provided width/height, or fall back to drawingBuffer/canvas
             if (!width || !height) {
                 // try drawingBufferSize first (more correct for FBOs)
+                const dimensions = this.getRenderDimensions();
+                const canvas = this.getWebGLCanvas();
+
                 width =
                     width ||
+                    dimensions.width ||
                     srcGL.drawingBufferWidth ||
-                    (this.canvas && this.canvas.width) ||
+                    (canvas && canvas.width) ||
                     0;
                 height =
                     height ||
+                    dimensions.height ||
                     srcGL.drawingBufferHeight ||
-                    (this.canvas && this.canvas.height) ||
+                    (canvas && canvas.height) ||
                     0;
             }
 
@@ -2241,8 +2319,9 @@
             const rawRows = Math.max(colorLayers, stencilLayers);
             const mappedRows = tiCount;
 
-            const width = Math.max(1, Math.floor(this.canvas.width));
-            const height = Math.max(1, Math.floor(this.canvas.height));
+            const dimensions = this.getRenderDimensions();
+            const width = Math.max(1, Math.floor(dimensions.width));
+            const height = Math.max(1, Math.floor(dimensions.height));
             const scaledCellW = Math.max(1, Math.floor(width * scale));
             const scaledCellH = Math.max(1, Math.floor(height * scale));
             const cellScale = Math.min(1, maxCellSize / Math.max(scaledCellW, scaledCellH));

@@ -1140,7 +1140,7 @@
          * @return {{x: number, y: number}}
          */
         _getInteractionPositionPx(event) {
-            const canvas = this.renderer && this.renderer.canvas;
+            const canvas = this.renderer && this.renderer.getPresentationCanvas();
             const target = this._getInteractionEventTarget();
 
             if (!canvas || !target || typeof target.getBoundingClientRect !== "function") {
@@ -2107,7 +2107,7 @@
             const sources = [];
             const flatShaders = this.renderer.getFlatShaderLayers(shaders, shaderOrder);
 
-            const canvas = this.renderer.canvas;
+            const canvas = this.renderer.getPresentationCanvas();
             const osdViewport = this.viewer.viewport;
             const inner = osdViewport && osdViewport._containerInnerSize;
             const sx = inner && inner.x ? canvas.width / inner.x : 1;
@@ -2349,7 +2349,7 @@
             this.webGLVersion = this.renderer.webglVersion;
             this.debug = rendererOptions.debug;
 
-            const canvas = this.renderer.canvas;
+            const canvas = this.renderer.getPresentationCanvas();
             let viewportSize = this._calculateCanvasSize();
 
             // SETUP CANVASES
