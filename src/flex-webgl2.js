@@ -506,6 +506,11 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.texture, 0);
 
+        // Make the single color attachment explicitly drawable. This matters for
+        // shared-context final targets because the second pass renders into this FBO,
+        // not into the WebGL default framebuffer.
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+
         const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
         if (status !== gl.FRAMEBUFFER_COMPLETE) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -559,6 +564,7 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         }
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
         gl.clearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -612,82 +618,23 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * @param {"gpu-blit"|"read-pixels"} [options.mode="gpu-blit"]
      * @return {string} Actual transfer mode used.
      */
-    presentColorTargetToCanvas(target, canvas, options = {}) {
+    /**
+     * Copy a color target into a renderer-local presentation canvas.
+     *
+     * Shared-context presentation uses readPixels because the WebGL default
+     * framebuffer is not a reliable intermediate transfer target across browsers
+     * and context configurations.
+     *
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @return {string} Transfer mode used.
+     */
+    presentColorTargetToCanvas(target, canvas) {
         if (!target || !target.framebuffer || !canvas) {
             return "none";
         }
 
-        const mode = options.mode === "read-pixels" ? "read-pixels" : "gpu-blit";
-
-        if (mode === "read-pixels") {
-            return this._readColorTargetToCanvas(target, canvas);
-        }
-
-        const gl = this.gl;
-        const width = target.width || canvas.width || gl.drawingBufferWidth;
-        const height = target.height || canvas.height || gl.drawingBufferHeight;
-        const webGLCanvas = this.renderer.getWebGLCanvas();
-
-        try {
-            if (webGLCanvas.width !== width) {
-                webGLCanvas.width = width;
-            }
-
-            if (webGLCanvas.height !== height) {
-                webGLCanvas.height = height;
-            }
-
-            if (canvas.width !== width) {
-                canvas.width = width;
-            }
-
-            if (canvas.height !== height) {
-                canvas.height = height;
-            }
-
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer);
-            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-            gl.blitFramebuffer(
-                0,
-                0,
-                width,
-                height,
-                0,
-                0,
-                width,
-                height,
-                gl.COLOR_BUFFER_BIT,
-                gl.NEAREST
-            );
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-
-            const context = canvas.getContext("2d");
-            if (context) {
-                context.clearRect(0, 0, width, height);
-                context.drawImage(webGLCanvas, 0, 0, width, height);
-            }
-
-            return "gpu-blit";
-        } catch (error) {
-            const renderer = this.renderer;
-
-            renderer._warningCounts["presentation-transfer-gpu-blit-fallback"] =
-                (renderer._warningCounts["presentation-transfer-gpu-blit-fallback"] || 0) + 1;
-
-            if (!renderer._warningsEmitted.has("presentation-transfer-gpu-blit-fallback")) {
-                renderer._warningsEmitted.add("presentation-transfer-gpu-blit-fallback");
-                $.console.warn(
-                    "FlexRenderer gpu-blit presentation transfer failed; falling back to read-pixels.",
-                    error
-                );
-            }
-
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-
-            return this._readColorTargetToCanvas(target, canvas);
-        }
+        return this._readColorTargetToCanvas(target, canvas);
     }
 
     /**
@@ -2047,9 +1994,20 @@ ${execution}
     /**
      * Use program. Arbitrary arguments.
      */
-    use(renderOutput, renderArray, options) {
+    use(renderOutput, renderArray, options = undefined) {
         const gl = this.gl;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, options ? options.framebuffer : null);
+        const framebuffer = options && options.framebuffer !== undefined ? options.framebuffer : null;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+
+        if (framebuffer) {
+            gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        }
+
+        if (options && options.width && options.height) {
+            gl.viewport(0, 0, options.width, options.height);
+        }
+
         gl.bindVertexArray(this.vao);
 
         // TODO: is refreshing necessary here?

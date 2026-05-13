@@ -1,97 +1,134 @@
-const RENDER_WIDTH = 320;
-const RENDER_HEIGHT = 180;
+const DEMO_TILE_SIZE = 256;
+const DEMO_MAX_LEVEL = 2;
+const DEMO_WIDTH = DEMO_TILE_SIZE * 4;
+const DEMO_HEIGHT = DEMO_TILE_SIZE * 4;
 
 const state = {
-    sharedA: null,
-    sharedB: null,
-    privateRenderer: null,
+    viewerA: null,
+    viewerB: null,
+    viewerPrivate: null,
     lastAction: "No action yet."
 };
 
-$("#title-w").html("FlexRenderer shared-context validation demo");
+$("#title-w").html("FlexDrawer shared-context validation demo");
 
-document.getElementById("create-renderers-button").addEventListener("click", () => {
-    createRenderers();
+installSharedContextValidationTileSource(OpenSeadragon);
+
+document.getElementById("create-viewers-button").addEventListener("click", () => {
+    createViewers();
 });
 
-document.getElementById("destroy-renderers-button").addEventListener("click", () => {
-    destroyRenderers();
-    writeState("Destroyed all demo renderers.");
+document.getElementById("destroy-viewers-button").addEventListener("click", () => {
+    destroyViewers();
+    writeState("Destroyed all demo viewers.");
+});
+
+document.getElementById("reload-sources-button").addEventListener("click", () => {
+    reloadSources();
+});
+
+document.getElementById("refresh-state-button").addEventListener("click", () => {
+    writeState("Refreshed validation state.");
 });
 
 document.getElementById("run-clear-check-button").addEventListener("click", () => {
     runClearCheck();
 });
 
-document.getElementById("run-busy-check-button").addEventListener("click", () => {
-    runBusyCheck();
-});
-
 window.addEventListener("beforeunload", () => {
-    destroyRenderers();
+    destroyViewers();
 });
 
-createRenderers();
+createViewers();
 
-function createRenderers() {
-    destroyRenderers();
+function createViewers() {
+    destroyViewers();
 
     const key = getSharedContextKey();
-    const rendererBBusyPolicy = document.getElementById("throw-policy-toggle").checked ? "throw" : "warn-skip";
 
-    state.sharedA = createRenderer({
-        uniqueId: "shared_context_demo_a",
-        sharedContextKey: key,
-        sharedContextBusyPolicy: "warn-skip"
+    state.viewerA = createViewer({
+        id: "viewer-shared-a",
+        label: "Shared viewer A",
+        variant: "shared-a",
+        sharedContextKey: key
     });
 
-    state.sharedB = createRenderer({
-        uniqueId: "shared_context_demo_b",
-        sharedContextKey: key,
-        sharedContextBusyPolicy: rendererBBusyPolicy
+    state.viewerB = createViewer({
+        id: "viewer-shared-b",
+        label: "Shared viewer B",
+        variant: "shared-b",
+        sharedContextKey: key
     });
 
-    state.privateRenderer = createRenderer({
-        uniqueId: "shared_context_demo_private",
-        sharedContextKey: null,
-        sharedContextBusyPolicy: "warn-skip"
+    state.viewerPrivate = createViewer({
+        id: "viewer-private",
+        label: "Private viewer",
+        variant: "private",
+        sharedContextKey: null
     });
 
-    paintPresentationCanvas(state.sharedA, "Shared A", "#dbeafe", "#1d4ed8");
-    paintPresentationCanvas(state.sharedB, "Shared B", "#dcfce7", "#15803d");
-    paintPrivatePreview();
+    writeState(`Created OpenSeadragon viewers with shared key '${key}'.`);
 
-    writeState(`Created renderers with shared key '${key}'.`);
+    setTimeout(() => {
+        writeState(`Created OpenSeadragon viewers with shared key '${key}'.`);
+    }, 500);
 }
 
-function createRenderer({
-                            uniqueId,
-                            sharedContextKey,
-                            sharedContextBusyPolicy
-                        }) {
-    const renderer = new OpenSeadragon.FlexRenderer({
-        uniqueId,
-        webGLPreferredVersion: "2.0",
-        sharedContextKey,
-        sharedContextBusyPolicy,
+function createViewer({
+                          id,
+                          label,
+                          variant,
+                          sharedContextKey
+                      }) {
+    const drawerConfig = {
         debug: false,
-        interactive: false,
-        backgroundColor: "#00000000",
-        canvasOptions: {
-            stencil: true
+        webGLPreferredVersion: "2.0",
+        backgroundColor: "#00000000"
+    };
+
+    if (sharedContextKey) {
+        drawerConfig.sharedContextKey = sharedContextKey;
+    }
+
+    const viewer = OpenSeadragon({
+        id,
+        prefixUrl: "../../openseadragon/images/",
+        minZoomImageRatio: 0.01,
+        maxZoomPixelRatio: 100,
+        smoothTileEdgesMinZoom: 1.1,
+        crossOriginPolicy: "Anonymous",
+        ajaxWithCredentials: false,
+        drawer: "flex-renderer",
+        drawerOptions: {
+            "flex-renderer": drawerConfig
         },
-        redrawCallback: () => {},
-        refetchCallback: () => {}
+        tileSources: createDemoTileSourceOptions({
+            label,
+            variant
+        }),
+        blendTime: 0,
+        showNavigator: false,
+        visibilityRatio: 0,
+        constrainDuringPan: false
     });
 
-    renderer.setDataBlendingEnabled(true);
-    renderer.setDimensions(0, 0, RENDER_WIDTH, RENDER_HEIGHT, 1, 1);
+    viewer.addHandler("open", () => {
+        writeState(`Opened ${label}.`);
+    });
 
-    return renderer;
+    viewer.addHandler("fully-loaded-change", (event) => {
+        if (event.fullyLoaded) {
+            setTimeout(() => {
+                writeState(`Fully loaded ${label}.`);
+            }, 50);
+        }
+    });
+
+    return viewer;
 }
 
-function destroyRenderers() {
-    for (const key of ["sharedA", "sharedB", "privateRenderer"]) {
+function destroyViewers() {
+    for (const key of ["viewerA", "viewerB", "viewerPrivate"]) {
         if (state[key]) {
             try {
                 state[key].destroy();
@@ -102,101 +139,77 @@ function destroyRenderers() {
             state[key] = null;
         }
     }
+
+    clearElement("viewer-shared-a");
+    clearElement("viewer-shared-b");
+    clearElement("viewer-private");
 }
 
-function runClearCheck() {
-    if (!ensureRenderers()) {
+function reloadSources() {
+    if (!ensureViewers()) {
         return;
     }
 
-    paintPresentationCanvas(state.sharedA, "Shared A before clear", "#dbeafe", "#1d4ed8");
-    paintPresentationCanvas(state.sharedB, "Shared B should survive", "#dcfce7", "#15803d");
+    state.viewerA.open(createDemoTileSourceOptions({
+        label: "Shared viewer A",
+        variant: "shared-a"
+    }));
+
+    state.viewerB.open(createDemoTileSourceOptions({
+        label: "Shared viewer B",
+        variant: "shared-b"
+    }));
+
+    state.viewerPrivate.open(createDemoTileSourceOptions({
+        label: "Private viewer",
+        variant: "private"
+    }));
+
+    writeState("Reloaded viewer tile sources.");
+}
+
+function runClearCheck() {
+    if (!ensureViewers()) {
+        return;
+    }
+
+    const rendererA = getRenderer(state.viewerA);
+    const rendererB = getRenderer(state.viewerB);
+
+    if (!rendererA || !rendererB) {
+        writeState("Cannot run clear check before shared renderers exist.");
+        return;
+    }
 
     const before = {
-        sharedAAlpha: readPresentationAlphaSum(state.sharedA),
-        sharedBAlpha: readPresentationAlphaSum(state.sharedB)
+        sharedAAlpha: readPresentationAlphaSum(rendererA),
+        sharedBAlpha: readPresentationAlphaSum(rendererB)
     };
 
-    state.sharedA.clear();
+    rendererA.clear();
 
     const after = {
-        sharedAAlpha: readPresentationAlphaSum(state.sharedA),
-        sharedBAlpha: readPresentationAlphaSum(state.sharedB)
+        sharedAAlpha: readPresentationAlphaSum(rendererA),
+        sharedBAlpha: readPresentationAlphaSum(rendererB)
     };
 
-    copyPresentationToPreview(state.sharedA, "preview-shared-a");
-    copyPresentationToPreview(state.sharedB, "preview-shared-b");
-
-    writeState("Ran clear check.", {
+    writeState("Ran clear check: only Shared viewer A should be blank afterward.", {
         before,
         after,
-        passed: before.sharedAAlpha > 0 &&
+        passed:
+            before.sharedAAlpha > 0 &&
             before.sharedBAlpha > 0 &&
             after.sharedAAlpha === 0 &&
             after.sharedBAlpha > 0
     });
 }
 
-function runBusyCheck() {
-    if (!ensureRenderers()) {
-        return;
-    }
-
-    const key = getSharedContextKey();
-    const entry = OpenSeadragon.FlexRenderer._sharedContexts &&
-        OpenSeadragon.FlexRenderer._sharedContexts.get(key);
-
-    if (!entry) {
-        writeState(`No shared context entry found for '${key}'.`);
-        return;
-    }
-
-    const beforeBusySkipCount = entry.busySkipCount || 0;
-    const beforeWarningCount = state.sharedB._warningCounts["shared-context-busy-render-skip"] || 0;
-
-    entry.busy = true;
-    entry.activeRenderer = state.sharedA;
-
-    let threw = false;
-    let errorMessage = null;
-
-    try {
-        state.sharedB.render({
-            firstPass: [],
-            secondPass: []
-        });
-    } catch (error) {
-        threw = true;
-        errorMessage = error.message;
-    } finally {
-        entry.busy = false;
-        entry.activeRenderer = null;
-    }
-
-    const afterBusySkipCount = entry.busySkipCount || 0;
-    const afterWarningCount = state.sharedB._warningCounts["shared-context-busy-render-skip"] || 0;
-    const throwPolicy = state.sharedB._sharedContextBusyPolicy === "throw";
-
-    writeState("Ran busy check.", {
-        throwPolicy,
-        threw,
-        errorMessage,
-        beforeBusySkipCount,
-        afterBusySkipCount,
-        beforeWarningCount,
-        afterWarningCount,
-        passed: throwPolicy ?
-            threw :
-            !threw && afterBusySkipCount === beforeBusySkipCount + 1
-    });
-}
-
-function ensureRenderers() {
-    if (state.sharedA && state.sharedB && state.privateRenderer) {
+function ensureViewers() {
+    if (state.viewerA && state.viewerB && state.viewerPrivate) {
         return true;
     }
 
-    writeState("Create renderers first.");
+    writeState("Create viewers first.");
     return false;
 }
 
@@ -207,86 +220,254 @@ function getSharedContextKey() {
     return value || "demo-shared-context";
 }
 
-function paintPresentationCanvas(renderer, label, background, foreground) {
-    const canvas = renderer.getPresentationCanvas();
-    canvas.width = RENDER_WIDTH;
-    canvas.height = RENDER_HEIGHT;
-
-    const ctx = canvas.getContext("2d");
-
-    if (!ctx) {
-        return false;
-    }
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = background;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = foreground;
-    ctx.fillRect(0, 0, canvas.width, 32);
-    ctx.fillRect(0, 0, 32, canvas.height);
-
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-
-    ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
-    ctx.font = "bold 20px system-ui, sans-serif";
-    ctx.textBaseline = "top";
-    ctx.fillText(label, 44, 48);
-
-    ctx.font = "13px system-ui, sans-serif";
-    ctx.fillText(`presentation: ${canvas.width} x ${canvas.height}`, 44, 78);
-
-    copyPresentationToPreview(renderer, renderer === state.sharedA ? "preview-shared-a" : "preview-shared-b");
-
-    return true;
+function createDemoTileSourceOptions({
+                                         label,
+                                         variant
+                                     }) {
+    return {
+        type: "shared-context-validation-demo",
+        width: DEMO_WIDTH,
+        height: DEMO_HEIGHT,
+        tileSize: DEMO_TILE_SIZE,
+        tileOverlap: 0,
+        minLevel: 0,
+        maxLevel: DEMO_MAX_LEVEL,
+        label,
+        variant
+    };
 }
 
-function paintPrivatePreview() {
-    const canvas = document.getElementById("preview-private");
-    const ctx = canvas.getContext("2d");
+function installSharedContextValidationTileSource($) {
+    if ($.SharedContextValidationTileSource) {
+        return;
+    }
 
-    canvas.width = RENDER_WIDTH;
-    canvas.height = RENDER_HEIGHT;
+    class SharedContextValidationTileSource extends $.TileSource {
+        supports(data, url) {
+            return !!(
+                data && typeof data === "object" &&
+                data.type === "shared-context-validation-demo"
+            ) || !!(
+                url && typeof url === "object" &&
+                url.type === "shared-context-validation-demo"
+            );
+        }
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#f3f4f6";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+        configure(options) {
+            const tileSize = Number(options.tileSize) || DEMO_TILE_SIZE;
 
-    ctx.fillStyle = "#374151";
-    ctx.fillRect(0, 0, canvas.width, 32);
-    ctx.fillRect(0, 0, 32, canvas.height);
+            this.label = options.label || "Shared Context Demo";
+            this.variant = options.variant || "shared-a";
+            this.tileSize = tileSize;
+            this.tileWidth = tileSize;
+            this.tileHeight = tileSize;
+            this.minLevel = Number.isFinite(Number(options.minLevel)) ? Number(options.minLevel) : 0;
+            this.maxLevel = Number.isFinite(Number(options.maxLevel)) ? Number(options.maxLevel) : DEMO_MAX_LEVEL;
 
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+            return $.extend(options, {
+                width: Number(options.width) || DEMO_WIDTH,
+                height: Number(options.height) || DEMO_HEIGHT,
+                tileSize,
+                tileOverlap: Number(options.tileOverlap) || 0,
+                minLevel: this.minLevel,
+                maxLevel: this.maxLevel
+            });
+        }
 
-    ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
-    ctx.font = "bold 20px system-ui, sans-serif";
-    ctx.textBaseline = "top";
+        getTileUrl(level, x, y) {
+            return [
+                "shared-context-validation-demo",
+                this.variant,
+                level,
+                x,
+                y
+            ].join(":");
+        }
 
-    const aliases = state.privateRenderer &&
-        state.privateRenderer.getPresentationCanvas() === state.privateRenderer.getWebGLCanvas();
+        downloadTileStart(context) {
+            const coords = this._parseTileCoordinates(context);
 
-    ctx.fillText("Private Renderer", 44, 48);
-    ctx.font = "13px system-ui, sans-serif";
-    ctx.fillText(`presentation === webGL: ${aliases}`, 44, 78);
+            context.finish(
+                this._createTileCanvas(coords.level, coords.x, coords.y),
+                undefined,
+                "image"
+            );
+        }
+
+        getMetadata() {
+            return {
+                type: "shared-context-validation-demo",
+                width: this.width,
+                height: this.height,
+                tileSize: this.tileSize,
+                label: this.label,
+                variant: this.variant
+            };
+        }
+
+        _parseTileCoordinates(context) {
+            const src = String(
+                context.src ||
+                context.url ||
+                context.tileUrl ||
+                context.source ||
+                ""
+            );
+
+            const match = /shared-context-validation-demo:([^:]+):(\d+):(\d+):(\d+)/.exec(src);
+
+            if (match) {
+                return {
+                    variant: match[1],
+                    level: Number(match[2]),
+                    x: Number(match[3]),
+                    y: Number(match[4])
+                };
+            }
+
+            const tile = context.tile || {};
+            return {
+                variant: this.variant,
+                level: Number(tile.level) || this.maxLevel,
+                x: Number(tile.x) || 0,
+                y: Number(tile.y) || 0
+            };
+        }
+
+        _createTileCanvas(level, x, y) {
+            const canvas = document.createElement("canvas");
+            canvas.width = this.tileWidth || DEMO_TILE_SIZE;
+            canvas.height = this.tileHeight || DEMO_TILE_SIZE;
+
+            const ctx = canvas.getContext("2d");
+            const baseHue = this._variantHue();
+            const hue = (baseHue + x * 37 + y * 67 + level * 19) % 360;
+
+            ctx.fillStyle = `hsl(${hue}, 62%, 78%)`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = `hsl(${hue}, 72%, 58%)`;
+            ctx.fillRect(0, 0, canvas.width, 30);
+            ctx.fillRect(0, 0, 30, canvas.height);
+
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+            ctx.lineWidth = 1;
+            for (let i = 32; i < canvas.width; i += 32) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, canvas.height);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(canvas.width, i);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
+            ctx.font = "bold 18px system-ui, sans-serif";
+            ctx.textBaseline = "top";
+            ctx.fillText(this.label, 40, 42);
+
+            ctx.font = "13px system-ui, sans-serif";
+            ctx.fillText(`variant: ${this.variant}`, 40, 70);
+            ctx.fillText(`tile: L${level} / ${x},${y}`, 40, 90);
+
+            return canvas;
+        }
+
+        _variantHue() {
+            if (this.variant === "shared-a") {
+                return 215;
+            }
+
+            if (this.variant === "shared-b") {
+                return 135;
+            }
+
+            return 0;
+        }
+    }
+
+    $.SharedContextValidationTileSource = SharedContextValidationTileSource;
 }
 
-function copyPresentationToPreview(renderer, previewId) {
-    const source = renderer.getPresentationCanvas();
-    const preview = document.getElementById(previewId);
-    const ctx = preview.getContext("2d");
+function getRenderer(viewer) {
+    return viewer && viewer.drawer && viewer.drawer.renderer ?
+        viewer.drawer.renderer :
+        null;
+}
 
-    preview.width = source.width || RENDER_WIDTH;
-    preview.height = source.height || RENDER_HEIGHT;
-
-    ctx.clearRect(0, 0, preview.width, preview.height);
-
-    if (source.width && source.height) {
-        ctx.drawImage(source, 0, 0);
+function getSharedContextStatusForDisplay() {
+    if (!OpenSeadragon.FlexRenderer.getSharedContextStatus) {
+        return {
+            error: "OpenSeadragon.FlexRenderer.getSharedContextStatus() is not available."
+        };
     }
+
+    return OpenSeadragon.FlexRenderer.getSharedContextStatus();
+}
+
+function getSharedEntry() {
+    const status = getSharedContextStatusForDisplay();
+
+    if (!Array.isArray(status)) {
+        return null;
+    }
+
+    return status.find(entry => entry.key === getSharedContextKey()) || null;
+}
+
+function getIdentityChecks() {
+    const rendererA = getRenderer(state.viewerA);
+    const rendererB = getRenderer(state.viewerB);
+    const rendererPrivate = getRenderer(state.viewerPrivate);
+
+    if (!rendererA || !rendererB || !rendererPrivate) {
+        return {
+            ready: false
+        };
+    }
+
+    const sharedAIsShared = typeof rendererA.isSharedContext === "function" && rendererA.isSharedContext();
+    const sharedBIsShared = typeof rendererB.isSharedContext === "function" && rendererB.isSharedContext();
+    const privateIsShared = typeof rendererPrivate.isSharedContext === "function" && rendererPrivate.isSharedContext();
+
+    return {
+        ready: true,
+
+        sharedAIsShared,
+        sharedBIsShared,
+        privateIsShared,
+
+        sharedWebGLCanvasSame: rendererA.getWebGLCanvas() === rendererB.getWebGLCanvas(),
+        sharedPresentationCanvasDifferent: rendererA.getPresentationCanvas() !== rendererB.getPresentationCanvas(),
+
+        sharedAPresentationDifferentFromWebGL: rendererA.getPresentationCanvas() !== rendererA.getWebGLCanvas(),
+        sharedBPresentationDifferentFromWebGL: rendererB.getPresentationCanvas() !== rendererB.getWebGLCanvas(),
+
+        privatePresentationSameAsWebGL: rendererPrivate.getPresentationCanvas() === rendererPrivate.getWebGLCanvas(),
+
+        drawerACanvasIsPresentation: state.viewerA.drawer.canvas === rendererA.getPresentationCanvas(),
+        drawerBCanvasIsPresentation: state.viewerB.drawer.canvas === rendererB.getPresentationCanvas(),
+        drawerPrivateCanvasIsPresentation: state.viewerPrivate.drawer.canvas === rendererPrivate.getPresentationCanvas()
+    };
+}
+
+function getDimensionsForDisplay() {
+    const rendererA = getRenderer(state.viewerA);
+    const rendererB = getRenderer(state.viewerB);
+    const rendererPrivate = getRenderer(state.viewerPrivate);
+
+    return {
+        sharedA: rendererA ? rendererA.getRenderDimensions() : null,
+        sharedB: rendererB ? rendererB.getRenderDimensions() : null,
+        privateRenderer: rendererPrivate ? rendererPrivate.getRenderDimensions() : null
+    };
 }
 
 function readPresentationAlphaSum(renderer) {
@@ -318,55 +499,15 @@ function writeState(action, details = undefined) {
     writeJson("shared-context-status-output", getSharedContextStatusForDisplay());
     writeJson("identity-output", getIdentityChecks());
     writeJson("dimensions-output", getDimensionsForDisplay());
+
     renderChecks(details);
-}
-
-function getSharedContextStatusForDisplay() {
-    if (!OpenSeadragon.FlexRenderer.getSharedContextStatus) {
-        return {
-            error: "OpenSeadragon.FlexRenderer.getSharedContextStatus() is not available."
-        };
-    }
-
-    return OpenSeadragon.FlexRenderer.getSharedContextStatus();
-}
-
-function getIdentityChecks() {
-    const a = state.sharedA;
-    const b = state.sharedB;
-    const p = state.privateRenderer;
-
-    if (!a || !b || !p) {
-        return {
-            ready: false
-        };
-    }
-
-    return {
-        ready: true,
-        sharedWebGLCanvasSame: a.getWebGLCanvas() === b.getWebGLCanvas(),
-        sharedPresentationCanvasDifferent: a.getPresentationCanvas() !== b.getPresentationCanvas(),
-        sharedAPresentationDifferentFromWebGL: a.getPresentationCanvas() !== a.getWebGLCanvas(),
-        sharedBPresentationDifferentFromWebGL: b.getPresentationCanvas() !== b.getWebGLCanvas(),
-        privatePresentationSameAsWebGL: p.getPresentationCanvas() === p.getWebGLCanvas()
-    };
-}
-
-function getDimensionsForDisplay() {
-    return {
-        sharedA: state.sharedA ? state.sharedA.getRenderDimensions() : null,
-        sharedB: state.sharedB ? state.sharedB.getRenderDimensions() : null,
-        privateRenderer: state.privateRenderer ? state.privateRenderer.getRenderDimensions() : null
-    };
 }
 
 function renderChecks(details = undefined) {
     const list = document.getElementById("checks-list");
     const identity = getIdentityChecks();
     const status = getSharedContextStatusForDisplay();
-    const sharedEntry = Array.isArray(status) ?
-        status.find(entry => entry.key === getSharedContextKey()) :
-        null;
+    const sharedEntry = getSharedEntry();
 
     const checks = [];
 
@@ -376,7 +517,7 @@ function renderChecks(details = undefined) {
     });
 
     checks.push({
-        label: "Shared context entry exists",
+        label: "Shared context entry exists for the configured key",
         pass: !!sharedEntry
     });
 
@@ -386,28 +527,58 @@ function renderChecks(details = undefined) {
     });
 
     checks.push({
-        label: "Renderer A and B share the same WebGL canvas",
+        label: "Shared viewer A renderer reports shared-context mode",
+        pass: !!identity.ready && identity.sharedAIsShared
+    });
+
+    checks.push({
+        label: "Shared viewer B renderer reports shared-context mode",
+        pass: !!identity.ready && identity.sharedBIsShared
+    });
+
+    checks.push({
+        label: "Private viewer renderer reports private-context mode",
+        pass: !!identity.ready && identity.privateIsShared === false
+    });
+
+    checks.push({
+        label: "Shared viewer A and B use the same WebGL canvas",
         pass: !!identity.ready && identity.sharedWebGLCanvasSame
     });
 
     checks.push({
-        label: "Renderer A and B have different presentation canvases",
+        label: "Shared viewer A and B use different presentation canvases",
         pass: !!identity.ready && identity.sharedPresentationCanvasDifferent
     });
 
     checks.push({
-        label: "Shared renderer A presentation canvas differs from WebGL canvas",
+        label: "Shared viewer A presentation canvas differs from WebGL canvas",
         pass: !!identity.ready && identity.sharedAPresentationDifferentFromWebGL
     });
 
     checks.push({
-        label: "Shared renderer B presentation canvas differs from WebGL canvas",
+        label: "Shared viewer B presentation canvas differs from WebGL canvas",
         pass: !!identity.ready && identity.sharedBPresentationDifferentFromWebGL
     });
 
     checks.push({
-        label: "Private renderer presentation canvas equals WebGL canvas",
+        label: "Private viewer presentation canvas equals WebGL canvas",
         pass: !!identity.ready && identity.privatePresentationSameAsWebGL
+    });
+
+    checks.push({
+        label: "FlexDrawer A uses renderer presentation canvas as drawer canvas",
+        pass: !!identity.ready && identity.drawerACanvasIsPresentation
+    });
+
+    checks.push({
+        label: "FlexDrawer B uses renderer presentation canvas as drawer canvas",
+        pass: !!identity.ready && identity.drawerBCanvasIsPresentation
+    });
+
+    checks.push({
+        label: "Private FlexDrawer uses renderer presentation canvas as drawer canvas",
+        pass: !!identity.ready && identity.drawerPrivateCanvasIsPresentation
     });
 
     if (details && Object.prototype.hasOwnProperty.call(details, "passed")) {
@@ -429,6 +600,14 @@ function writeJson(id, value) {
 
     if (element) {
         element.textContent = JSON.stringify(value, null, 2);
+    }
+}
+
+function clearElement(id) {
+    const element = document.getElementById(id);
+
+    if (element) {
+        element.innerHTML = "";
     }
 }
 

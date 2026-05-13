@@ -249,10 +249,9 @@
          *
          * @param {object} target
          * @param {HTMLCanvasElement} canvas
-         * @param {object} [options={}]
          * @return {string}
          */
-        presentColorTargetToCanvas(target, canvas, options = {}) {
+        presentColorTargetToCanvas(target, canvas) {
             throw("$.FlexRenderer.WebGLImplementation::presentColorTargetToCanvas() must be implemented!");
         }
 

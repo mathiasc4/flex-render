@@ -122,6 +122,7 @@
                 copyShaderConfig: false,
                 handleNavigator: true,
                 shaderSourceResolver: null,
+                sharedContextKey: null,
                 interaction: false,
                 // hex bg color, by default transparent
                 backgroundColor: undefined
@@ -2326,6 +2327,7 @@
                 {
                     debug: false,
                     webGLPreferredVersion: "2.0",
+                    sharedContextKey: null,
                 },
                 // User-defined
                 this.options,
@@ -2334,6 +2336,7 @@
                     redrawCallback: () => this.viewer.forceRedraw(),
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,
+                    sharedContextKey: this.options.sharedContextKey,
                     // TODO: problem when navigator renders first
                     // Navigator must not have the handler since it would attempt to define the controls twice
                     htmlHandler: this._isNavigatorDrawer ? null : this.options.htmlHandler,

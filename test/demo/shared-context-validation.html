@@ -5,8 +5,8 @@
 
     <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
     <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
-    <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
-    <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
+    <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
+    <script type="text/javascript" src="../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js"></script>
     <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
 
     <script type="module" src="shared-context-validation.js"></script>
@@ -52,13 +52,13 @@
             margin: 0 0 8px 0;
         }
 
-        .validation-preview-grid {
+        .viewer-grid {
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 12px;
         }
 
-        .validation-preview-card {
+        .viewer-card {
             min-width: 0;
             padding: 10px;
             border: thin gray solid;
@@ -66,21 +66,21 @@
             box-sizing: border-box;
         }
 
-        .validation-preview-card h3 {
+        .viewer-card h3 {
             margin: 0 0 8px 0;
             font-size: 14px;
         }
 
-        .validation-preview-card canvas {
-            display: block;
+        .viewer-container {
             width: 100%;
-            aspect-ratio: 16 / 9;
+            aspect-ratio: 4 / 3;
             border: 1px solid #d1d5db;
             background: #ffffff;
             box-sizing: border-box;
+            position: relative;
         }
 
-        .validation-preview-note {
+        .viewer-note {
             margin: 8px 0 0 0;
             color: #666;
             font-size: 12px;
@@ -141,7 +141,8 @@
             line-height: 1.3;
         }
 
-        .diagnostics-control-label input[type="text"] {
+        .diagnostics-control-label input[type="text"],
+        .diagnostics-control-label select {
             flex: 1 1 auto;
             min-width: 0;
         }
@@ -210,7 +211,7 @@
                 grid-template-columns: 1fr;
             }
 
-            .validation-preview-grid {
+            .viewer-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -238,21 +239,20 @@
                         <span>Shared key</span>
                         <input id="shared-context-key-input" type="text" value="demo-shared-context">
                     </label>
-
-                    <label class="diagnostics-control-label">
-                        <input id="throw-policy-toggle" type="checkbox">
-                        Use throw policy for renderer B
-                    </label>
                 </div>
 
                 <div class="diagnostics-action-row">
-                    <button id="create-renderers-button" type="button">Create renderers</button>
-                    <button id="destroy-renderers-button" type="button">Destroy renderers</button>
+                    <button id="create-viewers-button" type="button">Create viewers</button>
+                    <button id="destroy-viewers-button" type="button">Destroy viewers</button>
+                </div>
+
+                <div class="diagnostics-action-row">
+                    <button id="reload-sources-button" type="button">Reload sources</button>
+                    <button id="refresh-state-button" type="button">Refresh state</button>
                 </div>
 
                 <div class="diagnostics-action-row">
                     <button id="run-clear-check-button" type="button">Run clear check</button>
-                    <button id="run-busy-check-button" type="button">Run busy check</button>
                 </div>
 
                 <h4>Latest action</h4>
@@ -262,61 +262,80 @@
             <section class="diagnostics-guide-panel">
                 <h3>What this demo shows</h3>
                 <ul>
-                    <li>Two direct FlexRenderer instances can attach to one shared WebGL context key.</li>
-                    <li>Each shared renderer should still have its own presentation canvas.</li>
-                    <li>A private renderer should still use one canvas for WebGL and presentation.</li>
-                    <li>Shared clear() should clear only the selected renderer-local presentation canvas.</li>
-                    <li>A busy shared context should skip or throw according to policy.</li>
+                    <li>Two real OpenSeadragon viewers use FlexDrawer with the same sharedContextKey.</li>
+                    <li>FlexDrawer passes the key into FlexRenderer through drawerOptions.</li>
+                    <li>The two shared drawers use one WebGL backing canvas but separate presentation canvases.</li>
+                    <li>A third viewer omits sharedContextKey and remains private.</li>
+                    <li>Shared renderer output is presented through each renderer's local presentation canvas.</li>
+                    <li>Shared clear() clears only the selected renderer-local presentation output.</li>
                 </ul>
 
-                <h3>Expected after Create</h3>
+                <h3>Expected after Create viewers</h3>
                 <ol>
-                    <li>Shared refCount should be 2.</li>
-                    <li>Renderer A and B should share the same WebGL canvas.</li>
-                    <li>Renderer A and B should not share the same presentation canvas.</li>
-                    <li>The private renderer should have presentation canvas equal to WebGL canvas.</li>
+                    <li>All three viewer panels should visibly render their labeled tile pattern.</li>
+                    <li>Shared context status should contain one entry for the configured shared key.</li>
+                    <li>The shared entry refCount should be exactly 2 because navigators are disabled.</li>
+                    <li>Shared viewer A and B should share the same WebGL canvas.</li>
+                    <li>Shared viewer A and B should use different presentation canvases.</li>
+                    <li>The private viewer should report private-context mode.</li>
+                    <li>Every item in the Checks panel should pass.</li>
+                </ol>
+
+                <h3>Expected after Run clear check</h3>
+                <ol>
+                    <li>Only Shared viewer A should become visually blank.</li>
+                    <li>Shared viewer B should remain visible.</li>
+                    <li>The private viewer should remain visible.</li>
+                    <li>The latest action should report passed: true.</li>
+                    <li>The alpha readout should show Shared A dropping to 0 while Shared B remains above 0.</li>
+                </ol>
+
+                <h3>Expected after Reload sources</h3>
+                <ol>
+                    <li>Shared viewer A should render again after being cleared.</li>
+                    <li>Shared viewer B and the private viewer should continue rendering normally.</li>
+                    <li>All Checks panel items should pass again after the viewers finish loading.</li>
                 </ol>
 
                 <p class="diagnostics-guide-note">
-                    This is a direct renderer validation demo for the current implementation phase.
-                    It does not use FlexDrawer sharedContextKey yet.
+                    Shared-context presentation currently uses readPixels only. The previous default-framebuffer blit transfer path was removed because it is not reliable across browser/context configurations.
                 </p>
             </section>
         </aside>
 
         <main class="demo-main">
-            <section class="validation-preview-grid">
-                <div class="validation-preview-card">
-                    <h3>Shared renderer A presentation canvas</h3>
-                    <canvas id="preview-shared-a"></canvas>
-                    <p class="validation-preview-note">
-                        This preview copies renderer A's presentation canvas.
+            <section class="viewer-grid">
+                <div class="viewer-card">
+                    <h3>Shared viewer A</h3>
+                    <div id="viewer-shared-a" class="viewer-container"></div>
+                    <p class="viewer-note">
+                        Uses drawerOptions["flex-renderer"].sharedContextKey.
                     </p>
                 </div>
 
-                <div class="validation-preview-card">
-                    <h3>Shared renderer B presentation canvas</h3>
-                    <canvas id="preview-shared-b"></canvas>
-                    <p class="validation-preview-note">
-                        This preview should remain intact when renderer A is cleared.
+                <div class="viewer-card">
+                    <h3>Shared viewer B</h3>
+                    <div id="viewer-shared-b" class="viewer-container"></div>
+                    <p class="viewer-note">
+                        Uses the same shared key as viewer A.
                     </p>
                 </div>
 
-                <div class="validation-preview-card">
-                    <h3>Private renderer canvas identity</h3>
-                    <canvas id="preview-private"></canvas>
-                    <p class="validation-preview-note">
-                        Private renderers should still alias WebGL and presentation canvas.
+                <div class="viewer-card">
+                    <h3>Private viewer</h3>
+                    <div id="viewer-private" class="viewer-container"></div>
+                    <p class="viewer-note">
+                        Omits sharedContextKey and should keep a private WebGL context.
                     </p>
                 </div>
             </section>
 
             <section class="validation-status-panel">
                 <h3>Shared context status</h3>
-                <pre id="shared-context-status-output" class="diagnostics-state-readout">Waiting for renderers...</pre>
+                <pre id="shared-context-status-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
 
                 <h3>Canvas identity checks</h3>
-                <pre id="identity-output" class="diagnostics-state-readout">Waiting for renderers...</pre>
+                <pre id="identity-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
             </section>
         </main>
 
@@ -324,13 +343,13 @@
             <section class="validation-checks-panel">
                 <h3>Checks</h3>
                 <ul id="checks-list">
-                    <li class="validation-neutral">Waiting for renderers.</li>
+                    <li class="validation-neutral">Waiting for viewers.</li>
                 </ul>
             </section>
 
             <section class="validation-status-panel">
-                <h3>Raw renderer dimensions</h3>
-                <pre id="dimensions-output" class="diagnostics-state-readout">Waiting for renderers...</pre>
+                <h3>Renderer dimensions</h3>
+                <pre id="dimensions-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
             </section>
         </aside>
     </div>

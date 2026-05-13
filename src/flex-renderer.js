@@ -331,8 +331,6 @@
      *
      * @property {"warn-skip"|"throw"} [sharedContextBusyPolicy="warn-skip"] internal policy used when a shared context is already rendering
      *
-     * @property {"gpu-blit"|"read-pixels"} [presentationTransferMode="gpu-blit"] internal shared-context presentation transfer mode
-     *
      * @property {boolean} debug                   debug mode on/off
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
@@ -385,7 +383,6 @@
 
             this.debug = options.debug;
             this._sharedContextBusyPolicy = options.sharedContextBusyPolicy === "throw" ? "throw" : "warn-skip";
-            this._presentationTransferMode = options.presentationTransferMode === "read-pixels" ? "read-pixels" : "gpu-blit";
             this._warningsEmitted = new Set();
             this._warningCounts = {};
 
@@ -688,7 +685,6 @@
                         instanceId: renderer._rendererInstanceId,
                         uniqueId: renderer.uniqueId || null,
                         viewerId: viewerId,
-                        presentationTransferMode: renderer._presentationTransferMode
                     };
                 })
             }));
@@ -773,6 +769,15 @@
          */
         getPresentationCanvas() {
             return this.presentationCanvas;
+        }
+
+        /**
+         * Return whether this renderer is attached to a page-global shared WebGL context.
+         *
+         * @return {boolean}
+         */
+        isSharedContext() {
+            return !!this._sharedContextEntry;
         }
 
         /**
@@ -1212,12 +1217,16 @@
 
                 this.renderFirstPass(frame.firstPass);
 
+                if (typeof this.backend.clearColorTarget === "function") {
+                    this.backend.clearColorTarget(this._finalColorTarget, [0, 0, 0, 0]);
+                }
+
                 if (frame.secondPass.length) {
                     this.renderSecondPass(frame.secondPass, $.extend(true, {}, options.secondPassOptions || {}, {
-                        framebuffer: this._finalColorTarget.framebuffer
+                        framebuffer: this._finalColorTarget.framebuffer,
+                        width: width,
+                        height: height
                     }));
-                } else if (typeof this.backend.clearColorTarget === "function") {
-                    this.backend.clearColorTarget(this._finalColorTarget, [0, 0, 0, 0]);
                 }
 
                 this.__finalPassResult = this._finalColorTarget;
@@ -1225,9 +1234,6 @@
                 this.backend.presentColorTargetToCanvas(
                     this._finalColorTarget,
                     this.getPresentationCanvas(),
-                    {
-                        mode: this._presentationTransferMode
-                    }
                 );
 
                 this.gl.finish();
