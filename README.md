@@ -30,6 +30,62 @@ let viewer = OpenSeadragon({
 });
 ````
 
+### Shared WebGL Contexts
+
+Multiple `FlexDrawer` / `FlexRenderer` instances can share one WebGL context by using the same
+`sharedContextKey` string in the public drawer options. The application configures this only through
+`FlexDrawer`; callers do not create or pass WebGL contexts directly.
+
+````js
+const viewerA = OpenSeadragon({
+    id: 'viewer-a',
+    drawer: 'flex-renderer',
+    drawerOptions: {
+        'flex-renderer': {
+            sharedContextKey: 'main-shared-context'
+        }
+    },
+    // other viewer options...
+});
+
+const viewerB = OpenSeadragon({
+    id: 'viewer-b',
+    drawer: 'flex-renderer',
+    drawerOptions: {
+        'flex-renderer': {
+            sharedContextKey: 'main-shared-context'
+        }
+    },
+    // other viewer options...
+});
+````
+
+Sharing means that renderers with the same key use the same underlying `WebGLRenderingContext` /
+`WebGL2RenderingContext`. Each renderer still keeps its own shader configuration, callbacks,
+OpenSeadragon drawer state, render dimensions, renderer-local presentation canvas, and visible output.
+Calling `clear()` on one shared renderer clears only that renderer's presentation canvas; it must not
+clear another renderer's visible output.
+
+Important constraints:
+
+- all renderers using the same `sharedContextKey` must request the same WebGL version;
+- the first renderer that creates a shared key owns the WebGL context creation options;
+- later renderers using the same key but different `canvasOptions` attach to the existing context and emit a warning;
+- context loss is detected and reported in diagnostics, but automatic GPU resource restoration is not implemented;
+- shared-context presentation currently uses `readPixels` to copy the renderer-owned final color target into the renderer-local presentation canvas.
+
+For diagnostics, use:
+
+````js
+const status = OpenSeadragon.FlexRenderer.getSharedContextStatus();
+console.log(status);
+````
+
+The manual demo `test/demo/shared-context-validation.html` creates two shared viewers and one private
+viewer. With navigators disabled, the expected result is three `FlexRenderer` instances using two WebGL
+contexts: one context shared by viewers A and B, and one private context for the private viewer.
+
+
 Then, you can use one of built-in (or implement custom) visualization styles by
 configuring ``TiledImages`` via JSON `shader layers`. The configuration can happen in two ways:
 - handled internally: each Tiled Image will be automatically assigned ``identity`` rendering style,
