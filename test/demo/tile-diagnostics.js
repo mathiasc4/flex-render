@@ -841,6 +841,278 @@ function setupDiagnosticsPanel() {
     syncControls();
 }
 
+function setupDiagnosticsChecksPanel() {
+    const button = document.getElementById("run-diagnostics-checks-button");
+
+    if (!button) {
+        return;
+    }
+
+    button.addEventListener("click", async () => {
+        button.disabled = true;
+
+        try {
+            await runDiagnosticsChecks();
+        } finally {
+            button.disabled = false;
+        }
+    });
+}
+
+async function runDiagnosticsChecks() {
+    const output = document.getElementById("diagnostics-checks-output");
+    const drawer = viewer && viewer.drawer;
+    const renderer = drawer && drawer.renderer;
+    const checks = [];
+
+    if (output) {
+        output.textContent = "Running diagnostics checks...\n";
+    }
+
+    const record = async (name, run) => {
+        try {
+            await run();
+            checks.push({
+                name,
+                ok: true
+            });
+        } catch (error) {
+            checks.push({
+                name,
+                ok: false,
+                error: error && error.message ? error.message : String(error)
+            });
+        }
+
+        writeDiagnosticsChecksText(checks);
+    };
+
+    await record("renderer exposes tile preparation APIs", () => {
+        assertFunction(renderer, "prepareBitmapTile");
+        assertFunction(renderer, "prepareGpuTextureTile");
+        assertFunction(renderer, "prepareVectorTile");
+        assertFunction(renderer, "releasePreparedTileResource");
+    });
+
+    await record("gpuTextureSet unsupported payload returns unsupported-data", async () => {
+        const result = await renderer.prepareGpuTextureTile({
+            data: "not-a-gpu-texture-set"
+        });
+
+        assertPreparationFailure(result, "unsupported-data");
+    });
+
+    await record("bitmap invalid payload returns invalid-data or unsupported-data", async () => {
+        const result = await renderer.prepareBitmapTile({
+            data: {
+                invalid: true,
+                reason: "diagnostics-demo-invalid-bitmap"
+            }
+        });
+
+        if (!result || result.ok !== false) {
+            throw new Error("Expected bitmap preparation to fail.");
+        }
+
+        if (result.reason !== "invalid-data" && result.reason !== "unsupported-data") {
+            throw new Error(`Expected invalid-data or unsupported-data, got '${result.reason}'.`);
+        }
+    });
+
+    await record("drawer preserves invalid-data preparation reason", async () => {
+        await assertDrawerPreparationFailureReason(drawer, renderer, "invalid-data");
+    });
+
+    await record("drawer preserves tainted-data preparation reason", async () => {
+        await assertDrawerPreparationFailureReason(drawer, renderer, "tainted-data");
+    });
+
+    await record("drawer preserves unsupported-data preparation reason", async () => {
+        await assertDrawerPreparationFailureReason(drawer, renderer, "unsupported-data");
+    });
+
+    await record("drawer preserves webgl-upload-failed preparation reason", async () => {
+        await assertDrawerPreparationFailureReason(drawer, renderer, "webgl-upload-failed");
+    });
+
+    await record("drawer taint preflight returns tainted-data without renderer upload", async () => {
+        await assertDrawerTaintPreflight(drawer, renderer);
+    });
+
+    await record("internalCacheFree releases backend-owned resources through renderer", () => {
+        assertDrawerResourceRelease(drawer, renderer);
+    });
+}
+
+function assertFunction(owner, name) {
+    if (!owner || typeof owner[name] !== "function") {
+        throw new Error(`Expected ${name}() to exist.`);
+    }
+}
+
+function assertPreparationFailure(result, expectedReason) {
+    if (!result || result.ok !== false) {
+        throw new Error("Expected a failed preparation result.");
+    }
+
+    if (result.reason !== expectedReason) {
+        throw new Error(`Expected reason '${expectedReason}', got '${result.reason}'.`);
+    }
+}
+
+function assertDiagnosticTileInfo(tileInfo, expectedReason) {
+    if (!tileInfo || tileInfo.__flexDiagnostic !== true) {
+        throw new Error("Expected a diagnostic tile sentinel.");
+    }
+
+    if (tileInfo.reason !== expectedReason) {
+        throw new Error(`Expected diagnostic reason '${expectedReason}', got '${tileInfo.reason}'.`);
+    }
+}
+
+async function assertDrawerPreparationFailureReason(drawer, renderer, reason) {
+    const originalPrepareBitmapTile = renderer.prepareBitmapTile;
+    const canvas = createDiagnosticsCheckCanvas();
+
+    renderer.prepareBitmapTile = async () => ({
+        ok: false,
+        reason,
+        error: new Error(`Synthetic ${reason} failure`)
+    });
+
+    try {
+        const tileInfo = await drawer.createTileInfoFromSource({
+            data: canvas,
+            type: "image",
+            tile: {},
+            tiledImage: {}
+        });
+
+        assertDiagnosticTileInfo(tileInfo, reason);
+    } finally {
+        renderer.prepareBitmapTile = originalPrepareBitmapTile;
+    }
+}
+
+async function assertDrawerTaintPreflight(drawer, renderer) {
+    const originalPrepareBitmapTile = renderer.prepareBitmapTile;
+    const canvas = createSyntheticTaintedDiagnosticsCheckCanvas();
+    let prepareCalled = false;
+
+    renderer.prepareBitmapTile = async () => {
+        prepareCalled = true;
+
+        return {
+            ok: true,
+            resource: {},
+            texture: {},
+            width: 1,
+            height: 1,
+            textureDepth: 1,
+            packCount: 1,
+            channelCount: 4
+        };
+    };
+
+    try {
+        const tileInfo = await drawer.createTileInfoFromSource({
+            data: canvas,
+            type: "image",
+            tile: {},
+            tiledImage: {}
+        });
+
+        assertDiagnosticTileInfo(tileInfo, "tainted-data");
+
+        if (prepareCalled) {
+            throw new Error("Expected drawer taint preflight to skip renderer preparation.");
+        }
+    } finally {
+        renderer.prepareBitmapTile = originalPrepareBitmapTile;
+    }
+}
+
+function assertDrawerResourceRelease(drawer, renderer) {
+    const originalRelease = renderer.releasePreparedTileResource;
+    const resource = {
+        kind: "diagnostics-check-resource"
+    };
+    const tileInfo = {
+        resource,
+        texture: {
+            kind: "texture-alias"
+        },
+        vectors: {
+            kind: "vector-alias"
+        }
+    };
+    let released = null;
+
+    renderer.releasePreparedTileResource = (received) => {
+        released = received;
+    };
+
+    try {
+        drawer.internalCacheFree(tileInfo);
+
+        if (released !== resource) {
+            throw new Error("Expected internalCacheFree() to release the backend-owned resource.");
+        }
+
+        if (tileInfo.resource !== null || tileInfo.texture !== null || tileInfo.vectors !== null) {
+            throw new Error("Expected internalCacheFree() to clear resource, texture, and vectors.");
+        }
+    } finally {
+        renderer.releasePreparedTileResource = originalRelease;
+    }
+}
+
+function createDiagnosticsCheckCanvas() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, 1, 1);
+
+    return canvas;
+}
+
+function createSyntheticTaintedDiagnosticsCheckCanvas() {
+    const canvas = createDiagnosticsCheckCanvas();
+    const originalGetContext = canvas.getContext.bind(canvas);
+    let taintedContext = null;
+
+    canvas.getContext = function(type, ...args) {
+        const context = originalGetContext(type, ...args);
+
+        if (type !== "2d" || !context || typeof context.getImageData !== "function") {
+            return context;
+        }
+
+        if (!taintedContext) {
+            taintedContext = new Proxy(context, {
+                get(target, property) {
+                    if (property === "getImageData") {
+                        return function() {
+                            throw createSyntheticSecurityError();
+                        };
+                    }
+
+                    const value = target[property];
+
+                    return typeof value === "function" ? value.bind(target) : value;
+                }
+            });
+        }
+
+        return taintedContext;
+    };
+
+    return canvas;
+}
+
 function writeDiagnosticsState() {
     const renderer = viewer.drawer && viewer.drawer.renderer;
     const settings = getDiagnosticSettingsFromControls();
@@ -860,6 +1132,33 @@ function writeDiagnosticsState() {
             "Mixed scenario uses fixed tiles for invalid-data, tainted-data, and unsupported-data." :
             "Custom controls apply one reason across the selected pattern."
     });
+}
+
+function writeDiagnosticsChecksText(checks) {
+    const output = document.getElementById("diagnostics-checks-output");
+
+    if (!output) {
+        return;
+    }
+
+    const passed = checks.filter((check) => check.ok).length;
+    const failed = checks.length - passed;
+    const lines = [];
+
+    lines.push(`Diagnostics checks: ${passed}/${checks.length} passed`);
+    lines.push(`Failed: ${failed}`);
+    lines.push("");
+
+    for (const check of checks) {
+        lines.push(`${check.ok ? "[PASS]" : "[FAIL]"} ${check.name}`);
+
+        if (!check.ok && check.error) {
+            lines.push(`       ${check.error}`);
+        }
+    }
+
+    output.textContent = lines.join("\n");
+    output.scrollTop = output.scrollHeight;
 }
 
 function describeExpectedDiagnostics(settings) {
@@ -935,6 +1234,7 @@ viewer.addHandler("open", () => {
     applyShaderLayerGuiConfig();
     renderShaderConfigPanel();
     setupDiagnosticsPanel();
+    setupDiagnosticsChecksPanel();
 });
 
 viewer.addTiledImage({
@@ -943,3 +1243,4 @@ viewer.addTiledImage({
 
 renderShaderConfigPanel();
 setupDiagnosticsPanel();
+setupDiagnosticsChecksPanel();

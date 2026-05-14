@@ -63,7 +63,9 @@
 
         .configuration-panels {
             display: flex;
+            flex-direction: column;
             align-items: stretch;
+            gap: 12px;
             margin-top: 12px;
             flex: 0 0 auto;
         }
@@ -92,6 +94,7 @@
         .diagnostics-controls-panel,
         .diagnostics-guide-panel {
             flex: 0 0 auto;
+            width: 100%;
         }
 
         .shader-controls-panel {
@@ -321,56 +324,6 @@
 
     <div class="demo-layout">
         <aside class="diagnostics-panel-stack">
-            <section id="diagnostics-controls-panel" class="diagnostics-controls-panel">
-                <h3>Diagnostics controls</h3>
-
-                <div class="diagnostics-control-list">
-                    <label class="diagnostics-control-label">
-                        <input id="render-diagnostics-toggle" type="checkbox" checked>
-                        Render tile diagnostics
-                    </label>
-
-                    <label class="diagnostics-control-label">
-                        <span>Scenario</span>
-                        <select id="diagnostic-scenario-select">
-                            <option value="valid-only">Valid tiles only</option>
-                            <option value="invalid-center">Invalid center tile</option>
-                            <option value="invalid-checker">Invalid checker tiles</option>
-                            <option value="tainted-center">Tainted center tile</option>
-                            <option value="unsupported-center">Unsupported center payload</option>
-                            <option value="mixed-reasons">Mixed diagnostic reasons</option>
-                            <option value="custom">Custom pattern/reason</option>
-                        </select>
-                    </label>
-
-                    <label class="diagnostics-control-label">
-                        <span>Failure pattern</span>
-                        <select id="failure-pattern-select">
-                            <option value="center">Center tile</option>
-                            <option value="diagonal">Diagonal tiles</option>
-                            <option value="checker">Checker pattern</option>
-                            <option value="none">None</option>
-                        </select>
-                    </label>
-
-                    <label class="diagnostics-control-label">
-                        <span>Failure reason</span>
-                        <select id="failure-reason-select">
-                            <option value="invalid-data">invalid-data</option>
-                            <option value="tainted-data">tainted-data</option>
-                            <option value="unsupported-data">unsupported-data</option>
-                        </select>
-                    </label>
-                </div>
-
-                <div class="diagnostics-action-row">
-                    <button id="reload-source-button" type="button">Reload demo source</button>
-                </div>
-
-                <h4>Renderer state</h4>
-                <pre id="diagnostics-state-output" class="diagnostics-state-readout">Waiting for drawer state...</pre>
-            </section>
-
             <section id="diagnostics-guide-panel" class="diagnostics-guide-panel">
                 <h3>What this demo shows</h3>
                 <ul>
@@ -406,6 +359,60 @@
                 <div id="shader-config-panel" class="shader-config-panel">
                     Loading shader layer configuration...
                 </div>
+
+                <section id="diagnostics-controls-panel" class="diagnostics-controls-panel">
+                    <h3>Diagnostics controls</h3>
+
+                    <div class="diagnostics-control-list">
+                        <label class="diagnostics-control-label">
+                            <input id="render-diagnostics-toggle" type="checkbox" checked>
+                            Render tile diagnostics
+                        </label>
+
+                        <label class="diagnostics-control-label">
+                            <span>Scenario</span>
+                            <select id="diagnostic-scenario-select">
+                                <option value="valid-only">Valid tiles only</option>
+                                <option value="invalid-center">Invalid center tile</option>
+                                <option value="invalid-checker">Invalid checker tiles</option>
+                                <option value="tainted-center">Tainted center tile</option>
+                                <option value="unsupported-center">Unsupported center payload</option>
+                                <option value="mixed-reasons">Mixed diagnostic reasons</option>
+                                <option value="custom">Custom pattern/reason</option>
+                            </select>
+                        </label>
+
+                        <label class="diagnostics-control-label">
+                            <span>Failure pattern</span>
+                            <select id="failure-pattern-select">
+                                <option value="center">Center tile</option>
+                                <option value="diagonal">Diagonal tiles</option>
+                                <option value="checker">Checker pattern</option>
+                                <option value="none">None</option>
+                            </select>
+                        </label>
+
+                        <label class="diagnostics-control-label">
+                            <span>Failure reason</span>
+                            <select id="failure-reason-select">
+                                <option value="invalid-data">invalid-data</option>
+                                <option value="tainted-data">tainted-data</option>
+                                <option value="unsupported-data">unsupported-data</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="diagnostics-action-row">
+                        <button id="reload-source-button" type="button">Reload demo source</button>
+                        <button id="run-diagnostics-checks-button" type="button">Run diagnostics checks</button>
+                    </div>
+
+                    <h4>Renderer state</h4>
+                    <pre id="diagnostics-state-output" class="diagnostics-state-readout">Waiting for drawer state...</pre>
+
+                    <h4>Focused behavior checks</h4>
+                    <pre id="diagnostics-checks-output" class="diagnostics-state-readout">Checks not run yet.</pre>
+                </section>
             </div>
         </main>
 
