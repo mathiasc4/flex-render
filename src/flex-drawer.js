@@ -2401,7 +2401,6 @@
             return canvas;
         }
 
-
         /**
          * Sets whether image smoothing is enabled or disabled.
          * @param {Boolean} enabled if true, uses gl.LINEAR as the TEXTURE_MIN_FILTER and TEXTURE_MAX_FILTER, otherwise gl.NEAREST
@@ -2414,10 +2413,6 @@
             }
         }
 
-        _textureFilter(gl) {
-            return this._imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
-        }
-
         internalCacheCreate(cache, tile) {
             const tiledImage = tile.tiledImage;
             const normalized = this._normalizeCacheData(cache);
@@ -2427,9 +2422,12 @@
                 type: normalized.type,
                 tile,
                 tiledImage
-            }).catch(e => {
-                $.console.error(`Unsupported data type! ${normalized.data}`, e);
-                return this._createDiagnosticTileInfo("invalid-data");
+            }).catch(error => {
+                $.console.error(`Failed to prepare tile data.`, error, normalized.data);
+
+                return this._createDiagnosticTileInfo(
+                    error && error.reason ? error.reason : "invalid-data"
+                );
             });
         }
 
@@ -2459,6 +2457,121 @@
             return !!(tileInfo && tileInfo.__flexDiagnostic === true);
         }
 
+        /**
+         * Return renderer-neutral texture options for prepared tile resources.
+         *
+         * @private
+         * @returns {TileTextureOptions}
+         */
+        _getPreparedTileTextureOptions() {
+            return {
+                imageSmoothingEnabled: !!this._imageSmoothingEnabled
+            };
+        }
+
+        /**
+         * Convert a successful renderer preparation result into FlexDrawer's
+         * internal raster tile-info shape.
+         *
+         * FlexDrawer owns OpenSeadragon tile placement. The renderer/backend owns
+         * the prepared resource.
+         *
+         * @private
+         * @param {PreparedTileSuccess} result - Successful preparation result.
+         * @param {OpenSeadragon.Tile} tile - OpenSeadragon tile.
+         * @param {OpenSeadragon.TiledImage} tiledImage - Owning tiled image.
+         * @returns {{position: Float32Array, texture: *, resource: *, vectors: undefined}}
+         */
+        _createPreparedRasterTileInfo(result, tile, tiledImage) {
+            return {
+                position: this._computeTilePosition(tile, tiledImage, result.width, result.height),
+                texture: result.texture,
+                resource: result.resource,
+                vectors: undefined
+            };
+        }
+
+        /**
+         * Convert a preparation failure into the existing diagnostic tile sentinel.
+         *
+         * @private
+         * @param {PreparedTileFailure} result - Failed preparation result.
+         * @returns {{__flexDiagnostic: boolean, reason: string}}
+         */
+        _createDiagnosticTileInfoFromPreparationFailure(result) {
+            const reason = result && result.reason ? result.reason : "invalid-data";
+            return this._createDiagnosticTileInfo(reason);
+        }
+
+        /**
+         * Return whether OpenSeadragon/canvas preflight can already identify a
+         * bitmap-like tile source as tainted.
+         *
+         * This is an adapter-level optimization only. It does not replace renderer/backend upload classification.
+         *
+         * @private
+         * @param {*} data - Normalized tile data.
+         * @param {OpenSeadragon.TiledImage} tiledImage - Owning tiled image.
+         * @returns {boolean}
+         */
+        _isKnownTaintedBitmapTileData(data, tiledImage) {
+            if (tiledImage && typeof tiledImage.isTainted === "function" && tiledImage.isTainted()) {
+                return true;
+            }
+
+            const canvas = this._getCanvasFromBitmapTileData(data);
+
+            if (!canvas) {
+                return false;
+            }
+
+            if (typeof $.isCanvasTainted === "function") {
+                return !!$.isCanvasTainted(canvas);
+            }
+
+            // checks if the canvas is tainted by trying to read from it
+            try {
+                const context = canvas.getContext && canvas.getContext("2d");
+
+                if (!context || typeof context.getImageData !== "function") {
+                    return false;
+                }
+
+                context.getImageData(0, 0, 1, 1);
+
+                return false;
+            } catch (error) {
+                return true;
+            }
+        }
+
+        /**
+         * Extract a canvas from bitmap-like tile data when available.
+         *
+         * @private
+         * @param {*} data - Tile data.
+         * @returns {HTMLCanvasElement | OffscreenCanvas | null}
+         */
+        _getCanvasFromBitmapTileData(data) {
+            if (!data) {
+                return null;
+            }
+
+            if (typeof CanvasRenderingContext2D !== "undefined" && data instanceof CanvasRenderingContext2D) {
+                return data.canvas || null;
+            }
+
+            if (typeof HTMLCanvasElement !== "undefined" && data instanceof HTMLCanvasElement) {
+                return data;
+            }
+
+            if (typeof OffscreenCanvas !== "undefined" && data instanceof OffscreenCanvas) {
+                return data;
+            }
+
+            return null;
+        }
+
         async createTileInfoFromSource({ data, type, tile, tiledImage }) {
             const gl = this._gl;
 
@@ -2470,12 +2583,23 @@
                 return this._buildVectorTileInfo(data, gl);
             }
 
-            const isGpuTextureSet = data &&
-                typeof data.getType === "function" &&
-                data.getType() === "gpuTextureSet";
+            const isGpuTextureSet = type === "gpuTextureSet" || (data && typeof data.getType === "function" && data.getType() === "gpuTextureSet");
 
             if (isGpuTextureSet) {
-                const tileInfo = this._buildGpuTextureTileInfo(data, tile, tiledImage, gl);
+                const result = await this.renderer.prepareGpuTextureTile({
+                    data: data,
+                    textureOptions: this._getPreparedTileTextureOptions()
+                });
+
+                if (!result.ok) {
+                    return this._createDiagnosticTileInfoFromPreparationFailure(result);
+                }
+
+                this._updatePackMetadata(
+                    tiledImage,
+                    result.packCount || result.textureDepth || 1,
+                    result.channelCount || (result.packCount || result.textureDepth || 1) * 4
+                );
 
                 if (this._packLayoutDirty) {
                     // TODO: is this refreshing logic necessary?
@@ -2484,10 +2608,29 @@
                     this._requestRebuild();
                 }
 
-                return tileInfo;
+                return this._createPreparedRasterTileInfo(result, tile, tiledImage);
             }
 
-            return this._buildBitmapTileInfo(data, tile, tiledImage, gl);
+            if (this._isKnownTaintedBitmapTileData(data, tiledImage)) {
+                return this._createDiagnosticTileInfo("tainted-data");
+            }
+
+            const result = await this.renderer.prepareBitmapTile({
+                data: data,
+                textureOptions: this._getPreparedTileTextureOptions()
+            });
+
+            if (!result.ok) {
+                return this._createDiagnosticTileInfoFromPreparationFailure(result);
+            }
+
+            this._updatePackMetadata(
+                tiledImage,
+                result.packCount || 1,
+                result.channelCount || 4
+            );
+
+            return this._createPreparedRasterTileInfo(result, tile, tiledImage);
         }
 
         // _refreshPackLayoutNow() {
@@ -2624,10 +2767,21 @@
             if (!data) {
                 return;
             }
-            if (data.texture) {
-                this._gl.deleteTexture(data.texture);
+
+            if (data.resource) {
+                this.renderer.releasePreparedTileResource(data.resource);
+                data.resource = null;
+                data.texture = null;
+            } else if (data.texture) {
+                if (this.renderer && typeof this.renderer.releasePreparedTileResource === "function") {
+                    this.renderer.releasePreparedTileResource(data.texture);
+                } else {
+                    this._gl.deleteTexture(data.texture);
+                }
+
                 data.texture = null;
             }
+
             if (data.vectors) {
                 const gl = this._gl;
                 if (data.vectors.fills) {
@@ -2849,105 +3003,6 @@
                 tileInfo.vectors.points = buildBatch(data.points);
             }
 
-            return tileInfo;
-        }
-
-        _buildGpuTextureTileInfo(gpu, tile, tiledImage, gl) {
-            const width = gpu.width;
-            const height = gpu.height;
-            const packs = gpu.packs || [];
-            const packCount = packs.length || 1;
-            const channelCount = gpu.channelCount || packCount * 4;
-
-            this._updatePackMetadata(tiledImage, packCount, channelCount);
-
-            const tileInfo = {
-                position: this._computeTilePosition(tile, tiledImage, width, height),
-                texture: null,
-                vectors: undefined,
-            };
-
-            const texture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-
-            const firstFmt = (packs[0] && packs[0].format) || "RGBA8";
-            const internalFormat = (firstFmt === "RGBA16F") ? gl.RGBA16F : gl.RGBA8;
-            const format = gl.RGBA;
-            const type = (firstFmt === "RGBA16F") ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
-
-            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, internalFormat, width, height, packCount);
-
-            for (let layer = 0; layer < packCount; layer++) {
-                const pack = packs[layer];
-                if (!pack) {
-                    continue;
-                }
-
-                gl.texSubImage3D(
-                    gl.TEXTURE_2D_ARRAY,
-                    0,
-                    0, 0, layer,
-                    width, height, 1,
-                    format,
-                    type,
-                    pack.data
-                );
-            }
-
-            const filter = this._textureFilter(gl);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-            tileInfo.texture = texture;
-            return tileInfo;
-        }
-
-        async _buildBitmapTileInfo(data, tile, tiledImage, gl) {
-            // if (!tiledImage.isTainted()) {
-            // todo tained data handle
-            // if((data instanceof CanvasRenderingContext2D) && $.isCanvasTainted(data.canvas)){
-            //     tiledImage.setTainted(true);
-            //     $.console.warn('WebGL cannot be used to draw this TiledImage because it has tainted data. Does crossOriginPolicy need to be set?');
-            //     this._raiseDrawerErrorEvent(tiledImage, 'Tainted data cannot be used by the WebGLDrawer. Falling back to CanvasDrawer for this TiledImage.');
-            //     this.setInternalCacheNeedsRefresh();
-            // } else {
-
-            const bitmap = await createImageBitmap(data);
-
-            const width = bitmap.width;
-            const height = bitmap.height;
-
-            this._updatePackMetadata(tiledImage, 1, 4);
-
-            const tileInfo = {
-                position: this._computeTilePosition(tile, tiledImage, width, height),
-                texture: null,
-                vectors: undefined,
-            };
-
-            const tex = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-
-            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 1);
-            gl.texSubImage3D(
-                gl.TEXTURE_2D_ARRAY,
-                0,
-                0, 0, 0,
-                width, height, 1,
-                gl.RGBA,
-                gl.UNSIGNED_BYTE,
-                bitmap
-            );
-
-            const filter = this._textureFilter(gl);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-            tileInfo.texture = tex;
             return tileInfo;
         }
 

@@ -812,7 +812,12 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
             gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 1);
             gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, 1, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
 
-            this._applyPreparedTileTextureParameters(gl.TEXTURE_2D_ARRAY, textureOptions);
+            const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
             this._throwIfWebGLError("Bitmap tile texture upload");
 
@@ -866,8 +871,8 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
             );
         }
 
-        const width = Math.floor(Number(gpu.width) || 0);
-        const height = Math.floor(Number(gpu.height) || 0);
+        const width = Number(gpu.width) || 0;
+        const height = Number(gpu.height) || 0;
         const packs = Array.isArray(gpu.packs) ? gpu.packs : [];
 
         if (!width || !height) {
@@ -885,7 +890,28 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }
 
         const firstFormatName = (packs[0] && packs[0].format) || "RGBA8";
-        const formatInfo = this._getPreparedTileTextureFormat(firstFormatName);
+
+        let formatInfo;
+        switch (firstFormatName) {
+            case "RGBA8":
+                formatInfo = {
+                    internalFormat: gl.RGBA8,
+                    format: gl.RGBA,
+                    type: gl.UNSIGNED_BYTE
+                };
+                break;
+
+            case "RGBA16F":
+                formatInfo = {
+                    internalFormat: gl.RGBA16F,
+                    format: gl.RGBA,
+                    type: gl.HALF_FLOAT
+                };
+                break;
+
+            default:
+                formatInfo = null;
+        }
 
         if (!formatInfo) {
             return this._makePreparedTileFailure(
@@ -921,7 +947,7 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }
 
         const packCount = packs.length;
-        const channelCount = Math.max(1, Math.floor(Number(gpu.channelCount) || packCount * 4));
+        const channelCount = Number(gpu.channelCount) || packCount * 4;
         let texture = null;
 
         try {
@@ -940,7 +966,12 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, width, height, 1, formatInfo.format, formatInfo.type, packs[layer].data);
             }
 
-            this._applyPreparedTileTextureParameters(gl.TEXTURE_2D_ARRAY, textureOptions);
+            const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
             this._throwIfWebGLError("GPU texture-set tile upload");
 
@@ -1049,38 +1080,6 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }
 
         return /tainted canvas|origin-clean|cross-origin|cross origin|cors/i.test(message);
-    }
-
-    _getPreparedTileTextureFormat(formatName) {
-        const gl = this.gl;
-
-        if (formatName === "RGBA8") {
-            return {
-                internalFormat: gl.RGBA8,
-                format: gl.RGBA,
-                type: gl.UNSIGNED_BYTE
-            };
-        }
-
-        if (formatName === "RGBA16F") {
-            return {
-                internalFormat: gl.RGBA16F,
-                format: gl.RGBA,
-                type: gl.HALF_FLOAT
-            };
-        }
-
-        return null;
-    }
-
-    _applyPreparedTileTextureParameters(target, textureOptions = {}) {
-        const gl = this.gl;
-        const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
-
-        gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, filter);
-        gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, filter);
-        gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     }
 
     _clearWebGLErrors() {
