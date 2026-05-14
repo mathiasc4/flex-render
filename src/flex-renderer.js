@@ -321,6 +321,73 @@
      */
 
     /**
+     * Texture preparation options shared by renderer backends.
+     *
+     * These options are renderer-neutral. They must not expose OpenSeadragon
+     * objects or backend constants.
+     *
+     * @typedef {object} TileTextureOptions
+     * @property {boolean} [imageSmoothingEnabled=false] - Whether prepared textures should use linear filtering when supported.
+     */
+
+    /**
+     * Renderer-neutral bitmap tile preparation options.
+     *
+     * `data` may be a browser image-like source such as a Blob, ImageBitmap,
+     * HTMLImageElement, HTMLCanvasElement, CanvasRenderingContext2D, or
+     * OffscreenCanvas. Backends decide which concrete source types they support.
+     *
+     * @typedef {object} PrepareBitmapTileOptions
+     * @property {*} data - Bitmap-like source data to prepare.
+     * @property {TileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Renderer-neutral GPU texture-set preparation options.
+     *
+     * `data` is a tile-source-provided packed texture payload. Backends decide
+     * which concrete payload shapes they support.
+     *
+     * @typedef {object} PrepareGpuTextureTileOptions
+     * @property {*} data - GPU texture-set payload to prepare.
+     * @property {TileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Successful prepared tile result.
+     *
+     * `resource` is backend-owned. Callers may store it, but must release it
+     * through `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * `texture` is a compatibility alias for the current WebGL first-pass path.
+     *
+     * @typedef {object} PreparedTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared resource.
+     * @property {*} texture - Compatibility alias for the current WebGL texture resource.
+     * @property {number} width - Prepared source width in pixels.
+     * @property {number} height - Prepared source height in pixels.
+     * @property {number} textureDepth - Number of backend texture layers.
+     * @property {number} packCount - Number of source packs represented by the resource.
+     * @property {number} channelCount - Number of source channels represented by the resource.
+     */
+
+    /**
+     * Failed prepared tile result.
+     *
+     * @typedef {object} PreparedTileFailure
+     * @property {false} ok - Whether preparation succeeded.
+     * @property {"tainted-data"|"invalid-data"|"unsupported-data"|"webgl-upload-failed"} reason - Stable preparation failure reason.
+     * @property {*} [error] - Original backend/browser error, when available.
+     */
+
+    /**
+     * Prepared tile result.
+     *
+     * @typedef {PreparedTileSuccess | PreparedTileFailure} PreparedTileResult
+     */
+
+    /**
      * @typedef {object} FlexRendererOptions
      *
      * @property {string} uniqueId
