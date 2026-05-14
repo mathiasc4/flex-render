@@ -1,6 +1,6 @@
 (function($) {
 
-$.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
+class WebGL2 extends $.FlexRenderer.WebGLImplementation {
     /**
      * Create a WebGL 2.0 rendering implementation.
      * @param {OpenSeadragon.FlexRenderer} renderer
@@ -9,7 +9,10 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
     constructor(renderer, gl) {
         // sets this.renderer, this.gl, this.webGLVersion
         super(renderer, gl, "2.0");
+
         $.console.info("WebGl 2.0 renderer.");
+
+        this._preparedTileResources = new Set();
     }
 
     get firstPassProgramKey() {
@@ -442,12 +445,22 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     }
 
     destroy() {
+        if (this._preparedTileResources) {
+            for (const resource of Array.from(this._preparedTileResources)) {
+                this.releasePreparedTileResource(resource);
+            }
+
+            this._preparedTileResources.clear();
+        }
+
         if (this._namedColorTargets) {
             for (const key of Object.keys(this._namedColorTargets)) {
                 this._destroyColorTarget(this._namedColorTargets[key]);
             }
+
             this._namedColorTargets = {};
         }
+
         this.firstAtlas.destroy();
         this.secondAtlas.destroy();
     }
@@ -734,7 +747,406 @@ if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }[name];
     }
-};
+
+    /**
+     * Prepare bitmap-like tile data as a WebGL2 texture array resource.
+     *
+     * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+     * @returns {Promise<PreparedTileResult>} Preparation result.
+     */
+    async prepareBitmapTile(options = {}) {
+        const gl = this.gl;
+        const source = this._normalizeBitmapTileSource(options.data);
+        const textureOptions = options.textureOptions || {};
+
+        if (!source) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("Bitmap tile preparation requires bitmap-like source data.")
+            );
+        }
+
+        let bitmap = null;
+        let ownsBitmap = false;
+
+        try {
+            if (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) {
+                bitmap = source;
+            } else {
+                bitmap = await createImageBitmap(source);
+                ownsBitmap = true;
+            }
+        } catch (error) {
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "invalid-data"),
+                error
+            );
+        }
+
+        const width = (bitmap && Number(bitmap.width)) || 0;
+        const height = (bitmap && Number(bitmap.height)) || 0;
+
+        if (!width || !height) {
+            if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
+                bitmap.close();
+            }
+
+            return this._makePreparedTileFailure(
+                "invalid-data",
+                new Error("Bitmap tile preparation produced empty or invalid dimensions.")
+            );
+        }
+
+        let texture = null;
+
+        try {
+            texture = gl.createTexture();
+
+            if (!texture) {
+                throw new Error("WebGL2 failed to create a bitmap tile texture.");
+            }
+
+            this._clearWebGLErrors();
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 1);
+            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, 1, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+
+            this._applyPreparedTileTextureParameters(gl.TEXTURE_2D_ARRAY, textureOptions);
+
+            this._throwIfWebGLError("Bitmap tile texture upload");
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._preparedTileResources.add(texture);
+
+            return {
+                ok: true,
+                resource: texture,
+                texture: texture,
+                width: width,
+                height: height,
+                textureDepth: 1,
+                packCount: 1,
+                channelCount: 4
+            };
+        } catch (error) {
+            if (texture) {
+                gl.deleteTexture(texture);
+            }
+
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "webgl-upload-failed"),
+                error
+            );
+        } finally {
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
+                bitmap.close();
+            }
+        }
+    }
+
+    /**
+     * Prepare packed GPU texture-set tile data as a WebGL2 texture array resource.
+     *
+     * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+     * @returns {Promise<PreparedTileResult>} Preparation result.
+     */
+    async prepareGpuTextureTile(options = {}) {
+        const gl = this.gl;
+        const gpu = options.data;
+        const textureOptions = options.textureOptions || {};
+
+        if (!gpu || typeof gpu !== "object") {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("GPU texture tile preparation requires a texture-set object.")
+            );
+        }
+
+        const width = Math.floor(Number(gpu.width) || 0);
+        const height = Math.floor(Number(gpu.height) || 0);
+        const packs = Array.isArray(gpu.packs) ? gpu.packs : [];
+
+        if (!width || !height) {
+            return this._makePreparedTileFailure(
+                "invalid-data",
+                new Error("GPU texture tile preparation requires positive width and height.")
+            );
+        }
+
+        if (!packs.length) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new Error("GPU texture tile preparation requires at least one texture pack.")
+            );
+        }
+
+        const firstFormatName = (packs[0] && packs[0].format) || "RGBA8";
+        const formatInfo = this._getPreparedTileTextureFormat(firstFormatName);
+
+        if (!formatInfo) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new Error(`Unsupported GPU texture pack format '${firstFormatName}'.`)
+            );
+        }
+
+        for (let layer = 0; layer < packs.length; layer++) {
+            const pack = packs[layer];
+            const packFormatName = (pack && pack.format) || firstFormatName;
+
+            if (!pack || !pack.data) {
+                return this._makePreparedTileFailure(
+                    "invalid-data",
+                    new Error(`GPU texture pack ${layer} is missing pixel data.`)
+                );
+            }
+
+            if (packFormatName !== firstFormatName) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new Error("Mixed GPU texture pack formats are not supported.")
+                );
+            }
+
+            if (!ArrayBuffer.isView(pack.data)) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new TypeError(`GPU texture pack ${layer} data must be a typed array.`)
+                );
+            }
+        }
+
+        const packCount = packs.length;
+        const channelCount = Math.max(1, Math.floor(Number(gpu.channelCount) || packCount * 4));
+        let texture = null;
+
+        try {
+            texture = gl.createTexture();
+
+            if (!texture) {
+                throw new Error("WebGL2 failed to create a GPU texture-set tile texture.");
+            }
+
+            this._clearWebGLErrors();
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, formatInfo.internalFormat, width, height, packCount);
+
+            for (let layer = 0; layer < packCount; layer++) {
+                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, width, height, 1, formatInfo.format, formatInfo.type, packs[layer].data);
+            }
+
+            this._applyPreparedTileTextureParameters(gl.TEXTURE_2D_ARRAY, textureOptions);
+
+            this._throwIfWebGLError("GPU texture-set tile upload");
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._preparedTileResources.add(texture);
+
+            return {
+                ok: true,
+                resource: texture,
+                texture: texture,
+                width: width,
+                height: height,
+                textureDepth: packCount,
+                packCount: packCount,
+                channelCount: channelCount
+            };
+        } catch (error) {
+            if (texture) {
+                gl.deleteTexture(texture);
+            }
+
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "webgl-upload-failed"),
+                error
+            );
+        } finally {
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+        }
+    }
+
+    /**
+     * Release a WebGL2 prepared tile resource.
+     *
+     * @param {*} resource - Backend-owned resource returned by a preparation method.
+     * @returns {void}
+     */
+    releasePreparedTileResource(resource) {
+        const texture = resource && resource.texture ? resource.texture : resource;
+
+        if (!texture) {
+            return;
+        }
+
+        this.gl.deleteTexture(texture);
+
+        if (this._preparedTileResources) {
+            this._preparedTileResources.delete(texture);
+        }
+
+        if (resource && resource.texture) {
+            resource.texture = null;
+        }
+    }
+
+    _normalizeBitmapTileSource(data) {
+        if (!data) {
+            return null;
+        }
+
+        if (typeof CanvasRenderingContext2D !== "undefined" && data instanceof CanvasRenderingContext2D) {
+            return data.canvas || null;
+        }
+
+        return data;
+    }
+
+    _makePreparedTileFailure(reason, error) {
+        return {
+            ok: false,
+            reason: reason,
+            error: error
+        };
+    }
+
+    _classifyTilePreparationError(error, fallbackReason) {
+        if (this._isTaintOrSecurityError(error)) {
+            return "tainted-data";
+        }
+
+        return fallbackReason;
+    }
+
+    _isTaintOrSecurityError(error) {
+        if (!error) {
+            return false;
+        }
+
+        const name = error.name ? String(error.name) : "";
+        const code = Number(error.code);
+        const message = error.message ? String(error.message) : String(error);
+
+        if (name === "SecurityError") {
+            return true;
+        }
+
+        // DOMException.SECURITY_ERR is historically 18. Some browsers still expose
+        // numeric codes, though modern code should prefer .name.
+        if (code === 18) {
+            return true;
+        }
+
+        // Firefox/internal DOM security names may appear in some browser errors.
+        if (name === "NS_ERROR_DOM_SECURITY_ERR") {
+            return true;
+        }
+
+        return /tainted canvas|origin-clean|cross-origin|cross origin|cors/i.test(message);
+    }
+
+    _getPreparedTileTextureFormat(formatName) {
+        const gl = this.gl;
+
+        if (formatName === "RGBA8") {
+            return {
+                internalFormat: gl.RGBA8,
+                format: gl.RGBA,
+                type: gl.UNSIGNED_BYTE
+            };
+        }
+
+        if (formatName === "RGBA16F") {
+            return {
+                internalFormat: gl.RGBA16F,
+                format: gl.RGBA,
+                type: gl.HALF_FLOAT
+            };
+        }
+
+        return null;
+    }
+
+    _applyPreparedTileTextureParameters(target, textureOptions = {}) {
+        const gl = this.gl;
+        const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+        gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, filter);
+        gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+
+    _clearWebGLErrors() {
+        const gl = this.gl;
+
+        // cap the amount of errors to avoid an infinite loop
+        for (let i = 0; i < 16; i++) {
+            if (gl.getError() === gl.NO_ERROR) {
+                return;
+            }
+        }
+    }
+
+    _throwIfWebGLError(operation) {
+        const gl = this.gl;
+        const errors = [];
+
+        // cap the amount of errors to avoid an infinite loop
+        for (let i = 0; i < 16; i++) {
+            const error = gl.getError();
+
+            if (error === gl.NO_ERROR) {
+                break;
+            }
+
+            errors.push(error);
+        }
+
+        if (!errors.length) {
+            return;
+        }
+
+        const message = errors.map(error => this._formatWebGLError(error)).join(", ");
+
+        const uploadError = new Error(`${operation} failed with WebGL error(s): ${message}`);
+        uploadError.webglErrors = errors;
+        throw uploadError;
+    }
+
+    _formatWebGLError(error) {
+        const gl = this.gl;
+
+        if (error === gl.INVALID_ENUM) {
+            return "INVALID_ENUM";
+        }
+        if (error === gl.INVALID_VALUE) {
+            return "INVALID_VALUE";
+        }
+        if (error === gl.INVALID_OPERATION) {
+            return "INVALID_OPERATION";
+        }
+        if (error === gl.INVALID_FRAMEBUFFER_OPERATION) {
+            return "INVALID_FRAMEBUFFER_OPERATION";
+        }
+        if (error === gl.OUT_OF_MEMORY) {
+            return "OUT_OF_MEMORY";
+        }
+        if (error === gl.CONTEXT_LOST_WEBGL) {
+            return "CONTEXT_LOST_WEBGL";
+        }
+
+        return `0x${error.toString(16)}`;
+    }
+}
+
+$.FlexRenderer.WebGL20 = WebGL2;
 
 
 $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgram {

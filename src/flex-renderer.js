@@ -190,13 +190,48 @@
      */
 
     /**
+     * Typed array accepted as a GPU texture-set pack payload.
+     *
+     * @typedef {Uint8Array | Uint8ClampedArray | Uint16Array | Float32Array } GpuTextureSetPackData
+     */
+
+    /**
+     * One packed texture layer in a GPU texture-set tile payload.
+     *
+     * The current WebGL2 implementation supports `RGBA8` and `RGBA16F`.
+     * `RGBA8` data is uploaded as RGBA/UNSIGNED_BYTE. `RGBA16F` data is
+     * uploaded as RGBA/HALF_FLOAT.
+     *
+     * @typedef {object} GpuTextureSetPack
+     * @property {"RGBA8"|"RGBA16F"} [format="RGBA8"] - Pixel storage format for this pack.
+     * @property {GpuTextureSetPackData} data - Packed pixel data for one texture-array layer.
+     */
+
+    /**
+     * Packed GPU texture-set tile payload.
+     *
+     * This is not an OpenSeadragon-native data type. It is a FlexRenderer tile
+     * payload accepted through the `gpuTextureSet` cache format. Adapters may
+     * provide `getType()` for compatibility with FlexDrawer cache detection, but
+     * renderer preparation should validate the structural fields rather than
+     * require an OpenSeadragon-specific object instance.
+     *
+     * @typedef {object} GpuTextureSetTileData
+     * @property {function(): string} [getType] - Optional compatibility method returning `"gpuTextureSet"`.
+     * @property {number} width - Texture width in pixels.
+     * @property {number} height - Texture height in pixels.
+     * @property {GpuTextureSetPack[]} packs - Packed texture layers.
+     * @property {number} [channelCount] - Logical channel count represented by all packs.
+     */
+
+    /**
      * Renderer-neutral GPU texture-set preparation options.
      *
      * `data` is a tile-source-provided packed texture payload. Backends decide
      * which concrete payload shapes they support.
      *
      * @typedef {object} PrepareGpuTextureTileOptions
-     * @property {*} data - GPU texture-set payload to prepare.
+     * @property {GpuTextureSetTileData} data - GPU texture-set payload to prepare.
      * @property {TileTextureOptions} [textureOptions] - Texture preparation options.
      */
 
