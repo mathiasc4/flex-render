@@ -288,7 +288,12 @@
                     for (let i = 0; i < parent.world.getItemCount(); i++) {
                         const tiledImageParent = parent.world.getItemAt(i);
                         if (tiledImageParent.source === tiledImage.source) {
-                            config.id = tiledImageParent.__shaderConfig.id;
+                            // Parent's __shaderConfig may be missing during a reset window
+                            // (tiledImageCreated deletes it when _configuredExternally is true).
+                            // Fall through to idGenerator in that case.
+                            if (tiledImageParent.__shaderConfig) {
+                                config.id = tiledImageParent.__shaderConfig.id;
+                            }
                             break;
                         }
                     }

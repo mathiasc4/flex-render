@@ -1833,6 +1833,10 @@
             for (let sId in this._shaders) {
                 this.removeShader(sId);
             }
+            // _shadersOrder is a separate view over the same set; without this,
+            // getShaderLayerOrder() returns stale ids whose ShaderLayer instances
+            // were just destroyed, and consumers crash on shaderMap[id].getConfig().
+            this._shadersOrder = null;
         }
 
         /**
