@@ -2498,24 +2498,8 @@
                 return false;
             }
 
-            if (typeof $.isCanvasTainted === "function") {
-                return !!$.isCanvasTainted(canvas);
-            }
-
             // checks if the canvas is tainted by trying to read from it
-            try {
-                const context = canvas.getContext && canvas.getContext("2d");
-
-                if (!context || typeof context.getImageData !== "function") {
-                    return false;
-                }
-
-                context.getImageData(0, 0, 1, 1);
-
-                return false;
-            } catch (error) {
-                return true;
-            }
+            return !!$.isCanvasTainted(canvas);
         }
 
         /**
