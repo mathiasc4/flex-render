@@ -9,7 +9,40 @@ const DEMO_SOURCE_OPTIONS = {
     tileOverlap: 0,
     minLevel: 0,
     maxLevel: DEMO_MAX_LEVEL,
-    invalidPattern: "center"
+    diagnosticScenario: "invalid-center",
+    failurePattern: "center",
+    failureReason: "invalid-data"
+};
+
+const DIAGNOSTIC_SCENARIOS = {
+    "valid-only": {
+        failurePattern: "none",
+        failureReason: "invalid-data"
+    },
+    "invalid-center": {
+        failurePattern: "center",
+        failureReason: "invalid-data"
+    },
+    "invalid-checker": {
+        failurePattern: "checker",
+        failureReason: "invalid-data"
+    },
+    "tainted-center": {
+        failurePattern: "center",
+        failureReason: "tainted-data"
+    },
+    "unsupported-center": {
+        failurePattern: "center",
+        failureReason: "unsupported-data"
+    },
+    "mixed-reasons": {
+        failurePattern: "mixed",
+        failureReason: "mixed"
+    },
+    "custom": {
+        failurePattern: "center",
+        failureReason: "invalid-data"
+    }
 };
 
 const drawerOptions = {
@@ -93,7 +126,9 @@ function installDiagnosticDemoTileSource($) {
         configure(options) {
             const tileSize = Number(options.tileSize) || DEMO_TILE_SIZE;
 
-            this.invalidPattern = options.invalidPattern || "center";
+            this.diagnosticScenario = options.diagnosticScenario || DEMO_SOURCE_OPTIONS.diagnosticScenario;
+            this.failurePattern = options.failurePattern || options.invalidPattern || DEMO_SOURCE_OPTIONS.failurePattern;
+            this.failureReason = options.failureReason || DEMO_SOURCE_OPTIONS.failureReason;
             this.tileSize = tileSize;
             this.tileWidth = tileSize;
             this.tileHeight = tileSize;
@@ -113,7 +148,9 @@ function installDiagnosticDemoTileSource($) {
         getTileUrl(level, x, y) {
             return [
                 "diagnostic-demo",
-                this.invalidPattern,
+                this.diagnosticScenario,
+                this.failurePattern,
+                this.failureReason,
                 level,
                 x,
                 y
@@ -122,20 +159,17 @@ function installDiagnosticDemoTileSource($) {
 
         downloadTileStart(context) {
             const coords = this._parseTileCoordinates(context);
+            const failureReason = this._getTileFailureReason(coords.level, coords.x, coords.y);
 
-            if (this._isInvalidTile(coords.level, coords.x, coords.y)) {
-                context.finish({
-                    invalid: true,
-                    level: coords.level,
-                    x: coords.x,
-                    y: coords.y,
-                    reason: "demo-invalid-data"
-                }, undefined, "image");
+            if (failureReason) {
+                const payload = this._createFailurePayload(failureReason, coords);
+
+                context.finish(payload.data, undefined, payload.type);
                 return;
             }
 
             context.finish(
-                this._createTileCanvas(coords.level, coords.x, coords.y),
+                this._createTileCanvas(coords.level, coords.x, coords.y, "valid tile data"),
                 undefined,
                 "image"
             );
@@ -147,7 +181,9 @@ function installDiagnosticDemoTileSource($) {
                 width: this.width,
                 height: this.height,
                 tileSize: this.tileSize,
-                invalidPattern: this.invalidPattern
+                diagnosticScenario: this.diagnosticScenario,
+                failurePattern: this.failurePattern,
+                failureReason: this.failureReason
             };
         }
 
@@ -160,51 +196,146 @@ function installDiagnosticDemoTileSource($) {
                 ""
             );
 
-            const match = /diagnostic-demo:([^:]+):(\d+):(\d+):(\d+)/.exec(src);
+            const match = /diagnostic-demo:([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+)/.exec(src);
 
             if (match) {
                 return {
-                    pattern: match[1],
-                    level: Number(match[2]),
-                    x: Number(match[3]),
-                    y: Number(match[4])
+                    scenario: match[1],
+                    failurePattern: match[2],
+                    failureReason: match[3],
+                    level: Number(match[4]),
+                    x: Number(match[5]),
+                    y: Number(match[6])
                 };
             }
 
             const tile = context.tile || {};
             return {
-                pattern: this.invalidPattern,
+                scenario: this.diagnosticScenario,
+                failurePattern: this.failurePattern,
+                failureReason: this.failureReason,
                 level: Number(tile.level) || this.maxLevel,
                 x: Number(tile.x) || 0,
                 y: Number(tile.y) || 0
             };
         }
 
-        _isInvalidTile(level, x, y) {
-            if (this.invalidPattern === "none") {
-                return false;
-            }
-
+        _getTileFailureReason(level, x, y) {
             if (level !== this.maxLevel) {
+                return null;
+            }
+
+            if (this.diagnosticScenario === "mixed-reasons") {
+                return this._getMixedFailureReason(x, y);
+            }
+
+            if (!this._matchesFailurePattern(this.failurePattern, x, y)) {
+                return null;
+            }
+
+            return this.failureReason === "mixed" ? "invalid-data" : this.failureReason;
+        }
+
+        _getMixedFailureReason(x, y) {
+            if (x === 0 && y === 0) {
+                return "invalid-data";
+            }
+
+            if (x === 1 && y === 1) {
+                return "tainted-data";
+            }
+
+            if (x === 2 && y === 2) {
+                return "unsupported-data";
+            }
+
+            return null;
+        }
+
+        _matchesFailurePattern(pattern, x, y) {
+            if (pattern === "none") {
                 return false;
             }
 
-            if (this.invalidPattern === "center") {
+            if (pattern === "center") {
                 return x === 1 && y === 1;
             }
 
-            if (this.invalidPattern === "diagonal") {
+            if (pattern === "diagonal") {
                 return x === y;
             }
 
-            if (this.invalidPattern === "checker") {
+            if (pattern === "checker") {
                 return (x + y) % 2 === 0;
             }
 
             return false;
         }
 
-        _createTileCanvas(level, x, y) {
+        _createFailurePayload(reason, coords) {
+            if (reason === "tainted-data") {
+                return {
+                    type: "image",
+                    data: this._createSyntheticTaintedCanvas(coords.level, coords.x, coords.y)
+                };
+            }
+
+            if (reason === "unsupported-data") {
+                return {
+                    type: "gpuTextureSet",
+                    data: "unsupported-gpu-texture-set-payload"
+                };
+            }
+
+            return {
+                type: "image",
+                data: {
+                    invalid: true,
+                    level: coords.level,
+                    x: coords.x,
+                    y: coords.y,
+                    reason: "demo-invalid-data"
+                }
+            };
+        }
+
+        _createSyntheticTaintedCanvas(level, x, y) {
+            const canvas = this._createTileCanvas(level, x, y, "synthetic tainted-data");
+            const originalGetContext = canvas.getContext.bind(canvas);
+            let taintedContext = null;
+
+            canvas.getContext = function(type, ...args) {
+                const context = originalGetContext(type, ...args);
+
+                if (type !== "2d" || !context || typeof context.getImageData !== "function") {
+                    return context;
+                }
+
+                if (!taintedContext) {
+                    taintedContext = new Proxy(context, {
+                        get(target, property) {
+                            if (property === "getImageData") {
+                                return function() {
+                                    throw createSyntheticSecurityError();
+                                };
+                            }
+
+                            const value = target[property];
+
+                            return typeof value === "function" ? value.bind(target) : value;
+                        }
+                    });
+                }
+
+                return taintedContext;
+            };
+
+            canvas.__diagnosticDemoTainted = true;
+
+            return canvas;
+        }
+
+        _createTileCanvas(level, x, y, label = "valid tile data") {
             const canvas = document.createElement("canvas");
             canvas.width = this.tileWidth || DEMO_TILE_SIZE;
             canvas.height = this.tileHeight || DEMO_TILE_SIZE;
@@ -243,7 +374,7 @@ function installDiagnosticDemoTileSource($) {
             ctx.fillText(`L${level} / ${x},${y}`, 40, 42);
 
             ctx.font = "13px system-ui, sans-serif";
-            ctx.fillText("valid tile data", 40, 72);
+            ctx.fillText(label, 40, 72);
 
             return canvas;
         }
@@ -252,13 +383,58 @@ function installDiagnosticDemoTileSource($) {
     $.DiagnosticDemoTileSource = DiagnosticDemoTileSource;
 }
 
+function createSyntheticSecurityError() {
+    if (typeof DOMException === "function") {
+        return new DOMException(
+            "The canvas has been tainted by cross-origin data.",
+            "SecurityError"
+        );
+    }
+
+    const error = new Error("The canvas has been tainted by cross-origin data.");
+    error.name = "SecurityError";
+    error.code = 18;
+    return error;
+}
+
 function createDemoTileSourceOptions() {
-    const patternSelect = document.getElementById("invalid-pattern-select");
+    const settings = getDiagnosticSettingsFromControls();
 
     return {
         ...DEMO_SOURCE_OPTIONS,
-        invalidPattern: patternSelect ? patternSelect.value : DEMO_SOURCE_OPTIONS.invalidPattern
+        diagnosticScenario: settings.scenario,
+        failurePattern: settings.failurePattern,
+        failureReason: settings.failureReason
     };
+}
+
+function getDiagnosticSettingsFromControls() {
+    const scenarioSelect = document.getElementById("diagnostic-scenario-select");
+    const patternSelect = document.getElementById("failure-pattern-select");
+    const reasonSelect = document.getElementById("failure-reason-select");
+
+    const scenario = scenarioSelect ? scenarioSelect.value : DEMO_SOURCE_OPTIONS.diagnosticScenario;
+    const preset = DIAGNOSTIC_SCENARIOS[scenario] || DIAGNOSTIC_SCENARIOS["custom"];
+
+    return {
+        scenario: scenario,
+        failurePattern: patternSelect ? patternSelect.value : preset.failurePattern,
+        failureReason: reasonSelect ? reasonSelect.value : preset.failureReason
+    };
+}
+
+function applyScenarioPresetToControls(scenario) {
+    const patternSelect = document.getElementById("failure-pattern-select");
+    const reasonSelect = document.getElementById("failure-reason-select");
+    const preset = DIAGNOSTIC_SCENARIOS[scenario] || DIAGNOSTIC_SCENARIOS["custom"];
+
+    if (patternSelect) {
+        patternSelect.value = preset.failurePattern === "mixed" ? "none" : preset.failurePattern;
+    }
+
+    if (reasonSelect) {
+        reasonSelect.value = preset.failureReason === "mixed" ? "invalid-data" : preset.failureReason;
+    }
 }
 
 function reloadDemoSource() {
@@ -595,7 +771,9 @@ function applyShaderLayerGuiConfig() {
 
 function setupDiagnosticsPanel() {
     const renderDiagnosticsToggle = document.getElementById("render-diagnostics-toggle");
-    const invalidPatternSelect = document.getElementById("invalid-pattern-select");
+    const scenarioSelect = document.getElementById("diagnostic-scenario-select");
+    const patternSelect = document.getElementById("failure-pattern-select");
+    const reasonSelect = document.getElementById("failure-reason-select");
     const reloadSourceButton = document.getElementById("reload-source-button");
 
     const syncControls = () => {
@@ -620,9 +798,34 @@ function setupDiagnosticsPanel() {
         });
     }
 
-    if (invalidPatternSelect) {
-        invalidPatternSelect.value = DEMO_SOURCE_OPTIONS.invalidPattern;
-        invalidPatternSelect.addEventListener("change", () => {
+    if (scenarioSelect) {
+        scenarioSelect.value = DEMO_SOURCE_OPTIONS.diagnosticScenario;
+        applyScenarioPresetToControls(scenarioSelect.value);
+
+        scenarioSelect.addEventListener("change", () => {
+            applyScenarioPresetToControls(scenarioSelect.value);
+            reloadDemoSource();
+            syncControls();
+        });
+    }
+
+    if (patternSelect) {
+        patternSelect.addEventListener("change", () => {
+            if (scenarioSelect) {
+                scenarioSelect.value = "custom";
+            }
+
+            reloadDemoSource();
+            syncControls();
+        });
+    }
+
+    if (reasonSelect) {
+        reasonSelect.addEventListener("change", () => {
+            if (scenarioSelect) {
+                scenarioSelect.value = "custom";
+            }
+
             reloadDemoSource();
             syncControls();
         });
@@ -640,20 +843,41 @@ function setupDiagnosticsPanel() {
 
 function writeDiagnosticsState() {
     const renderer = viewer.drawer && viewer.drawer.renderer;
-    const invalidPatternSelect = document.getElementById("invalid-pattern-select");
+    const settings = getDiagnosticSettingsFromControls();
+    const expectedDiagnostics = describeExpectedDiagnostics(settings);
 
     writeJson("diagnostics-state-output", {
         renderDiagnostics: renderer && typeof renderer.getRenderDiagnostics === "function" ?
             renderer.getRenderDiagnostics() :
             null,
-        invalidPattern: invalidPatternSelect ? invalidPatternSelect.value : DEMO_SOURCE_OPTIONS.invalidPattern,
-        expectedReason: "invalid-data",
-        expectedDiagnosticSource: "conversion/build failure sentinel",
-        invalidTilesAtMaxLevel: describeInvalidTiles(invalidPatternSelect ? invalidPatternSelect.value : DEMO_SOURCE_OPTIONS.invalidPattern)
+        scenario: settings.scenario,
+        failurePattern: settings.failurePattern,
+        failureReason: settings.failureReason,
+        expectedReasons: Array.from(new Set(expectedDiagnostics.map((item) => item.reason))),
+        expectedDiagnosticSource: "renderer preparation failure converted to diagnostic sentinel",
+        expectedDiagnosticsAtMaxLevel: expectedDiagnostics,
+        note: settings.scenario === "mixed-reasons" ?
+            "Mixed scenario uses fixed tiles for invalid-data, tainted-data, and unsupported-data." :
+            "Custom controls apply one reason across the selected pattern."
     });
 }
 
-function describeInvalidTiles(pattern) {
+function describeExpectedDiagnostics(settings) {
+    if (settings.scenario === "mixed-reasons") {
+        return [
+            { tile: "L2 / 0,0", reason: "invalid-data" },
+            { tile: "L2 / 1,1", reason: "tainted-data" },
+            { tile: "L2 / 2,2", reason: "unsupported-data" }
+        ];
+    }
+
+    return describePatternTiles(settings.failurePattern).map((tile) => ({
+        tile,
+        reason: settings.failureReason
+    }));
+}
+
+function describePatternTiles(pattern) {
     if (pattern === "none") {
         return [];
     }

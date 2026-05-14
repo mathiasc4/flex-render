@@ -1,6 +1,4 @@
 (function( $ ){
-    const OpenSeadragon = $;
-
     /**
      * @typedef {Object} TiledImageInfo
      * @property {Number} TiledImageInfo.id
@@ -40,7 +38,7 @@
      * @class OpenSeadragon.FlexDrawer
      * @classdesc implementation of WebGL renderer for an {@link OpenSeadragon.Viewer}
      */
-    OpenSeadragon.FlexDrawer = class extends OpenSeadragon.DrawerBase {
+    class FlexDrawer extends OpenSeadragon.DrawerBase {
         /**
          * @param {Object} options options for this Drawer
          * @param {OpenSeadragon.Viewer} options.viewer the Viewer that owns this Drawer
@@ -48,9 +46,6 @@
          * @param {HTMLElement} options.element parent element
          * @param {[String]} options.debugGridColor see debugGridColor in {@link OpenSeadragon.Options} for details
          * @param {Object} options.options optional
-         *
-         * @constructor
-         * @memberof OpenSeadragon.FlexDrawer
          */
         constructor(options){
             super(options);
@@ -2864,12 +2859,15 @@
         _setClip(){
             // no-op: called, handled during rendering from tiledImage data
         }
-    };
+    }
 
-    OpenSeadragon.FlexDrawer._idGenerator = 0;
-    Object.defineProperty(OpenSeadragon.FlexDrawer, 'idGenerator', {
+    FlexDrawer._idGenerator = 0;
+    Object.defineProperty(FlexDrawer, 'idGenerator', {
         get: function() {
             return this._idGenerator++;
         }
     });
+
+    $.FlexDrawer = FlexDrawer;
+
 }( OpenSeadragon ));

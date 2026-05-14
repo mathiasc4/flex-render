@@ -331,12 +331,34 @@
                     </label>
 
                     <label class="diagnostics-control-label">
-                        <span>Invalid tile pattern</span>
-                        <select id="invalid-pattern-select">
+                        <span>Scenario</span>
+                        <select id="diagnostic-scenario-select">
+                            <option value="valid-only">Valid tiles only</option>
+                            <option value="invalid-center">Invalid center tile</option>
+                            <option value="invalid-checker">Invalid checker tiles</option>
+                            <option value="tainted-center">Tainted center tile</option>
+                            <option value="unsupported-center">Unsupported center payload</option>
+                            <option value="mixed-reasons">Mixed diagnostic reasons</option>
+                            <option value="custom">Custom pattern/reason</option>
+                        </select>
+                    </label>
+
+                    <label class="diagnostics-control-label">
+                        <span>Failure pattern</span>
+                        <select id="failure-pattern-select">
                             <option value="center">Center tile</option>
                             <option value="diagonal">Diagonal tiles</option>
                             <option value="checker">Checker pattern</option>
                             <option value="none">None</option>
+                        </select>
+                    </label>
+
+                    <label class="diagnostics-control-label">
+                        <span>Failure reason</span>
+                        <select id="failure-reason-select">
+                            <option value="invalid-data">invalid-data</option>
+                            <option value="tainted-data">tainted-data</option>
+                            <option value="unsupported-data">unsupported-data</option>
                         </select>
                     </label>
                 </div>
@@ -353,21 +375,24 @@
                 <h3>What this demo shows</h3>
                 <ul>
                     <li>The custom demo TileSource returns normal canvas tiles for most coordinates.</li>
-                    <li>Selected coordinates return invalid data intentionally.</li>
-                    <li>FlexDrawer should convert those conversion failures into first-pass diagnostics.</li>
-                    <li>FlexRenderer should render those diagnostics as a warning glyph and border inside the affected tile.</li>
+                    <li>Selected coordinates return deterministic failure payloads for specific diagnostic reasons.</li>
+                    <li><code>invalid-data</code> exercises bitmap decode/preparation failure handling.</li>
+                    <li><code>tainted-data</code> exercises the drawer-side canvas taint preflight path.</li>
+                    <li><code>unsupported-data</code> exercises structured unsupported payload handling.</li>
+                    <li>FlexRenderer should render diagnostics as a warning glyph and border inside the affected tile.</li>
                 </ul>
 
                 <h3>Checks</h3>
                 <ol>
-                    <li>With diagnostics enabled, invalid tiles should show the warning marker.</li>
-                    <li>With diagnostics disabled, invalid tiles should not render warning markers.</li>
-                    <li>Changing the invalid pattern and reloading should produce deterministic affected tiles.</li>
+                    <li>With diagnostics enabled, affected tiles should show the warning marker.</li>
+                    <li>With diagnostics disabled, affected tiles should not render warning markers.</li>
+                    <li>Changing the scenario or custom pattern/reason should produce deterministic affected tiles.</li>
+                    <li>The renderer state readout should preserve the expected diagnostic reason exactly.</li>
                     <li>The shader layer controls should still behave normally.</li>
                 </ol>
 
                 <p class="diagnostics-guide-note">
-                    The invalid data is deterministic and demo-local. It does not depend on network errors or CORS behavior.
+                    The demo taint case is synthetic and local. It simulates canvas readback failure so the diagnostic path can be tested without depending on external CORS headers.
                 </p>
             </section>
         </aside>
