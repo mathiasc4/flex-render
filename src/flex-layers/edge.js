@@ -6,7 +6,7 @@
  * A plain range behaves like a single threshold, while advanced controls can provide
  * more complex sampled behavior without this shader caring about their internals.
  */
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static type() {
         return "edge";

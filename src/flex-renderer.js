@@ -1,52 +1,15 @@
 (function($) {
     /**
-     * @typedef {Object} ShaderConfig
-     * @property {String} shaderConfig.id
-     * @property {String} shaderConfig.name
-     * @property {String} shaderConfig.type         equal to ShaderLayer.type(), e.g. "identity"
-     * @property {Number} shaderConfig.visible      1 = use for rendering, 0 = do not use for rendering
-     * @property {Boolean} shaderConfig.fixed
-     * @property {Object} shaderConfig.params          settings for the ShaderLayer
-     * @property {OpenSeadragon.TiledImage[]|number[]} tiledImages images that provide the data
-     * @property {Object} shaderConfig._controls       storage for the ShaderLayer's controls
-     * @property {Object} shaderConfig.cache          cache object used by the ShaderLayer's controls
-     */
-
-    /**
-     * @typedef {Object} FPRenderPackageItem
-     * @property {WebGLTexture[]} texture           [TEXTURE_2D]
-     * @property {Float32Array} textureCoords
-     * @property {Float32Array} transformMatrix
-     * //todo provide also opacity per tile?
-     */
-
-    /**
-     * @typedef {Object} FPRenderPackage
-     * @property {FPRenderPackageItem[]} tiles
-     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
-     * @property {Number[][]} stencilPolygons
-     */
-
-    /**
-     * @typedef {Object} SPRenderPackage
-     * @property {Number} zoom
-     * @property {Number} pixelsize
-     * @property {Number} opacity
-     * @property {ShaderLayer} shader
-     * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
-     */
-
-    /**
      * @typedef HTMLControlsHandler
      * Function that attaches HTML controls for ShaderLayer's controls to DOM.
      * @type function
      * @param {OpenSeadragon.FlexRenderer.ShaderLayer} [shaderLayer]
-     * @param {ShaderConfig} [shaderConfig]
+     * @param {ShaderLayerConfig} [shaderConfig]
      * @returns {String}
      */
 
     /**
-     * @typedef {Object} InspectorState
+     * @typedef {object} InspectorState
      * @property {boolean} enabled master switch for inspector logic
      * @property {"reveal-inside"|"reveal-outside"|"lens-zoom"} mode interaction mode
      * @property {{x: number, y: number}} centerPx inspector center in canvas pixel space
@@ -57,7 +20,7 @@
      */
 
     /**
-     * @typedef {Object} InspectorStateUpdateOptions
+     * @typedef {object} InspectorStateUpdateOptions
      * @property {boolean} [notify=true] emit the `inspector-change` event
      * @property {boolean} [redraw=true] request a redraw after the state change
      * @property {string} [reason="set-inspector-state"] semantic reason included in the emitted event
@@ -69,7 +32,7 @@
      * Position fields use physical renderer framebuffer pixels with bottom-left origin,
      * directly comparable to `gl_FragCoord.xy`.
      *
-     * @typedef {Object} InteractionState
+     * @typedef {object} InteractionState
      * @property {boolean} enabled - Whether shader-visible interaction state is enabled.
      * @property {boolean} pointerInside - Whether the pointer is currently inside the interaction target.
      * @property {{x: number, y: number}} pointerPositionPx - Current pointer position.
@@ -103,6 +66,220 @@
      */
 
     /**
+     * Renderer-ready first-pass raster tile data.
+     *
+     * @typedef {object} FPRenderRasterTile
+     * @property {WebGLTexture[]} texture           [TEXTURE_2D]
+     * @property {Float32Array} textureCoords
+     * @property {Float32Array} transformMatrix
+     * //todo provide also opacity per tile?
+     */
+
+    /**
+     * Texture preparation options shared by renderer backends.
+     *
+     * These options are renderer-neutral. They must not expose OpenSeadragon
+     * objects or backend constants.
+     *
+     * @typedef {object} RasterTileTextureOptions
+     * @property {boolean} [imageSmoothingEnabled=false] - Whether prepared textures should use linear filtering when supported.
+     */
+
+    /**
+     * Renderer-neutral bitmap tile preparation options.
+     *
+     * `data` may be a browser image-like source such as a Blob, ImageBitmap,
+     * HTMLImageElement, HTMLCanvasElement, CanvasRenderingContext2D, or
+     * OffscreenCanvas. Backends decide which concrete source types they support.
+     *
+     * @typedef {object} PrepareBitmapTileOptions
+     * @property {*} data - Bitmap-like source data to prepare.
+     * @property {RasterTileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Typed array accepted as a GPU texture-set pack payload.
+     *
+     * @typedef {Uint8Array | Uint8ClampedArray | Uint16Array | Float32Array } GpuTextureSetPackData
+     */
+
+    /**
+     * One packed texture layer in a GPU texture-set tile payload.
+     *
+     * The current WebGL2 implementation supports `RGBA8` and `RGBA16F`.
+     * `RGBA8` data is uploaded as RGBA/UNSIGNED_BYTE. `RGBA16F` data is
+     * uploaded as RGBA/HALF_FLOAT.
+     *
+     * @typedef {object} GpuTextureSetPack
+     * @property {"RGBA8"|"RGBA16F"} [format="RGBA8"] - Pixel storage format for this pack.
+     * @property {GpuTextureSetPackData} data - Packed pixel data for one texture-array layer.
+     */
+
+    /**
+     * Packed GPU texture-set tile payload.
+     *
+     * This is not an OpenSeadragon-native data type. It is a FlexRenderer tile
+     * payload accepted through the `gpuTextureSet` cache format. Adapters may
+     * provide `getType()` for compatibility with FlexDrawer cache detection, but
+     * renderer preparation should validate the structural fields rather than
+     * require an OpenSeadragon-specific object instance.
+     *
+     * @typedef {object} GpuTextureSetTileData
+     * @property {function(): string} [getType] - Optional compatibility method returning `"gpuTextureSet"`.
+     * @property {number} width - Texture width in pixels.
+     * @property {number} height - Texture height in pixels.
+     * @property {GpuTextureSetPack[]} packs - Packed texture layers.
+     * @property {number} [channelCount] - Logical channel count represented by all packs.
+     */
+
+    /**
+     * Renderer-neutral GPU texture-set preparation options.
+     *
+     * `data` is a tile-source-provided packed texture payload. Backends decide
+     * which concrete payload shapes they support.
+     *
+     * @typedef {object} PrepareGpuTextureTileOptions
+     * @property {GpuTextureSetTileData} data - GPU texture-set payload to prepare.
+     * @property {RasterTileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Successful prepared tile result.
+     *
+     * `resource` is backend-owned. Callers may store it, but must release it
+     * through `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * `texture` is a compatibility alias for the current WebGL first-pass path.
+     *
+     * @typedef {object} PreparedRasterTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared resource.
+     * @property {*} texture - Compatibility alias for the current WebGL texture resource.
+     * @property {number} width - Prepared source width in pixels.
+     * @property {number} height - Prepared source height in pixels.
+     * @property {number} textureDepth - Number of backend texture layers.
+     * @property {number} packCount - Number of source packs represented by the resource.
+     * @property {number} channelCount - Number of source channels represented by the resource.
+     */
+
+    /**
+     * Prepared tile result.
+     *
+     * @typedef {PreparedRasterTileSuccess | PreparedTileFailure} PreparedRasterTileResult
+     */
+
+    /**
+     * @typedef {object} FPRenderVectorTileBatch
+     * @property {WebGLBuffer} vboPos
+     * @property {WebGLBuffer} vboParam
+     * @property {WebGLBuffer} ibo
+     * @property {number} count
+     * @property {number} [lineWidth]
+     */
+
+    /**
+     * Renderer-ready first-pass vector tile data.
+     *
+     * Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
+     *
+     * @typedef {object} FPRenderVectorTile
+     * @property {FPRenderVectorTileBatch[]} [fills]
+     * @property {FPRenderVectorTileBatch[]} [lines]
+     * @property {FPRenderVectorTileBatch[]} [linePrimitives]
+     * @property {FPRenderVectorTileBatch[]} [points]
+     */
+
+    /**
+     * One raw vector mesh feature produced by a tile source.
+     *
+     * This is renderer-neutral source data. Backends prepare it into
+     * `FPRenderVectorTileBatch` objects.
+     *
+     * @typedef {object} VectorMeshFeature
+     * @property {Float32Array|number[]} vertices - Packed vertices as vec4(x, y, depth, textureId).
+     * @property {Uint32Array|number[]} indices - Indices into the vertex array.
+     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
+     * @property {Float32Array|number[]} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     * @property {number} [lineWidth=1] - Native line width in pixels. Used only for `linePrimitives`.
+     */
+
+    /**
+     * Renderer-neutral vector mesh tile payload.
+     *
+     * This is the raw tile-source payload. It does not contain backend resources.
+     *
+     * @typedef {object} VectorMeshTileData
+     * @property {VectorMeshFeature[]} [fills] - Polygon fill triangle meshes.
+     * @property {VectorMeshFeature[]} [lines] - Stroke triangle meshes rendered with triangles.
+     * @property {VectorMeshFeature[]} [linePrimitives] - Native line segment meshes rendered with backend line primitives.
+     * @property {VectorMeshFeature[]} [points] - Point marker and icon meshes.
+     */
+
+    /**
+     * Renderer-neutral vector tile preparation options.
+     *
+     * @typedef {object} PrepareVectorTileOptions
+     * @property {VectorMeshTileData} data - Vector mesh payload to prepare.
+     */
+
+    /**
+     * Successful prepared vector tile result.
+     *
+     * `resource` is backend-owned and must be released through
+     * `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * @typedef {object} PreparedVectorTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared vector resource.
+     * @property {FPRenderVectorTile} vectors - Renderer-ready vector batches.
+     */
+
+    /**
+     * Failed prepared tile result.
+     *
+     * @typedef {object} PreparedTileFailure
+     * @property {false} ok - Whether preparation succeeded.
+     * @property {"tainted-data" | "invalid-data" | "unsupported-data" | "webgl-upload-failed"} reason - Stable preparation failure reason.
+     * @property {*} [error] - Original backend/browser error, when available.
+     */
+
+    /**
+     * Prepared vector tile result.
+     *
+     * @typedef {PreparedVectorTileSuccess | PreparedTileFailure} PreparedVectorTileResult
+     */
+
+    /**
+     * Renderer-ready first-pass diagnostic tile data.
+     *
+     * Entries in `FPRenderPackage.diagnostics` represent tiles that could not
+     * be rendered as normal raster or vector data. The containing first-pass
+     * package supplies the target source and stencil layers.
+     *
+     * @typedef {object} FPRenderDiagnosticTile
+     * @property {string} [reason] - Optional machine-readable diagnostic reason.
+     * @property {Float32Array | number[]} transformMatrix - Region transform used by the first pass.
+     * @property {Float32Array | number[]} position - Region corner positions, matching raster tile geometry.
+     */
+
+    /**
+     * @typedef {object} FPRenderPackage
+     * @property {FPRenderRasterTile[]} tiles
+     * @property {FPRenderVectorTile[]} [vectors]
+     * @property {FPRenderDiagnosticTile[]} [diagnostics]
+     * @property {number[][]} stencilPolygons
+     */
+
+    /**
+     * @typedef {object} SPRenderPackage
+     * @property {number} zoom
+     * @property {number} pixelsize
+     * @property {number} opacity
+     * @property {ShaderLayer} shader
+     * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
+     */
+
+    /**
      * Prepared two-pass renderer frame.
      *
      * This object is the main public boundary between `FlexDrawer` and
@@ -114,16 +291,14 @@
      * executes the render passes.
      *
      * @typedef {object} RenderFrame
-     * @memberof OpenSeadragon.FlexRenderer
-     * @property {Array<FPRenderPackage>} firstPass - First-pass render packages.
-     * @property {Array<SPRenderPackage>} secondPass - Second-pass render packages.
+     * @property {FPRenderPackage[]} firstPass - First-pass render packages.
+     * @property {SPRenderPackage[]} secondPass - Second-pass render packages.
      */
 
     /**
      * Options for `OpenSeadragon.FlexRenderer#render`.
      *
      * @typedef {object} RenderOptions
-     * @memberof OpenSeadragon.FlexRenderer
      * @property {object} [secondPassOptions] - Backend-specific options forwarded to `renderSecondPass(...)`.
      */
 
@@ -136,7 +311,6 @@
      * submitted render work and a valid no-op.
      *
      * @typedef {object} RenderOutput
-     * @memberof OpenSeadragon.FlexRenderer
      * @property {number} textureDepth - Number of color/intermediate texture layers exposed by this output.
      * @property {number} stencilDepth - Number of stencil/source-mask texture layers exposed by this output.
      * @property {WebGLTexture|undefined} [texture] - Backend-owned color/intermediate TEXTURE_2D_ARRAY texture, when exposed.
@@ -147,68 +321,76 @@
      */
 
     /**
+     * @typedef {object} FlexRendererOptions
+     *
+     * @property {string} uniqueId
+     *
+     * @property {string} webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
+     *
+     * @property {boolean} debug                   debug mode on/off
+     *
+     * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
+     *
+     * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
+     *
+     * @property {boolean} interactive             if true (default), the layers are configured for interactive changes (not applied by default)
+     *
+     * @property {HTMLControlsHandler} htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
+     * @property {function} htmlReset              callback called when a program is reset - html needs to be cleaned
+     *
+     * @property {Function} redrawCallback          function called when user input changed; triggers re-render of the viewport
+     * @property {Function} refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
+     *
+     * @property {object} canvasOptions
+     * @property {boolean} canvasOptions.alpha
+     * @property {boolean} canvasOptions.premultipliedAlpha
+     * @property {boolean} canvasOptions.stencil
+     */
+
+    /**
      * WebGL Renderer for OpenSeadragon.
+     *
+     * Manages ShaderLayers, their controls, and a WebGL context to allow rendering using WebGL.
      *
      * Renders in two passes:
      *  1st pass joins tiles and creates masks where we should draw
      *  2nd pass draws the actual data using shaders
      *
      * @property {RegExp} idPattern
-     * @property {Object} BLEND_MODE
+     * @property {string[]} SUPPORTED_BLEND_MODES
      *
-     * @class OpenSeadragon.FlexRenderer
-     * @classdesc class that manages ShaderLayers, their controls, and WebGLContext to allow rendering using WebGL
      * @memberof OpenSeadragon
      */
-    $.FlexRenderer = class extends $.EventSource {
-
+    class FlexRenderer extends $.EventSource {
         /**
-         * @param {Object} incomingOptions
-         *
-         * @param {String} incomingOptions.uniqueId
-         *
-         * @param {String} incomingOptions.webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
-         *
-         * @param {Function} incomingOptions.redrawCallback          function called when user input changed; triggers re-render of the viewport
-         * @param {Function} incomingOptions.refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
-         * @param {Boolean} incomingOptions.debug                   debug mode on/off
-         * @param {Boolean} incomingOptions.interactive             if true (default), the layers are configured for interactive changes (not applied by default)
-         * @param {HTMLControlsHandler} incomingOptions.htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
-         * @param {function} incomingOptions.htmlReset              callback called when a program is reset - html needs to be cleaned
-         * @param {string|undefined} incomingOptions.backgroundColor #RGB or #RGBA hex, default undefined - transparent
-         *
-         * @param {Object} incomingOptions.canvasOptions
-         * @param {Boolean} incomingOptions.canvasOptions.alpha
-         * @param {Boolean} incomingOptions.canvasOptions.premultipliedAlpha
-         * @param {Boolean} incomingOptions.canvasOptions.stencil
-         *
-         *
-         * @constructor
-         * @memberof FlexRenderer
+         * @param {FlexRendererOptions} options
          */
-        constructor(incomingOptions) {
+        constructor(options) {
             super();
 
-            if (!this.constructor.idPattern.test(incomingOptions.uniqueId)) {
-                throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + incomingOptions.uniqueId);
+            if (!this.constructor.idPattern.test(options.uniqueId)) {
+                throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + options.uniqueId);
             }
-            this.uniqueId = incomingOptions.uniqueId;
+            this.uniqueId = options.uniqueId;
 
-            this.webGLPreferredVersion = incomingOptions.webGLPreferredVersion;
+            this.webGLPreferredVersion = options.webGLPreferredVersion;
 
-            this.redrawCallback = incomingOptions.redrawCallback;
-            this.refetchCallback = incomingOptions.refetchCallback;
-            this.debug = incomingOptions.debug;
-            this.interactive = incomingOptions.interactive === undefined ?
-                !!incomingOptions.htmlHandler : !!incomingOptions.interactive;
-            this.htmlHandler = this.interactive ? incomingOptions.htmlHandler : null;
-            this._background = incomingOptions.backgroundColor || '#00000000';
+            this.debug = options.debug;
+
+            this._renderDiagnostics = options.renderDiagnostics !== false;
+
+            this._background = options.backgroundColor || "#00000000";
+
+            this.redrawCallback = options.redrawCallback;
+            this.refetchCallback = options.refetchCallback;
+            this.interactive = options.interactive === undefined ? !!options.htmlHandler : !!options.interactive;
+            this.htmlHandler = this.interactive ? options.htmlHandler : null;
 
             if (this.htmlHandler) {
-                if (!incomingOptions.htmlReset) {
+                if (!options.htmlReset) {
                     throw Error("$.FlexRenderer::constructor: htmlReset callback is required when htmlHandler is set!");
                 }
-                this.htmlReset = incomingOptions.htmlReset;
+                this.htmlReset = options.htmlReset;
             } else {
                 this.htmlReset = () => {};
             }
@@ -223,7 +405,7 @@
             this._inspectorState = this.constructor.normalizeInspectorState();
             this._interactionState = this.constructor.normalizeInteractionState();
 
-            this.canvasContextOptions = incomingOptions.canvasOptions;
+            this.canvasContextOptions = options.canvasOptions;
             const canvas = document.createElement("canvas");
             const WebGLImplementation = this.constructor.determineBackend(this.webGLPreferredVersion);
             const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
@@ -266,9 +448,9 @@
 
         /**
          * Pre-compilation shader configuration cleanup
-         * @param {ShaderConfig} config
+         * @param {ShaderLayerConfig} config
          * @param {NormalizationContext} context
-         * @return {ShaderConfig}
+         * @return {ShaderLayerConfig}
          */
         static normalizeShaderConfig(config, context = {}) {
             if (!config || typeof config !== "object") {
@@ -276,7 +458,7 @@
             }
 
             let normalized = config;
-            const Shader = normalized.type ? $.FlexRenderer.ShaderMediator.getClass(normalized.type) : null;
+            const Shader = normalized.type ? $.FlexRenderer.ShaderLayerRegistry.get(normalized.type) : null;
 
             if (Shader && typeof Shader.normalizeConfig === "function") {
                 const next = Shader.normalizeConfig(normalized, context);
@@ -297,9 +479,9 @@
 
         /**
          * Normalize shader configuration map - all shaders at once.
-         * @param {Record<string, ShaderConfig>} shaderMap
+         * @param {Record<string, ShaderLayerConfig>} shaderMap
          * @param {NormalizationContext} context
-         * @return {Record<string, ShaderConfig>}
+         * @return {Record<string, ShaderLayerConfig>}
          */
         static normalizeShaderMap(shaderMap, context = {}) {
             if (!shaderMap || typeof shaderMap !== "object" || Array.isArray(shaderMap)) {
@@ -362,6 +544,126 @@
          */
         supportsHtmlControls() {
             return typeof this.htmlHandler === "function";
+        }
+
+        /**
+         * Enable or disable rendering of first-pass diagnostic tiles.
+         *
+         * This controls only whether provided diagnostic tiles are drawn. It does
+         * not change first-pass package construction and does not rebuild WebGL
+         * programs.
+         *
+         * @param {boolean} enabled
+         * @param {object} [options={}]
+         * @param {boolean} [options.redraw=true] request a redraw after changing the setting
+         * @return {boolean} Current diagnostic rendering state.
+         */
+        setRenderDiagnostics(enabled, options = {}) {
+            const current = enabled !== false;
+
+            if (this._renderDiagnostics === current) {
+                return this.getRenderDiagnostics();
+            }
+
+            this._renderDiagnostics = current;
+
+            if (options.redraw !== false && typeof this.redrawCallback === "function") {
+                this.redrawCallback();
+            }
+
+            return this.getRenderDiagnostics();
+        }
+
+        /**
+         * Return whether first-pass diagnostic tiles should be rendered when provided.
+         *
+         * @return {boolean}
+         */
+        getRenderDiagnostics() {
+            return this._renderDiagnostics !== false;
+        }
+
+        /**
+         * Prepare bitmap-like tile data as a backend-owned render resource.
+         *
+         * This method is renderer-neutral and does not inspect OpenSeadragon
+         * tiles, TiledImages, viewports, or tile caches. Concrete upload,
+         * decode, taint/security classification, and cleanup behavior are owned
+         * by the active backend.
+         *
+         * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+         */
+        async prepareBitmapTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareBitmapTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support bitmap tile preparation.")
+                };
+            }
+
+            return this.backend.prepareBitmapTile(options);
+        }
+
+        /**
+         * Prepare GPU texture-set tile data as a backend-owned render resource.
+         *
+         * This method is renderer-neutral and delegates concrete payload
+         * validation, upload, and cleanup behavior to the active backend.
+         *
+         * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+         */
+        async prepareGpuTextureTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareGpuTextureTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support GPU texture tile preparation.")
+                };
+            }
+
+            return this.backend.prepareGpuTextureTile(options);
+        }
+
+        /**
+         * Prepare vector mesh tile data as backend-owned render resources.
+         *
+         * This method is renderer-neutral and delegates concrete buffer/resource
+         * creation to the active backend.
+         *
+         * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+         * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+         */
+        async prepareVectorTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareVectorTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support vector tile preparation.")
+                };
+            }
+
+            return this.backend.prepareVectorTile(options);
+        }
+
+        /**
+         * Release a backend-owned prepared tile resource.
+         *
+         * Callers that store resources returned by `prepareBitmapTile(...)`,
+         * `prepareGpuTextureTile(...)`, or `prepareVectorTile(...)` must release
+         * them through this method rather than touching backend internals directly.
+         *
+         * @param {*} resource - Backend-owned prepared tile resource.
+         * @returns {void}
+         */
+        releasePreparedTileResource(resource) {
+            if (!resource || !this.backend || typeof this.backend.releasePreparedTileResource !== "function") {
+                return;
+            }
+
+            this.backend.releasePreparedTileResource(resource);
         }
 
         /**
@@ -583,7 +885,7 @@
                 const config = shader.getConfig();
                 // Check explicitly type of the config, if updated, recreate shader
                 if (shader.constructor.type() !== config.type) {
-                    const NewShader = $.FlexRenderer.ShaderMediator.getClass(config.type);
+                    const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
                     if (NewShader) {
                         // Drop orphan params from the previous shader type before re-instantiation,
                         // otherwise stale keys (color, threshold, connect, incompatible use_channelN, ...)
@@ -743,20 +1045,18 @@
 
         /**
          * Create and initialize new ShaderLayer instance and its controls.
-         * @param id
-         * @param {ShaderConfig} shaderConfig object bound to a concrete ShaderLayer instance
-         * @param {boolean} [copyConfig=false] if true, deep copy of the config is used to avoid modification of the parameter
-         * @returns {ShaderLayer} instance of the created shaderLayer
          *
-         * @instance
-         * @memberof FlexRenderer
+         * @param id
+         * @param {ShaderLayerConfig} config - object bound to a concrete ShaderLayer instance
+         * @param {boolean} [copyConfig=false] - if true, deep copy of the config is used to avoid modification of the parameter
+         * @returns {ShaderLayer} A new ShaderLayer instance.
          */
-        createShaderLayer(id, shaderConfig, copyConfig = false) {
+        createShaderLayer(id, config, copyConfig = false) {
             id = $.FlexRenderer.sanitizeKey(id);
 
-            const Shader = $.FlexRenderer.ShaderMediator.getClass(shaderConfig.type);
-            if (!Shader) {
-                throw new Error(`$.FlexRenderer::createShaderLayer: Unknown shader type '${shaderConfig.type}'!`);
+            const ShaderLayerClass = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
+            if (!ShaderLayerClass) {
+                throw new Error(`$.FlexRenderer::createShaderLayer: Unknown shader type '${config.type}'!`);
             }
 
             const defaultConfig = {
@@ -764,19 +1064,19 @@
                 name: "Layer",
                 type: "identity",
                 visible: 1,
-                fixed: false,
                 tiledImages: [],
                 params: {},
                 cache: {},
             };
+
             if (copyConfig) {
                 // Deep copy to avoid modification propagation
-                shaderConfig = $.extend(true, defaultConfig, shaderConfig);
+                config = $.extend(true, defaultConfig, config);
             } else {
                 // Ensure we keep references where possible -> this will make shader object within drawers (e.g. navigator VS main)
                 for (let propName in defaultConfig) {
-                    if (shaderConfig[propName] === undefined) {
-                        shaderConfig[propName] = defaultConfig[propName];
+                    if (config[propName] === undefined) {
+                        config[propName] = defaultConfig[propName];
                     }
                 }
             }
@@ -786,10 +1086,10 @@
             }
 
             // TODO a bit dirty approach, make the program key usable from outside
-            const shader = new Shader(id, {
-                shaderConfig: shaderConfig,
+            const shader = new ShaderLayerClass(id, {
+                shaderConfig: config,
                 backend: this.backend,
-                params: shaderConfig.params,
+                params: config.params,
                 interactive: this.interactive,
 
                 // callback to re-render the viewport
@@ -812,7 +1112,7 @@
                 return shader;
             } catch (e) {
                 delete this._shaders[id];
-                console.error(`Failed to construct shader '${id}' (${shaderConfig.type}).`, e, shaderConfig);
+                console.error(`Failed to construct shader '${id}' (${config.type}).`, e, config);
                 return undefined;
             }
         }
@@ -849,7 +1149,7 @@
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
             }
 
-            const NewShader = $.FlexRenderer.ShaderMediator.getClass(newType);
+            const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(newType);
             if (!NewShader) {
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown shader type '${newType}'.`);
             }
@@ -871,7 +1171,7 @@
          * channel values would otherwise cause parseChannel warnings or sample()-time
          * GLSL incompatibilities once the new shader is constructed.
          *
-         * @param {ShaderConfig} shaderConfig    config whose .params object will be mutated
+         * @param {ShaderLayerConfig} shaderConfig    config whose .params object will be mutated
          * @param {Function}     NewShaderClass  the target shader class
          * @private
          */
@@ -1120,7 +1420,7 @@
          *
          * @returns {{
          *   order: string[],
-         *   shaders: Object<string, ShaderConfig>
+         *   shaders: Object<string, ShaderLayerConfig>
          * }}
          */
         getVisualizationSnapshot() {
@@ -1140,7 +1440,7 @@
 
         /**
          * Alias that makes intent explicit when used by application code.
-         * @returns {{order: string[], shaders: Object<string, ShaderConfig>}}
+         * @returns {{order: string[], shaders: Object<string, ShaderLayerConfig>}}
          */
         exportVisualization() {
             return this.getVisualizationSnapshot();
@@ -1482,8 +1782,14 @@
                 this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
                 this._debugPreviewColorRB = null;
             }
+
             this.backend.destroy();
             this._programImplementations = {};
+
+            let ext = this.gl.getExtension('WEBGL_lose_context');
+            if (ext) {
+                ext.loseContext();
+            }
         }
 
         static sanitizeKey(key) {
@@ -2218,8 +2524,7 @@
             w.document.body.appendChild(cnv);
             w.__debugCtx = cnv.getContext('2d');
         }
-    };
-
+    }
 
     // STATIC PROPERTIES
     /**
@@ -2228,10 +2533,11 @@
      * @type {RegExp}
      * @memberof FlexRenderer
      */
-    $.FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
-    $.FlexRenderer.__runtimeSupportCache = null;
+    FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
 
-    $.FlexRenderer.BLEND_MODE = [
+    FlexRenderer.__runtimeSupportCache = null;
+
+    FlexRenderer.SUPPORTED_BLEND_MODES = [
         'mask',
         'source-over',
         'source-in',
@@ -2260,7 +2566,7 @@
         'luminosity',
     ];
 
-    $.FlexRenderer.jsonReplacer = function (key, value) {
+    FlexRenderer.jsonReplacer = function (key, value) {
         return key.startsWith("_") || ["eventSource"].includes(key) ? undefined : value;
     };
 
@@ -2268,7 +2574,7 @@
      * Generic computational program interface
      * @type {{new(*): $.FlexRenderer.Program, context: *, _requiresLoad: boolean, prototype: Program}}
      */
-    $.FlexRenderer.Program = class {
+     class Program {
         constructor(context) {
             this.context = context;
             this._requiresLoad = true;
@@ -2346,38 +2652,45 @@
          * Destroy program. No arguments.
          */
         destroy() {}
-    };
+    }
+
+    FlexRenderer.Program = Program;
+
+    $.FlexRenderer = FlexRenderer;
+
 
     /**
      * Blank layer that takes almost no memory and current renderer skips it.
-     * @type {OpenSeadragon.BlankTileSource}
      */
-    $.BlankTileSource = class extends $.TileSource {
+     class BlankTileSource extends $.TileSource {
         supports(data, url) {
             return (data && data.type === "_blank") || (url && url.type === "_blank");
         }
-        configure(options, dataUrl, postData) {
+
+        configure(options, _dataUrl, _postData) {
             return $.extend(options, {
                 width: 512,
                 height: 512,
-                _tileWidth: 512,
-                _tileHeight: 512,
                 tileSize: 512,
                 tileOverlap: 0,
                 minLevel: 0,
                 maxLevel: 0,
-                dimensions: new $.Point(512, 512),
             });
         }
-        downloadTileStart(context) {
-            return context.finish("_blank", undefined, "undefined");
-        }
-        getMetadata() {
-            return this;
-        }
+
         getTileUrl(level, x, y) {
             return "_blank";
         }
-    };
+
+        downloadTileStart(context) {
+            return context.finish("_blank", undefined, "undefined");
+        }
+
+        getMetadata() {
+            return this;
+        }
+    }
+
+    $.BlankTileSource = BlankTileSource;
 
 })(OpenSeadragon);

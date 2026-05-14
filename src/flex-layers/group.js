@@ -3,7 +3,7 @@
     /**
      * A shader layer grouping multiple shader layers and combining them into one output
      */
-    $.FlexRenderer.ShaderMediator.registerLayer(
+    $.FlexRenderer.ShaderLayerRegistry.register(
         class extends $.FlexRenderer.ShaderLayer {
             static type() {
                 return "group";
@@ -45,7 +45,7 @@
             createShaderLayer(id, config) {
                 id = $.FlexRenderer.sanitizeKey(id);
 
-                const ShaderLayer = $.FlexRenderer.ShaderMediator.getClass(config.type);
+                const ShaderLayer = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
                 if (!ShaderLayer) {
                     throw new Error(`Unknown shader layer type '${config.type}'`);
                 }

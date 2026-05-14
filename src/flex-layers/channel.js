@@ -14,7 +14,7 @@
      *      2) fallback: config.channelIndex (legacy),
      *      3) fallback: 0.
      */
-    $.FlexRenderer.ShaderMediator.registerLayer(class SingleChannel extends $.FlexRenderer.ShaderLayer {
+    $.FlexRenderer.ShaderLayerRegistry.register(class SingleChannel extends $.FlexRenderer.ShaderLayer {
 
         static type() {
             return "single_channel";

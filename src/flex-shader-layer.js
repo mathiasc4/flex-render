@@ -1,86 +1,35 @@
 (function($) {
     /**
-     * Organizer of ShaderLayers.
+     * Determines how a shader layer participates in stack composition.
      *
-     * @property {object} _layers           storage of ShaderLayers, {ShaderLayer.type(): ShaderLayer}
-     * @property {Boolean} _acceptsShaders  allow new ShaderLayer registrations
-     *
-     * @class OpenSeadragon.FlexRenderer.ShaderMediator
-     * @memberOf OpenSeadragon.FlexRenderer
+     * @typedef {"show" | "blend" | "clip"} ShaderLayerCompositionMode
      */
-    $.FlexRenderer.ShaderMediator = class {
-        /**
-         * Register ShaderLayer.
-         * @param {typeof OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
-         */
-        static registerLayer(shaderLayer) {
-            if (this._acceptsShaders) {
-                if (this._layers[shaderLayer.type()]) {
-                    console.warn(`OpenSeadragon.FlexRenderer.ShaderMediator::registerLayer: ShaderLayer ${shaderLayer.type()} already registered, overwriting the content!`);
-                }
-                this._layers[shaderLayer.type()] = shaderLayer;
-            } else {
-                console.warn("OpenSeadragon.FlexRenderer.ShaderMediator::registerLayer: ShaderMediator is set to not accept new ShaderLayers!");
-            }
-        }
-
-        /**
-         * Enable or disable ShaderLayer registrations.
-         * @param {Boolean} accepts
-         */
-        static setAcceptsRegistrations(accepts) {
-            if (accepts === true || accepts === false) {
-                this._acceptsShaders = accepts;
-            } else {
-                console.warn("OpenSeadragon.FlexRenderer.ShaderMediator::setAcceptsRegistrations: Accepts parameter must be either true or false!");
-            }
-        }
-
-        /**
-         * Get the ShaderLayer implementation.
-         * @param {String} shaderType equals to a wanted ShaderLayers.type()'s return value
-         * @return {typeof OpenSeadragon.FlexRenderer.ShaderLayer}
-         */
-        static getClass(shaderType) {
-            return this._layers[shaderType];
-        }
-
-        /**
-         * Get all available ShaderLayers.
-         * @return {[typeof OpenSeadragon.FlexRenderer.ShaderLayer]}
-         */
-        static availableShaders() {
-            return Object.values(this._layers);
-        }
-
-        /**
-         * Get all available ShaderLayer types.
-         * @return {[String]}
-         */
-        static availableTypes() {
-            return Object.keys(this._layers);
-        }
-    };
-    // STATIC PROPERTIES
-    $.FlexRenderer.ShaderMediator._acceptsShaders = true;
-    $.FlexRenderer.ShaderMediator._layers = {};
-
-
 
     /**
-     * Interface for classes that implement any rendering logic and are part of the final WebGLProgram.
-     *
-     * @property {Object} defaultControls default controls for the ShaderLayer
-     * @property {Object} customParams
-     * @property {Object} modes
-     * @property {Object} filters
-     * @property {Object} filterNames
-     * @property {Object} __globalIncludes
-     *
-     * @interface OpenSeadragon.FlexRenderer.ShaderLayer
-     * @memberOf OpenSeadragon.FlexRenderer
+     * @typedef {object} ShaderLayerConfig
+     * @property {string} id
+     * @property {string} name
+     * @property {string} type         equal to ShaderLayer.type(), e.g. "identity"
+     * @property {number} visible      1 = use for rendering, 0 = do not use for rendering
+     * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages images that provide the data
+     * @property {object} params          settings for the ShaderLayer
+     * @property {object} _controls       storage for the ShaderLayer's controls
+     * @property {object} cache          cache object used by the ShaderLayer's controls
      */
-    $.FlexRenderer.ShaderLayer = class {
+
+    /**
+     * Abstract base class for classes that implement any rendering logic and are part of the final WebGLProgram.
+     *
+     * @property {object} defaultControls default controls for the ShaderLayer
+     * @property {object} customParams
+     * @property {object} filters
+     * @property {object} filterNames
+     * @property {object} __globalIncludes
+     *
+     * @abstract
+     * @memberof OpenSeadragon.FlexRenderer
+     */
+    class ShaderLayer {
         /**
          * @typedef channelSettings
          * @type {Object}
@@ -98,41 +47,57 @@
          * @param {Function} privateOptions.rebuild     // callback to rebuild the WebGL program
          * @param {Function} privateOptions.refresh     // callback to recreate the ShaderLayer when control layout changes
          * @param {Function} privateOptions.refetch     // callback to request source/config refetch work from the owning drawer
-         *
-         * @constructor
-         * @memberOf FlexRenderer.ShaderLayer
          */
         constructor(id, privateOptions) {
-            // unique identifier of this ShaderLayer for FlexRenderer
+            /**
+             * Unique identifier of this ShaderLayer for FlexRenderer.
+             *
+             * @type {string}
+             */
             this.id = id;
-            // unique identifier of this ShaderLayer for WebGLProgram
+
+            /**
+             * Unique identifier of this ShaderLayer for WebGLProgram.
+             *
+             * @type {string}
+             */
             this.uid = this.constructor.type().replaceAll('-', '_') + '_' + id;
+
             if (!$.FlexRenderer.idPattern.test(this.uid)) {
                 console.error(`Invalid ID for the shader: ${id} does not match to the pattern`, $.FlexRenderer.idPattern);
             }
 
             this.__shaderConfig = privateOptions.shaderConfig;
+
             this.backend = privateOptions.backend;
+
             this._interactive = privateOptions.interactive;
-            this._customControls = privateOptions.params ? privateOptions.params : {};
+            this._controls = {};
+            this._params = privateOptions.params ? privateOptions.params : {};
 
 
             this.invalidate = privateOptions.invalidate;
             this._rebuild = privateOptions.rebuild;
             this._refresh = privateOptions.refresh;
             this._refetch = privateOptions.refetch;
-            this._controls = {};
 
             // channels used for sampling data from the texture
             this.__channels = null;
             // channel offset
             this.__baseChannels = null;
 
+            /**
+             * @private
+             * @type {ShaderLayerCompositionMode | null}
+             */
+            this._compositionMode = null;
+
             // which blend mode is being used
-            this._mode = null;
+            this._blendMode = null;
+
             // parameters used for applying filters
-            this.__scalePrefix = null;
-            this.__scaleSuffix = null;
+            this.__filterPrefix = null;
+            this.__filterSuffix = null;
         }
 
         /**
@@ -142,11 +107,12 @@
             // Default init respects cached value, manual usage overrides.
 
             // set up the color channel(s) for texture sampling
-            this.resetChannel(this._customControls, false, false);
+            this.resetChannel(this._params, false, false);
             // set up the blending mode
-            this.resetMode(this._customControls, false, false);
+            this.resetMode(this._params, false, false);
             // set up the filters to be applied to sampled data from the texture
-            this.resetFilters(this._customControls, false, false);
+            this.resetFilters(this._params, false, false);
+
             // build the ShaderLayer's controls
             this._buildControls();
         }
@@ -154,50 +120,54 @@
         // STATIC METHODS
         /**
          * Parses value to a float string representation with given precision (length after decimal)
+         *
          * @param {number} value value to convert
          * @param {number} defaultValue default value on failure
-         * @param {number} precisionLen number of decimals
+         * @param {number} precision number of decimals
          * @return {string}
          */
-        static toShaderFloatString(value, defaultValue, precisionLen = 5) {
-            if (!Number.isInteger(precisionLen) || precisionLen < 0 || precisionLen > 9) {
-                precisionLen = 5;
+        static toShaderFloatString(value, defaultValue, precision = 5) {
+            if (!Number.isInteger(precision) || precision < 0 || precision > 9) {
+                precision = 5;
             }
+
             try {
-                return value.toFixed(precisionLen);
+                return value.toFixed(precision);
             } catch (e) {
-                return defaultValue.toFixed(precisionLen);
+                return defaultValue.toFixed(precision);
             }
         }
 
         // METHODS TO (re)IMPLEMENT WHEN EXTENDING
         /**
-         * @returns {String} key under which is the shader registered, should be unique!
+         * @returns {string} - Key under which the shader is registered, should be unique.
          */
         static type() {
             throw "ShaderLayer::type() must be implemented!";
         }
 
         /**
-         * @returns {String} name of the ShaderLayer (user-friendly)
+         * @returns {string} - A user-friendly name for the ShaderLayer type.
          */
         static name() {
             throw "ShaderLayer::name() must be implemented!";
         }
 
         /**
-         * @returns {String} optional description
+         * @returns {string} - An optional technical description for the ShaderLayer.
          */
         static description() {
-            return "No description of the ShaderLayer.";
+            return "This ShaderLayer has no description.";
         }
 
         /**
          * Optional machine-readable documentation descriptor.
+         *
          * External shader registrations can override this as either:
          *  - static docs() { return {...}; }
          *  - static docs = {...}
-         * @returns {object|null}
+         *
+         * @returns {object | null}
          */
         static docs() {
             return null;
@@ -210,10 +180,10 @@
          * Read by hosts (e.g. xOpat scripting / LLM driven layer construction) when picking
          * a shader for a given dataset. Keep it generic — no use-case-specific recipes.
          *
-         * Override per shader; the default returns `undefined`, in which case hosts treat
+         * Override per ShaderLayer; the default returns `undefined`, in which case hosts treat
          * "no info" as a safe fallback.
          *
-         * @returns {String|undefined}
+         * @returns {string | undefined}
          */
         static intent() {
             return undefined;
@@ -231,9 +201,9 @@
          *   requiresThreshold?: boolean  // true when behavior depends on threshold breaks
          * }
          *
-         * Override per shader; the default returns `undefined`.
+         * Override per ShaderLayer; the default returns `undefined`.
          *
-         * @returns {{dataKind?: string, channels?: number|string, requiresThreshold?: boolean}|undefined}
+         * @returns {{dataKind?: string, channels?: number|string, requiresThreshold?: boolean} | undefined}
          */
         static expects() {
             return undefined;
@@ -246,9 +216,9 @@
          * something sensible. If the shader declares `controlCouplings`, the returned
          * object MUST satisfy them (it doubles as the canonical example).
          *
-         * Override per shader; the default returns `undefined`.
+         * Override per ShaderLayer; the default returns `undefined`.
          *
-         * @returns {object|undefined}
+         * @returns {object | undefined}
          */
         static exampleParams() {
             return undefined;
@@ -279,7 +249,7 @@
          * Override per shader when controls are coupled; the default returns `undefined`.
          * Returning `[]` is also accepted ("declared, but no couplings").
          *
-         * @returns {Array<{name: string, summary: string, controls: string[], validate: Function}>|undefined}
+         * @returns {Array<{name: string, summary: string, controls: string[], validate: Function}> | undefined}
          */
         static controlCouplings() {
             return undefined;
@@ -287,7 +257,7 @@
 
         /**
          * Declare the object for channel settings. One for each data source (NOT USED, ALWAYS RETURNS ARRAY OF ONE OBJECT; for backward compatibility the array is returned)
-         * @returns {[channelSettings]}
+         * @returns {channelSettings[]}
          */
         static sources() {
             throw "ShaderLayer::sources() must be implemented!";
@@ -360,9 +330,9 @@
 
         /**
          * Modification of the configuration object before it is used.
-         * @param {ShaderConfig} config
+         * @param {ShaderLayerConfig} config
          * @param {NormalizationContext} context
-         * @returns {ShaderConfig}
+         * @returns {ShaderLayerConfig}
          */
         static normalizeConfig(config, context = {}) {
             return config;
@@ -452,7 +422,7 @@
                     continue;
                 }
 
-                const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this._customControls[controlName]);
+                const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this._params[controlName]);
                 // enables iterating over the owned controls
                 this._controls[controlName] = control;
                 // simplify usage of controls (e.g. this.opacity instead of this._controls.opacity)
@@ -627,7 +597,7 @@
          */
         resetChannel(options = {}, force = true, evented = true) {
             if (Object.keys(options) === 0) {
-                options = this._customControls;
+                options = this._params;
             }
 
             // regex to compare with value used with use_channel, to check its correctness
@@ -959,16 +929,16 @@
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
         resetMode(options = {}, force = true, evented = true) {
-            this._mode = this._resetOption("use_mode", this.backend.supportedUseModes, options, force);
-            this._blend = this._resetOption("use_blend", OpenSeadragon.FlexRenderer.BLEND_MODE, options, force);
+            this._compositionMode = this._resetOption("use_mode", this.backend.supportedUseModes, options, force);
+            this._blendMode = this._resetOption("use_blend", OpenSeadragon.FlexRenderer.SUPPORTED_BLEND_MODES, options, force);
 
             if (evented) {
                 this.backend.renderer.notifyVisualizationChanged({
                     reason: "mode-change",
                     shaderId: this.id,
                     shaderType: this.constructor.type(),
-                    mode: this._mode,
-                    blend: this._blend
+                    mode: this._compositionMode,
+                    blend: this._blendMode
                 });
             }
         }
@@ -1038,7 +1008,7 @@
         _resetOption(name, supportedValueList, options = {}, force = true) {
             let result;
             if (!options) {
-                options = this._customControls;
+                options = this._params;
             }
 
             const predefined = this.constructor.defaultControls[name];
@@ -1084,12 +1054,12 @@
          * TODO configurable...
          */
         getCustomBlendFunction(functionName) {
-            let code = this.backend.getBlendingFunction(this._blend);
+            let code = this.backend.getBlendingFunction(this._blendMode);
             if (!code) {
-                $.console.warn("Invalid blending - using default", this._blend, this);
+                $.console.warn("Invalid blending - using default", this._blendMode, this);
                 // Set to mask, typical wanted value if mode is not show. If mode=show, there is a hardcoded blend function.
-                this._blend = 'mask';
-                code = this.backend.getBlendingFunction(this._blend);
+                this._blendMode = 'mask';
+                code = this.backend.getBlendingFunction(this._blendMode);
             }
             return `vec4 ${functionName}(vec4 fg, vec4 bg) {
 ${code}
@@ -1098,7 +1068,7 @@ ${code}
 
         /**
          * Get JSON configuration
-         * @return {ShaderConfig}
+         * @return {ShaderLayerConfig}
          */
         getConfig() {
             return this.__shaderConfig;
@@ -1162,11 +1132,11 @@ ${code}
          */
         resetFilters(options = {}, force = true, evented = true) {
             if (Object.keys(options) === 0) {
-                options = this._customControls;
+                options = this._params;
             }
 
-            this.__scalePrefix = [];
-            this.__scaleSuffix = [];
+            this.__filterPrefix = [];
+            this.__filterSuffix = [];
             for (let key in this.constructor.filters) {
                 const predefined = this.constructor.defaultControls[key];
                 let value = predefined ? predefined.required : undefined;
@@ -1180,12 +1150,12 @@ ${code}
 
                 if (value !== undefined) {
                     let filter = this.constructor.filters[key](value);
-                    this.__scalePrefix.push(filter[0]);
-                    this.__scaleSuffix.push(filter[1]);
+                    this.__filterPrefix.push(filter[0]);
+                    this.__filterSuffix.push(filter[1]);
                 }
             }
-            this.__scalePrefix = this.__scalePrefix.join("");
-            this.__scaleSuffix = this.__scaleSuffix.reverse().join("");
+            this.__filterPrefix = this.__filterPrefix.join("");
+            this.__filterSuffix = this.__filterSuffix.reverse().join("");
 
             if (evented) {
                 this.backend.renderer.notifyVisualizationChanged({
@@ -1202,7 +1172,7 @@ ${code}
          * @return {String} filtered value (GLSL oneliner without ';')
          */
         filter(value) {
-            return `${this.__scalePrefix}${value}${this.__scaleSuffix}`;
+            return `${this.__filterPrefix}${value}${this.__filterSuffix}`;
         }
 
         /**
@@ -1227,7 +1197,6 @@ ${code}
         getFilterValue(filter, defaultValue) {
             return this.loadProperty(filter, defaultValue);
         }
-
 
 
         // UTILITIES
@@ -1260,9 +1229,9 @@ ${code}
          * @return {String}
          */
         get mode() {
-            return this._mode;
+            return this._compositionMode;
         }
-    };
+    }
 
     /**
      * Declare custom parameters for documentation purposes.
@@ -1281,12 +1250,12 @@ ${code}
      * }
      * @type {any}
      */
-    $.FlexRenderer.ShaderLayer.customParams = {};
+    ShaderLayer.customParams = {};
 
     /**
      * Parameter to save shaderLayer's functionality that can be shared and reused between ShaderLayer instantions.
      */
-    $.FlexRenderer.ShaderLayer.__globalIncludes = {};
+    ShaderLayer.__globalIncludes = {};
 
 
     //not really modular
@@ -1297,16 +1266,108 @@ ${code}
     // filtered variable will be inserted, notice pow does not need inner brackets since its an argument...
     //note: pow avoided in gamma, not usable on vectors, we use pow(x, y) === exp(y*log(x))
     // TODO: implement filters as shader nodes instead!
-    $.FlexRenderer.ShaderLayer.filters = {};
-    $.FlexRenderer.ShaderLayer.filters["use_gamma"] = (x) => ["exp(log(", `) / ${$.FlexRenderer.ShaderLayer.toShaderFloatString(x, 1)})`];
-    $.FlexRenderer.ShaderLayer.filters["use_exposure"] = (x) => ["(1.0 - exp(-(", `)* ${$.FlexRenderer.ShaderLayer.toShaderFloatString(x, 1)}))`];
-    $.FlexRenderer.ShaderLayer.filters["use_logscale"] = (x) => {
-        x = $.FlexRenderer.ShaderLayer.toShaderFloatString(x, 1);
+    ShaderLayer.filters = {};
+    ShaderLayer.filters["use_gamma"] = (x) => ["exp(log(", `) / ${ShaderLayer.toShaderFloatString(x, 1)})`];
+    ShaderLayer.filters["use_exposure"] = (x) => ["(1.0 - exp(-(", `)* ${ShaderLayer.toShaderFloatString(x, 1)}))`];
+    ShaderLayer.filters["use_logscale"] = (x) => {
+        x = ShaderLayer.toShaderFloatString(x, 1);
         return [`((log(${x} + (`, `)) - log(${x})) / (log(${x}+1.0)-log(${x})))`];
     };
 
-    $.FlexRenderer.ShaderLayer.filterNames = {};
-    $.FlexRenderer.ShaderLayer.filterNames["use_gamma"] = "Gamma";
-    $.FlexRenderer.ShaderLayer.filterNames["use_exposure"] = "Exposure";
-    $.FlexRenderer.ShaderLayer.filterNames["use_logscale"] = "Logarithmic scale";
+    ShaderLayer.filterNames = {};
+    ShaderLayer.filterNames["use_gamma"] = "Gamma";
+    ShaderLayer.filterNames["use_exposure"] = "Exposure";
+    ShaderLayer.filterNames["use_logscale"] = "Logarithmic scale";
+
+
+    $.FlexRenderer.ShaderLayer = ShaderLayer;
+
+
+    /**
+     * A registry of ShaderLayers.
+     *
+     * @property {boolean} _acceptsShaderLayers - Whether the mediator allows new ShaderLayer registrations.
+     * @property {Record<string, ShaderLayer>} _ShaderLayers - Registered ShaderLayers keyed by their type() output, { ShaderLayer.type(): ShaderLayer }.
+     *
+     * @memberof OpenSeadragon.FlexRenderer
+     */
+    class ShaderLayerRegistry {
+        /**
+         * Enable or disable ShaderLayer registrations.
+         *
+         * @param {boolean} accepts
+         */
+        static setAcceptsRegistrations(accepts) {
+            if (accepts === true || accepts === false) {
+                this._acceptsShaderLayers = accepts;
+            } else {
+                console.warn("OpenSeadragon.FlexRenderer.ShaderLayerRegistry::setAcceptsRegistrations: accepts parameter must be either true or false!");
+            }
+        }
+
+        /**
+         * Registers a ShaderLayer.
+         *
+         * @param {typeof ShaderLayer} ShaderLayerClass - The ShaderLayer to be registered.
+         */
+        static register(ShaderLayerClass) {
+            if (this._acceptsShaderLayers) {
+                if (this._ShaderLayers[ShaderLayerClass.type()]) {
+                    console.warn(`OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayer ${ShaderLayerClass.type()} already registered, overwriting the content!`);
+                }
+
+                this._ShaderLayers[ShaderLayerClass.type()] = ShaderLayerClass;
+            } else {
+                console.warn("OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayerRegistry is set to not accept new ShaderLayers!");
+            }
+        }
+
+        /**
+         * Gets the specified ShaderLayer.
+         *
+         * @param {string} shaderLayerType - The output of type() of the desired ShaderLayer.
+         * @returns {typeof ShaderLayer}
+         */
+        static get(shaderLayerType) {
+            return this._ShaderLayers[shaderLayerType];
+        }
+
+        /**
+         * Gets all available ShaderLayer types.
+         *
+         * @returns {string[]}
+         */
+        static availableTypes() {
+            return Object.keys(this._ShaderLayers);
+        }
+
+        /**
+         * Gets all available ShaderLayers.
+         *
+         * @returns {(typeof ShaderLayer)[]}
+         */
+        static availableShaderLayers() {
+            return Object.values(this._ShaderLayers);
+        }
+    }
+
+    /**
+     * Whether the mediator allows new ShaderLayer registrations.
+     *
+     * @type {boolean}
+     * @private
+     */
+    ShaderLayerRegistry._acceptsShaderLayers = true;
+
+    /**
+     * Registered ShaderLayers keyed by their type() output, { ShaderLayer.type(): ShaderLayer }.
+     *
+     * @type {Record<string, (typeof ShaderLayer)>}
+     * @private
+     */
+    ShaderLayerRegistry._ShaderLayers = {};
+
+
+    $.FlexRenderer.ShaderLayerRegistry = ShaderLayerRegistry;
+
 })(OpenSeadragon);

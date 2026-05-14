@@ -173,7 +173,7 @@ float stain_pick_${uid}(vec3 stains, int row) {
 `;
 }
 
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static type() {
         return "stain-separation";

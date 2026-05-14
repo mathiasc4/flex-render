@@ -1,6 +1,6 @@
 (function($) {
 
-$.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
+class WebGL2 extends $.FlexRenderer.WebGLImplementation {
     /**
      * Create a WebGL 2.0 rendering implementation.
      * @param {OpenSeadragon.FlexRenderer} renderer
@@ -9,7 +9,10 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
     constructor(renderer, gl) {
         // sets this.renderer, this.gl, this.webGLVersion
         super(renderer, gl, "2.0");
+
         $.console.info("WebGl 2.0 renderer.");
+
+        this._preparedTileResources = new Set();
     }
 
     get firstPassProgramKey() {
@@ -442,14 +445,36 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     }
 
     destroy() {
+        if (this._preparedTileResources) {
+            for (const resource of Array.from(this._preparedTileResources)) {
+                this.releasePreparedTileResource(resource);
+            }
+
+            this._preparedTileResources.clear();
+        }
+
         if (this._namedColorTargets) {
             for (const key of Object.keys(this._namedColorTargets)) {
                 this._destroyColorTarget(this._namedColorTargets[key]);
             }
+
             this._namedColorTargets = {};
         }
+
         this.firstAtlas.destroy();
         this.secondAtlas.destroy();
+
+        // clean all texture units; adapted from https://stackoverflow.com/a/23606581/1214731
+        const numTextureUnits = this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS);
+
+        for (let unit = 0; unit < numTextureUnits; ++unit) {
+            this.gl.activeTexture(this.gl.TEXTURE0 + unit);
+            this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+            this.gl.bindTexture(this.gl.TEXTURE_2D_ARRAY, null);
+        }
+
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     }
 
     _createColorTarget(width, height, options = {}) {
@@ -734,7 +759,650 @@ if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }[name];
     }
-};
+
+    /**
+     * Prepare bitmap-like tile data as a WebGL2 texture array resource.
+     *
+     * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+     * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+     */
+    async prepareBitmapTile(options = {}) {
+        const gl = this.gl;
+        const source = this._normalizeBitmapTileSource(options.data);
+        const textureOptions = options.textureOptions || {};
+
+        if (!source) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("Bitmap tile preparation requires bitmap-like source data.")
+            );
+        }
+
+        let bitmap = null;
+        let ownsBitmap = false;
+
+        try {
+            if (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) {
+                bitmap = source;
+            } else {
+                bitmap = await createImageBitmap(source);
+                ownsBitmap = true;
+            }
+        } catch (error) {
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "invalid-data"),
+                error
+            );
+        }
+
+        const width = (bitmap && Number(bitmap.width)) || 0;
+        const height = (bitmap && Number(bitmap.height)) || 0;
+
+        if (!width || !height) {
+            if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
+                bitmap.close();
+            }
+
+            return this._makePreparedTileFailure(
+                "invalid-data",
+                new Error("Bitmap tile preparation produced empty or invalid dimensions.")
+            );
+        }
+
+        let texture = null;
+
+        try {
+            texture = gl.createTexture();
+
+            if (!texture) {
+                throw new Error("WebGL2 failed to create a bitmap tile texture.");
+            }
+
+            this._clearWebGLErrors();
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 1);
+            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, 1, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+
+            const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+            this._throwIfWebGLError("Bitmap tile texture upload");
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._preparedTileResources.add(texture);
+
+            return {
+                ok: true,
+                resource: texture,
+                texture: texture,
+                width: width,
+                height: height,
+                textureDepth: 1,
+                packCount: 1,
+                channelCount: 4
+            };
+        } catch (error) {
+            if (texture) {
+                gl.deleteTexture(texture);
+            }
+
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "webgl-upload-failed"),
+                error
+            );
+        } finally {
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
+                bitmap.close();
+            }
+        }
+    }
+
+    /**
+     * Prepare packed GPU texture-set tile data as a WebGL2 texture array resource.
+     *
+     * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+     * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+     */
+    async prepareGpuTextureTile(options = {}) {
+        const gl = this.gl;
+        const gpu = options.data;
+        const textureOptions = options.textureOptions || {};
+
+        if (!gpu || typeof gpu !== "object") {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("GPU texture tile preparation requires a texture-set object.")
+            );
+        }
+
+        const width = Number(gpu.width) || 0;
+        const height = Number(gpu.height) || 0;
+        const packs = Array.isArray(gpu.packs) ? gpu.packs : [];
+
+        if (!width || !height) {
+            return this._makePreparedTileFailure(
+                "invalid-data",
+                new Error("GPU texture tile preparation requires positive width and height.")
+            );
+        }
+
+        if (!packs.length) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new Error("GPU texture tile preparation requires at least one texture pack.")
+            );
+        }
+
+        const firstFormatName = (packs[0] && packs[0].format) || "RGBA8";
+
+        let formatInfo;
+        switch (firstFormatName) {
+            case "RGBA8":
+                formatInfo = {
+                    internalFormat: gl.RGBA8,
+                    format: gl.RGBA,
+                    type: gl.UNSIGNED_BYTE
+                };
+                break;
+
+            case "RGBA16F":
+                formatInfo = {
+                    internalFormat: gl.RGBA16F,
+                    format: gl.RGBA,
+                    type: gl.HALF_FLOAT
+                };
+                break;
+
+            default:
+                formatInfo = null;
+        }
+
+        if (!formatInfo) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new Error(`Unsupported GPU texture pack format '${firstFormatName}'.`)
+            );
+        }
+
+        for (let layer = 0; layer < packs.length; layer++) {
+            const pack = packs[layer];
+            const packFormatName = (pack && pack.format) || firstFormatName;
+
+            if (!pack || !pack.data) {
+                return this._makePreparedTileFailure(
+                    "invalid-data",
+                    new Error(`GPU texture pack ${layer} is missing pixel data.`)
+                );
+            }
+
+            if (packFormatName !== firstFormatName) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new Error("Mixed GPU texture pack formats are not supported.")
+                );
+            }
+
+            if (!ArrayBuffer.isView(pack.data)) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new TypeError(`GPU texture pack ${layer} data must be a typed array.`)
+                );
+            }
+        }
+
+        const packCount = packs.length;
+        const channelCount = Number(gpu.channelCount) || packCount * 4;
+        let texture = null;
+
+        try {
+            texture = gl.createTexture();
+
+            if (!texture) {
+                throw new Error("WebGL2 failed to create a GPU texture-set tile texture.");
+            }
+
+            this._clearWebGLErrors();
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, formatInfo.internalFormat, width, height, packCount);
+
+            for (let layer = 0; layer < packCount; layer++) {
+                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, width, height, 1, formatInfo.format, formatInfo.type, packs[layer].data);
+            }
+
+            const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+            this._throwIfWebGLError("GPU texture-set tile upload");
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._preparedTileResources.add(texture);
+
+            return {
+                ok: true,
+                resource: texture,
+                texture: texture,
+                width: width,
+                height: height,
+                textureDepth: packCount,
+                packCount: packCount,
+                channelCount: channelCount
+            };
+        } catch (error) {
+            if (texture) {
+                gl.deleteTexture(texture);
+            }
+
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "webgl-upload-failed"),
+                error
+            );
+        } finally {
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+        }
+    }
+
+    /**
+     * Prepare vector mesh tile data as WebGL2 buffer resources.
+     *
+     * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+     * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+     */
+    async prepareVectorTile(options = {}) {
+        const data = options.data;
+
+        if (!data || typeof data !== "object") {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("Vector tile preparation requires a vector mesh object.")
+            );
+        }
+
+        const vectors = {};
+
+        try {
+            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
+            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
+
+            if (data.fills && data.fills.length) {
+                vectors.fills = this._prepareVectorTileBatch(data.fills);
+            }
+
+            if (hasMeshLines) {
+                vectors.lines = this._prepareVectorTileBatch(data.lines);
+            }
+
+            if (hasNativeLines) {
+                const linePrimitiveGroups = new Map();
+
+                for (const mesh of data.linePrimitives) {
+                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
+                        ? mesh.lineWidth
+                        : 1;
+                    const key = String(lineWidth);
+
+                    if (!linePrimitiveGroups.has(key)) {
+                        linePrimitiveGroups.set(key, []);
+                    }
+
+                    linePrimitiveGroups.get(key).push(mesh);
+                }
+
+                vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map((meshes) => {
+                    return this._prepareVectorTileBatch(meshes);
+                });
+            }
+
+            if (data.points && data.points.length) {
+                vectors.points = this._prepareVectorTileBatch(data.points);
+            }
+
+            this._preparedTileResources.add(vectors);
+
+            return {
+                ok: true,
+                resource: vectors,
+                vectors: vectors
+            };
+        } catch (error) {
+            this._releasePreparedVectorTileResource(vectors);
+
+            return this._makePreparedTileFailure(
+                "webgl-upload-failed",
+                error
+            );
+        }
+    }
+
+    _prepareVectorTileBatch(meshes) {
+        const gl = this.gl;
+
+        if (!Array.isArray(meshes) || !meshes.length) {
+            throw new TypeError("Vector tile batch requires at least one mesh.");
+        }
+
+        let vCount = 0;
+        let iCount = 0;
+
+        for (const mesh of meshes) {
+            if (!mesh || !mesh.vertices || !mesh.indices) {
+                throw new TypeError("Vector mesh requires vertices and indices.");
+            }
+
+            vCount += mesh.vertices.length / 4;
+            iCount += mesh.indices.length;
+        }
+
+        const positions = new Float32Array(vCount * 4);
+        const parameters = new Float32Array(vCount * 4);
+        const indices = new Uint32Array(iCount);
+
+        let vOfs = 0;
+        let iOfs = 0;
+        let baseVertex = 0;
+
+        for (const mesh of meshes) {
+            positions.set(mesh.vertices, vOfs * 4);
+
+            const rgba = mesh.color ? mesh.color : [0, 0, 0, 1];
+            const r = Math.max(0.0, Math.min(1.0, rgba[0]));
+            const g = Math.max(0.0, Math.min(1.0, rgba[1]));
+            const b = Math.max(0.0, Math.min(1.0, rgba[2]));
+            const a = Math.max(0.0, Math.min(1.0, rgba[3]));
+
+            for (let k = 0; k < mesh.vertices.length / 4; k++) {
+                const pOfs = (vOfs + k) * 4;
+                parameters[pOfs + 0] = r;
+                parameters[pOfs + 1] = g;
+                parameters[pOfs + 2] = b;
+                parameters[pOfs + 3] = a;
+            }
+
+            if (mesh.parameters) {
+                parameters.set(mesh.parameters, vOfs * 4);
+            }
+
+            for (let k = 0; k < mesh.indices.length; k++) {
+                indices[iOfs + k] = baseVertex + mesh.indices[k];
+            }
+
+            vOfs += mesh.vertices.length / 4;
+            iOfs += mesh.indices.length;
+            baseVertex += mesh.vertices.length / 4;
+        }
+
+        const batch = {
+            vboPos: null,
+            vboParam: null,
+            ibo: null,
+            count: indices.length,
+            lineWidth: 1
+        };
+
+        try {
+            batch.vboPos = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+            batch.vboParam = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+            gl.bufferData(gl.ARRAY_BUFFER, parameters, gl.STATIC_DRAW);
+
+            batch.ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+            const firstMesh = meshes[0] || {};
+            batch.lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0
+                ? firstMesh.lineWidth
+                : 1;
+
+            return batch;
+        } catch (error) {
+            this._releasePreparedVectorTileBatch(batch);
+            throw error;
+        } finally {
+            gl.bindBuffer(gl.ARRAY_BUFFER, null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+    }
+
+    _isPreparedVectorTileResource(resource) {
+        return !!(
+            resource &&
+            typeof resource === "object" &&
+            (
+                resource.fills ||
+                resource.lines ||
+                resource.linePrimitives ||
+                resource.points
+            )
+        );
+    }
+
+    _releasePreparedVectorTileResource(resource) {
+        if (!resource || typeof resource !== "object") {
+            return;
+        }
+
+        if (resource.fills) {
+            this._releasePreparedVectorTileBatch(resource.fills);
+            resource.fills = null;
+        }
+
+        if (resource.lines) {
+            this._releasePreparedVectorTileBatch(resource.lines);
+            resource.lines = null;
+        }
+
+        if (Array.isArray(resource.linePrimitives)) {
+            for (const lineBatch of resource.linePrimitives) {
+                this._releasePreparedVectorTileBatch(lineBatch);
+            }
+            resource.linePrimitives = null;
+        }
+
+        if (resource.points) {
+            this._releasePreparedVectorTileBatch(resource.points);
+            resource.points = null;
+        }
+    }
+
+    _releasePreparedVectorTileBatch(batch) {
+        if (!batch) {
+            return;
+        }
+
+        const gl = this.gl;
+
+        if (batch.vboPos) {
+            gl.deleteBuffer(batch.vboPos);
+            batch.vboPos = null;
+        }
+
+        if (batch.vboParam) {
+            gl.deleteBuffer(batch.vboParam);
+            batch.vboParam = null;
+        }
+
+        if (batch.ibo) {
+            gl.deleteBuffer(batch.ibo);
+            batch.ibo = null;
+        }
+
+        batch.count = 0;
+    }
+
+    /**
+     * Release a WebGL2 prepared tile resource.
+     *
+     * @param {*} resource - Backend-owned resource returned by a preparation method.
+     * @returns {void}
+     */
+    releasePreparedTileResource(resource) {
+        if (!resource) {
+            return;
+        }
+
+        if (this._isPreparedVectorTileResource(resource)) {
+            this._releasePreparedVectorTileResource(resource);
+
+            if (this._preparedTileResources) {
+                this._preparedTileResources.delete(resource);
+            }
+
+            return;
+        }
+
+        const texture = resource && resource.texture ? resource.texture : resource;
+
+        if (!texture) {
+            return;
+        }
+
+        this.gl.deleteTexture(texture);
+
+        if (this._preparedTileResources) {
+            this._preparedTileResources.delete(texture);
+        }
+
+        if (resource && resource.texture) {
+            resource.texture = null;
+        }
+    }
+
+    _normalizeBitmapTileSource(data) {
+        if (!data) {
+            return null;
+        }
+
+        if (typeof CanvasRenderingContext2D !== "undefined" && data instanceof CanvasRenderingContext2D) {
+            return data.canvas || null;
+        }
+
+        return data;
+    }
+
+    _makePreparedTileFailure(reason, error) {
+        return {
+            ok: false,
+            reason: reason,
+            error: error
+        };
+    }
+
+    _classifyTilePreparationError(error, fallbackReason) {
+        if (this._isTaintOrSecurityError(error)) {
+            return "tainted-data";
+        }
+
+        return fallbackReason;
+    }
+
+    _isTaintOrSecurityError(error) {
+        if (!error) {
+            return false;
+        }
+
+        const name = error.name ? String(error.name) : "";
+        const code = Number(error.code);
+        const message = error.message ? String(error.message) : String(error);
+
+        if (name === "SecurityError") {
+            return true;
+        }
+
+        // DOMException.SECURITY_ERR is historically 18. Some browsers still expose
+        // numeric codes, though modern code should prefer .name.
+        if (code === 18) {
+            return true;
+        }
+
+        // Firefox/internal DOM security names may appear in some browser errors.
+        if (name === "NS_ERROR_DOM_SECURITY_ERR") {
+            return true;
+        }
+
+        return /tainted canvas|origin-clean|cross-origin|cross origin|cors/i.test(message);
+    }
+
+    _clearWebGLErrors() {
+        const gl = this.gl;
+
+        // cap the amount of errors to avoid an infinite loop
+        for (let i = 0; i < 16; i++) {
+            if (gl.getError() === gl.NO_ERROR) {
+                return;
+            }
+        }
+    }
+
+    _throwIfWebGLError(operation) {
+        const gl = this.gl;
+        const errors = [];
+
+        // cap the amount of errors to avoid an infinite loop
+        for (let i = 0; i < 16; i++) {
+            const error = gl.getError();
+
+            if (error === gl.NO_ERROR) {
+                break;
+            }
+
+            errors.push(error);
+        }
+
+        if (!errors.length) {
+            return;
+        }
+
+        const message = errors.map(error => this._formatWebGLError(error)).join(", ");
+
+        const uploadError = new Error(`${operation} failed with WebGL error(s): ${message}`);
+        uploadError.webglErrors = errors;
+        throw uploadError;
+    }
+
+    _formatWebGLError(error) {
+        const gl = this.gl;
+
+        if (error === gl.INVALID_ENUM) {
+            return "INVALID_ENUM";
+        }
+        if (error === gl.INVALID_VALUE) {
+            return "INVALID_VALUE";
+        }
+        if (error === gl.INVALID_OPERATION) {
+            return "INVALID_OPERATION";
+        }
+        if (error === gl.INVALID_FRAMEBUFFER_OPERATION) {
+            return "INVALID_FRAMEBUFFER_OPERATION";
+        }
+        if (error === gl.OUT_OF_MEMORY) {
+            return "OUT_OF_MEMORY";
+        }
+        if (error === gl.CONTEXT_LOST_WEBGL) {
+            return "CONTEXT_LOST_WEBGL";
+        }
+
+        return `0x${error.toString(16)}`;
+    }
+}
+
+$.FlexRenderer.WebGL20 = WebGL2;
 
 
 $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgram {
@@ -1545,7 +2213,7 @@ const vec3 viewport[4] = vec3[4] (
 );
 
 void main() {
-    if (u_renderClippingParams.y > 0.5) {
+    if (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) {  // true for vector rendering
         v_texture_coords = vec2((a_payload0.x - a_payload1.x) / a_payload1.z, (a_payload0.y - a_payload1.y) / a_payload1.w);
     } else {
         int vid = gl_VertexID & 3;
@@ -1554,11 +2222,9 @@ void main() {
                 (vid == 2) ? a_payload1.xy : a_payload1.zw;
     }
 
-    mat3 matrix = u_renderClippingParams.y > 0.5 ? u_geomMatrix : a_transform_matrix;
+    mat3 matrix = (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) ? u_geomMatrix : a_transform_matrix;  // true for vector rendering
 
-    vec3 space_2d = u_renderClippingParams.x > 0.5 ?
-        matrix * vec3(a_payload0.xy, 1.0) :
-        matrix * viewport[gl_VertexID];
+    vec3 space_2d = (u_renderClippingParams.x > 0.5) ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];  // true for vector and clip rendering
 
     v_vecDepth = a_payload0.z;
     v_textureId = int(a_payload0.w);
@@ -1568,6 +2234,7 @@ void main() {
     instance_id = gl_InstanceID;
 }
 `;
+
         this.fragmentShader = `#version 300 es
 precision mediump int;
 precision mediump float;
@@ -1590,8 +2257,41 @@ ${this.atlas.getFragmentShaderDefinition()}
 layout(location=0) out vec4 outputColor;
 layout(location=1) out vec4 outputStencil;
 
+float fr_segment_distance(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a;
+    vec2 ba = b - a;
+    float denom = max(dot(ba, ba), 0.000001);
+    float h = clamp(dot(pa, ba) / denom, 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+bool fr_diagnostic_pixel(vec2 p) {
+    const float border = 0.035;
+    const float lineWidth = 0.022;
+
+    bool borderPixel = p.x <= border || p.x >= 1.0 - border || p.y <= border || p.y >= 1.0 - border;
+
+    vec2 top = vec2(0.5, 0.76);
+    vec2 left = vec2(0.28, 0.31);
+    vec2 right = vec2(0.72, 0.31);
+
+    float triangleDistance = min(
+        fr_segment_distance(p, top, left),
+        min(
+            fr_segment_distance(p, left, right),
+            fr_segment_distance(p, right, top)
+        )
+    );
+
+    bool trianglePixel = triangleDistance <= lineWidth;
+    bool exclamationBar = abs(p.x - 0.5) <= 0.018 && p.y >= 0.43 && p.y <= 0.61;
+    bool exclamationDot = distance(p, vec2(0.5, 0.36)) <= 0.026;
+
+    return borderPixel || trianglePixel || exclamationBar || exclamationDot;
+}
+
 void main() {
-    if (u_renderClippingParams.x < 0.5) {
+    if (u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0) {  // true for raster rendering
         for (int i = 0; i < ${this._maxTextures}; i++) {
             if (i == instance_id) {
                  switch (i) {
@@ -1605,7 +2305,7 @@ void main() {
 
         outputStencil = vec4(1.0);
         gl_FragDepth = gl_FragCoord.z;
-    } else if (u_renderClippingParams.y > 0.5) {
+    } else if (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) {  // true for vector rendering
         // Vector geometry draw path (per-vertex color)
 
         vec4 stencil = vec4(1.0);
@@ -1625,8 +2325,22 @@ void main() {
 
         outputStencil = stencil;
         gl_FragDepth = depth;
+    } else if (u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0) {  // true for diagnostic rendering mode
+        vec2 diagnosticCoords = clamp(v_texture_coords, vec2(0.0), vec2(1.0));
+        diagnosticCoords.y = 1.0 - diagnosticCoords.y;
+
+        if (!fr_diagnostic_pixel(diagnosticCoords)) {
+            discard;
+        }
+
+        outputColor = vec4(1.0, 0.74, 0.05, 1.0);
+        outputStencil = vec4(1.0);
+        gl_FragDepth = gl_FragCoord.z;
     } else {
-        // Pure clipping path: write only to stencil (color target value is undefined)
+        // Pure clipping path. Color writes are disabled during this draw,
+        // but keep outputs defined to avoid undefined MRT behavior if the
+        // path is reused incorrectly later.
+        outputColor = vec4(0.0);
         outputStencil = vec4(0.0);
         gl_FragDepth = 0.0;
     }
@@ -1790,6 +2504,8 @@ void main() {
 
         let wasClipping = true; // force first init (~ as if was clipping was true)
 
+        let diagnosticRegionCount = 0;
+
         for (const renderInfo of sourceArray) {
             const rasterTiles = renderInfo.tiles;
 
@@ -1826,7 +2542,6 @@ void main() {
                 gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
 
-                // Note: second param unused for now...
                 gl.uniform2f(this._renderClipping, 1, 0);
                 gl.bindVertexArray(this.firstPassVaoClip);
 
@@ -1990,6 +2705,47 @@ void main() {
 
                 gl.uniform2f(this._renderClipping, 0, 0);
             }
+
+            const diagnostics = renderInfo.diagnostics;
+            if (this.context.renderer.getRenderDiagnostics() && Array.isArray(diagnostics) && diagnostics.length) {
+                const gl = this.gl;
+
+                let currentIndex = 0;
+
+                gl.disable(gl.BLEND);
+                gl.uniform2f(this._renderClipping, 0, -1);
+                gl.bindVertexArray(this.firstPassVao);
+
+                while (currentIndex < diagnostics.length) {
+                    const batchSize = Math.min(this._maxTextures, diagnostics.length - currentIndex);
+
+                    for (let i = 0; i < batchSize; i++) {
+                        const diagnostic = diagnostics[currentIndex + i];
+
+                        this._tempMatrixData.set(diagnostic.transformMatrix, i * 9);
+                        this._tempTexCoords.set(diagnostic.position, i * 8);
+                    }
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordsBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._tempTexCoords.subarray(0, batchSize * 8));
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.matrixBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._tempMatrixData.subarray(0, batchSize * 9));
+
+                    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batchSize);
+                    currentIndex += batchSize;
+                }
+
+                gl.uniform2f(this._renderClipping, 0, 0);
+
+                diagnosticRegionCount += diagnostics.length;
+
+                isBlend = false;
+            }
+        }
+
+        if (this.context.renderer.debug && diagnosticRegionCount > 0) {
+            $.console.warn(`[flex-renderer] first-pass diagnostics: ${diagnosticRegionCount} invalid region(s)`);
         }
 
         gl.disable(gl.DEPTH_TEST);
