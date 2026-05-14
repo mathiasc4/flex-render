@@ -810,29 +810,7 @@
                 this._releaseInteractionViewerInputCapture();
             }
 
-            const gl = this._gl;
-
-            // clean all texture units; adapted from https://stackoverflow.com/a/23606581/1214731
-            var numTextureUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
-            for (let unit = 0; unit < numTextureUnits; ++unit) {
-                gl.activeTexture(gl.TEXTURE0 + unit);
-                gl.bindTexture(gl.TEXTURE_2D, null);
-
-                if (this.webGLVersion === "2.0") {
-                    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
-                }
-            }
-            gl.bindBuffer(gl.ARRAY_BUFFER, null);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-
-            // this._renderingCanvas = null;
-            let ext = gl.getExtension('WEBGL_lose_context');
-            if (ext) {
-                ext.loseContext();
-            }
-            // set our webgl context reference to null to enable garbage collection
-            this._gl = null;
+            // WebGL resource cleanup is owned by FlexRenderer and the active backend.
 
             // unbind our event listeners from the viewer
             this.viewer.removeHandler("resize", this._resizeHandler);
@@ -1005,6 +983,7 @@
                 this._size = viewportSize;
                 this._refreshDrawReadyState();
             };
+
             this.viewer.addHandler("resize", this._resizeHandler);
         }
 
@@ -2379,7 +2358,6 @@
             let viewportSize = this._calculateCanvasSize();
 
             // SETUP CANVASES
-            this._gl = this.renderer.gl;
             this._setupCanvases();
 
             canvas.width = viewportSize.x;
@@ -2461,7 +2439,7 @@
          * Return renderer-neutral texture options for prepared tile resources.
          *
          * @private
-         * @returns {TileTextureOptions}
+         * @returns {RasterTileTextureOptions}
          */
         _getPreparedTileTextureOptions() {
             return {
@@ -2477,7 +2455,7 @@
          * the prepared resource.
          *
          * @private
-         * @param {PreparedTileSuccess} result - Successful preparation result.
+         * @param {PreparedRasterTileSuccess} result - Successful preparation result.
          * @param {OpenSeadragon.Tile} tile - OpenSeadragon tile.
          * @param {OpenSeadragon.TiledImage} tiledImage - Owning tiled image.
          * @returns {{position: Float32Array, texture: *, resource: *, vectors: undefined}}
@@ -2573,14 +2551,25 @@
         }
 
         async createTileInfoFromSource({ data, type, tile, tiledImage }) {
-            const gl = this._gl;
-
             if (type === "undefined") {
                 return null;
             }
 
             if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points))) {
-                return this._buildVectorTileInfo(data, gl);
+                const result = await this.renderer.prepareVectorTile({
+                    data: data
+                });
+
+                if (!result.ok) {
+                    return this._createDiagnosticTileInfoFromPreparationFailure(result);
+                }
+
+                return {
+                    position: null,
+                    texture: null,
+                    resource: result.resource,
+                    vectors: result.vectors
+                };
             }
 
             const isGpuTextureSet = type === "gpuTextureSet" || (data && typeof data.getType === "function" && data.getType() === "gpuTextureSet");
@@ -2771,44 +2760,18 @@
             if (data.resource) {
                 this.renderer.releasePreparedTileResource(data.resource);
                 data.resource = null;
-                data.texture = null;
-            } else if (data.texture) {
-                if (this.renderer && typeof this.renderer.releasePreparedTileResource === "function") {
+            } else {
+                if (data.texture) {
                     this.renderer.releasePreparedTileResource(data.texture);
-                } else {
-                    this._gl.deleteTexture(data.texture);
                 }
 
-                data.texture = null;
+                if (data.vectors) {
+                    this.renderer.releasePreparedTileResource(data.vectors);
+                }
             }
 
-            if (data.vectors) {
-                const gl = this._gl;
-                if (data.vectors.fills) {
-                    gl.deleteBuffer(data.vectors.fills.vboPos);
-                    gl.deleteBuffer(data.vectors.fills.vboParam);
-                    gl.deleteBuffer(data.vectors.fills.ibo);
-                }
-                if (data.vectors.lines) {
-                    gl.deleteBuffer(data.vectors.lines.vboPos);
-                    gl.deleteBuffer(data.vectors.lines.vboParam);
-                    gl.deleteBuffer(data.vectors.lines.ibo);
-                }
-                if (data.vectors.linePrimitives) {
-                    for (const lineBatch of data.vectors.linePrimitives) {
-                        gl.deleteBuffer(lineBatch.vboPos);
-                        gl.deleteBuffer(lineBatch.vboParam);
-                        gl.deleteBuffer(lineBatch.ibo);
-                    }
-                }
-                if (data.vectors.points) {
-                    gl.deleteBuffer(data.vectors.points.vboPos);
-                    gl.deleteBuffer(data.vectors.points.vboParam);
-                    gl.deleteBuffer(data.vectors.points.ibo);
-                }
-
-                data.vectors = null;
-            }
+            data.texture = null;
+            data.vectors = null;
         }
 
         // inside OpenSeadragon.FlexDrawer
@@ -2896,114 +2859,6 @@
             }
 
             this._requestRebuild(0, true);
-        }
-
-        _buildVectorTileInfo(data, gl) {
-            const tileInfo = {
-                position: null,
-                texture: null,
-                vectors: {}
-            };
-
-            const buildBatch = (meshes) => {
-                let vCount = 0,
-                    iCount = 0;
-                for (const m of meshes) {
-                    vCount += (m.vertices.length / 4);
-                    iCount += m.indices.length;
-                }
-
-                const positions = new Float32Array(vCount * 4);
-                const parameters = new Float32Array(vCount * 4);
-                const indices = new Uint32Array(iCount);
-
-                let vOfs = 0,
-                    iOfs = 0,
-                    baseVertex = 0;
-
-                for (const m of meshes) {
-                    positions.set(m.vertices, vOfs * 4);
-
-                    // fill color per-vertex (constant per feature)
-                    const rgba = m.color ? m.color : [0, 0, 0, 1];
-                    const r = Math.max(0.0, Math.min(1.0, rgba[0]));
-                    const g = Math.max(0.0, Math.min(1.0, rgba[1]));
-                    const b = Math.max(0.0, Math.min(1.0, rgba[2]));
-                    const a = Math.max(0.0, Math.min(1.0, rgba[3]));
-                    for (let k = 0; k < (m.vertices.length / 4); k++) {
-                        const pOfs = (vOfs + k) * 4;
-                        parameters[pOfs + 0] = r;
-                        parameters[pOfs + 1] = g;
-                        parameters[pOfs + 2] = b;
-                        parameters[pOfs + 3] = a;
-                    }
-
-                    // if parameters are specified from mesh
-                    if (m.parameters) {
-                        parameters.set(m.parameters, vOfs * 4);
-                    }
-
-                    // rebase indices
-                    for (let k = 0; k < m.indices.length; k++) {
-                        indices[iOfs + k] = baseVertex + m.indices[k];
-                    }
-
-                    vOfs += (m.vertices.length / 4);
-                    iOfs += m.indices.length;
-                    baseVertex += (m.vertices.length / 4);
-                }
-
-                // Upload once
-                const vboPos = gl.createBuffer();
-                gl.bindBuffer(gl.ARRAY_BUFFER, vboPos);
-                gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-
-                const vboParam = gl.createBuffer();
-                gl.bindBuffer(gl.ARRAY_BUFFER, vboParam);
-                gl.bufferData(gl.ARRAY_BUFFER, parameters, gl.STATIC_DRAW);
-
-                const ibo = gl.createBuffer();
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-
-                const firstMesh = meshes[0] || {};
-                const lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0 ? firstMesh.lineWidth : 1;
-
-                return { vboPos, vboParam, ibo, count: indices.length, lineWidth };
-            };
-
-            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
-            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
-
-            if (data.fills && data.fills.length) {
-                tileInfo.vectors.fills = buildBatch(data.fills);
-            }
-            if (hasMeshLines) {
-                tileInfo.vectors.lines = buildBatch(data.lines);
-            }
-            if (hasNativeLines) {
-                const linePrimitiveGroups = new Map();
-
-                for (const mesh of data.linePrimitives) {
-                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
-                        ? mesh.lineWidth
-                        : 1;
-                    const key = String(lineWidth);
-
-                    if (!linePrimitiveGroups.has(key)) {
-                        linePrimitiveGroups.set(key, []);
-                    }
-
-                    linePrimitiveGroups.get(key).push(mesh);
-                }
-
-                tileInfo.vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map(buildBatch);
-            }
-            if (data.points && data.points.length) {
-                tileInfo.vectors.points = buildBatch(data.points);
-            }
-
-            return tileInfo;
         }
 
         _setClip(){

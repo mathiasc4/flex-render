@@ -253,7 +253,7 @@
          * tile preparation failures are expected recoverable values.
          *
          * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
-         * @returns {Promise<PreparedTileResult>} Preparation result.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
          */
         async prepareBitmapTile(options = {}) {
             return {
@@ -269,13 +269,29 @@
          * Concrete backends should override this method.
          *
          * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
-         * @returns {Promise<PreparedTileResult>} Preparation result.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
          */
         async prepareGpuTextureTile(options = {}) {
             return {
                 ok: false,
                 reason: "unsupported-data",
                 error: new Error(`${this.constructor.name || "Backend"} does not support GPU texture tile preparation.`)
+            };
+        }
+
+        /**
+         * Prepare vector mesh tile data as backend-owned render resources.
+         *
+         * Concrete backends should override this method.
+         *
+         * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+         * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+         */
+        async prepareVectorTile(options = {}) {
+            return {
+                ok: false,
+                reason: "unsupported-data",
+                error: new Error(`${this.constructor.name || "Backend"} does not support vector tile preparation.`)
             };
         }
 

@@ -76,6 +76,99 @@
      */
 
     /**
+     * Texture preparation options shared by renderer backends.
+     *
+     * These options are renderer-neutral. They must not expose OpenSeadragon
+     * objects or backend constants.
+     *
+     * @typedef {object} RasterTileTextureOptions
+     * @property {boolean} [imageSmoothingEnabled=false] - Whether prepared textures should use linear filtering when supported.
+     */
+
+    /**
+     * Renderer-neutral bitmap tile preparation options.
+     *
+     * `data` may be a browser image-like source such as a Blob, ImageBitmap,
+     * HTMLImageElement, HTMLCanvasElement, CanvasRenderingContext2D, or
+     * OffscreenCanvas. Backends decide which concrete source types they support.
+     *
+     * @typedef {object} PrepareBitmapTileOptions
+     * @property {*} data - Bitmap-like source data to prepare.
+     * @property {RasterTileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Typed array accepted as a GPU texture-set pack payload.
+     *
+     * @typedef {Uint8Array | Uint8ClampedArray | Uint16Array | Float32Array } GpuTextureSetPackData
+     */
+
+    /**
+     * One packed texture layer in a GPU texture-set tile payload.
+     *
+     * The current WebGL2 implementation supports `RGBA8` and `RGBA16F`.
+     * `RGBA8` data is uploaded as RGBA/UNSIGNED_BYTE. `RGBA16F` data is
+     * uploaded as RGBA/HALF_FLOAT.
+     *
+     * @typedef {object} GpuTextureSetPack
+     * @property {"RGBA8"|"RGBA16F"} [format="RGBA8"] - Pixel storage format for this pack.
+     * @property {GpuTextureSetPackData} data - Packed pixel data for one texture-array layer.
+     */
+
+    /**
+     * Packed GPU texture-set tile payload.
+     *
+     * This is not an OpenSeadragon-native data type. It is a FlexRenderer tile
+     * payload accepted through the `gpuTextureSet` cache format. Adapters may
+     * provide `getType()` for compatibility with FlexDrawer cache detection, but
+     * renderer preparation should validate the structural fields rather than
+     * require an OpenSeadragon-specific object instance.
+     *
+     * @typedef {object} GpuTextureSetTileData
+     * @property {function(): string} [getType] - Optional compatibility method returning `"gpuTextureSet"`.
+     * @property {number} width - Texture width in pixels.
+     * @property {number} height - Texture height in pixels.
+     * @property {GpuTextureSetPack[]} packs - Packed texture layers.
+     * @property {number} [channelCount] - Logical channel count represented by all packs.
+     */
+
+    /**
+     * Renderer-neutral GPU texture-set preparation options.
+     *
+     * `data` is a tile-source-provided packed texture payload. Backends decide
+     * which concrete payload shapes they support.
+     *
+     * @typedef {object} PrepareGpuTextureTileOptions
+     * @property {GpuTextureSetTileData} data - GPU texture-set payload to prepare.
+     * @property {RasterTileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Successful prepared tile result.
+     *
+     * `resource` is backend-owned. Callers may store it, but must release it
+     * through `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * `texture` is a compatibility alias for the current WebGL first-pass path.
+     *
+     * @typedef {object} PreparedRasterTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared resource.
+     * @property {*} texture - Compatibility alias for the current WebGL texture resource.
+     * @property {number} width - Prepared source width in pixels.
+     * @property {number} height - Prepared source height in pixels.
+     * @property {number} textureDepth - Number of backend texture layers.
+     * @property {number} packCount - Number of source packs represented by the resource.
+     * @property {number} channelCount - Number of source channels represented by the resource.
+     */
+
+    /**
+     * Prepared tile result.
+     *
+     * @typedef {PreparedRasterTileSuccess | PreparedTileFailure} PreparedRasterTileResult
+     */
+
+    /**
      * @typedef {object} FPRenderVectorTileBatch
      * @property {WebGLBuffer} vboPos
      * @property {WebGLBuffer} vboParam
@@ -90,10 +183,70 @@
      * Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
      *
      * @typedef {object} FPRenderVectorTile
-     * @property {FPRenderVectorTileBatch} [fills]
-     * @property {FPRenderVectorTileBatch} [lines]
-     * @property {FPRenderVectorTileBatch} [linePrimitives]
-     * @property {FPRenderVectorTileBatch} [points]
+     * @property {FPRenderVectorTileBatch[]} [fills]
+     * @property {FPRenderVectorTileBatch[]} [lines]
+     * @property {FPRenderVectorTileBatch[]} [linePrimitives]
+     * @property {FPRenderVectorTileBatch[]} [points]
+     */
+
+    /**
+     * One raw vector mesh feature produced by a tile source.
+     *
+     * This is renderer-neutral source data. Backends prepare it into
+     * `FPRenderVectorTileBatch` objects.
+     *
+     * @typedef {object} VectorMeshFeature
+     * @property {Float32Array|number[]} vertices - Packed vertices as vec4(x, y, depth, textureId).
+     * @property {Uint32Array|number[]} indices - Indices into the vertex array.
+     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
+     * @property {Float32Array|number[]} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     * @property {number} [lineWidth=1] - Native line width in pixels. Used only for `linePrimitives`.
+     */
+
+    /**
+     * Renderer-neutral vector mesh tile payload.
+     *
+     * This is the raw tile-source payload. It does not contain backend resources.
+     *
+     * @typedef {object} VectorMeshTileData
+     * @property {VectorMeshFeature[]} [fills] - Polygon fill triangle meshes.
+     * @property {VectorMeshFeature[]} [lines] - Stroke triangle meshes rendered with triangles.
+     * @property {VectorMeshFeature[]} [linePrimitives] - Native line segment meshes rendered with backend line primitives.
+     * @property {VectorMeshFeature[]} [points] - Point marker and icon meshes.
+     */
+
+    /**
+     * Renderer-neutral vector tile preparation options.
+     *
+     * @typedef {object} PrepareVectorTileOptions
+     * @property {VectorMeshTileData} data - Vector mesh payload to prepare.
+     */
+
+    /**
+     * Successful prepared vector tile result.
+     *
+     * `resource` is backend-owned and must be released through
+     * `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * @typedef {object} PreparedVectorTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared vector resource.
+     * @property {FPRenderVectorTile} vectors - Renderer-ready vector batches.
+     */
+
+    /**
+     * Failed prepared tile result.
+     *
+     * @typedef {object} PreparedTileFailure
+     * @property {false} ok - Whether preparation succeeded.
+     * @property {"tainted-data" | "invalid-data" | "unsupported-data" | "webgl-upload-failed"} reason - Stable preparation failure reason.
+     * @property {*} [error] - Original backend/browser error, when available.
+     */
+
+    /**
+     * Prepared vector tile result.
+     *
+     * @typedef {PreparedVectorTileSuccess | PreparedTileFailure} PreparedVectorTileResult
      */
 
     /**
@@ -165,108 +318,6 @@
      * @property {boolean} [rendered=true] - Whether this pass submitted render work.
      * @property {string} [pass] - Pass that produced this descriptor, for example `'first-pass'` or `'second-pass'`.
      * @property {string} [reason] - Diagnostic reason when `rendered` is false or when fallback output normalization was needed.
-     */
-
-    /**
-     * Texture preparation options shared by renderer backends.
-     *
-     * These options are renderer-neutral. They must not expose OpenSeadragon
-     * objects or backend constants.
-     *
-     * @typedef {object} TileTextureOptions
-     * @property {boolean} [imageSmoothingEnabled=false] - Whether prepared textures should use linear filtering when supported.
-     */
-
-    /**
-     * Renderer-neutral bitmap tile preparation options.
-     *
-     * `data` may be a browser image-like source such as a Blob, ImageBitmap,
-     * HTMLImageElement, HTMLCanvasElement, CanvasRenderingContext2D, or
-     * OffscreenCanvas. Backends decide which concrete source types they support.
-     *
-     * @typedef {object} PrepareBitmapTileOptions
-     * @property {*} data - Bitmap-like source data to prepare.
-     * @property {TileTextureOptions} [textureOptions] - Texture preparation options.
-     */
-
-    /**
-     * Typed array accepted as a GPU texture-set pack payload.
-     *
-     * @typedef {Uint8Array | Uint8ClampedArray | Uint16Array | Float32Array } GpuTextureSetPackData
-     */
-
-    /**
-     * One packed texture layer in a GPU texture-set tile payload.
-     *
-     * The current WebGL2 implementation supports `RGBA8` and `RGBA16F`.
-     * `RGBA8` data is uploaded as RGBA/UNSIGNED_BYTE. `RGBA16F` data is
-     * uploaded as RGBA/HALF_FLOAT.
-     *
-     * @typedef {object} GpuTextureSetPack
-     * @property {"RGBA8"|"RGBA16F"} [format="RGBA8"] - Pixel storage format for this pack.
-     * @property {GpuTextureSetPackData} data - Packed pixel data for one texture-array layer.
-     */
-
-    /**
-     * Packed GPU texture-set tile payload.
-     *
-     * This is not an OpenSeadragon-native data type. It is a FlexRenderer tile
-     * payload accepted through the `gpuTextureSet` cache format. Adapters may
-     * provide `getType()` for compatibility with FlexDrawer cache detection, but
-     * renderer preparation should validate the structural fields rather than
-     * require an OpenSeadragon-specific object instance.
-     *
-     * @typedef {object} GpuTextureSetTileData
-     * @property {function(): string} [getType] - Optional compatibility method returning `"gpuTextureSet"`.
-     * @property {number} width - Texture width in pixels.
-     * @property {number} height - Texture height in pixels.
-     * @property {GpuTextureSetPack[]} packs - Packed texture layers.
-     * @property {number} [channelCount] - Logical channel count represented by all packs.
-     */
-
-    /**
-     * Renderer-neutral GPU texture-set preparation options.
-     *
-     * `data` is a tile-source-provided packed texture payload. Backends decide
-     * which concrete payload shapes they support.
-     *
-     * @typedef {object} PrepareGpuTextureTileOptions
-     * @property {GpuTextureSetTileData} data - GPU texture-set payload to prepare.
-     * @property {TileTextureOptions} [textureOptions] - Texture preparation options.
-     */
-
-    /**
-     * Successful prepared tile result.
-     *
-     * `resource` is backend-owned. Callers may store it, but must release it
-     * through `FlexRenderer#releasePreparedTileResource(...)`.
-     *
-     * `texture` is a compatibility alias for the current WebGL first-pass path.
-     *
-     * @typedef {object} PreparedTileSuccess
-     * @property {true} ok - Whether preparation succeeded.
-     * @property {*} resource - Backend-owned prepared resource.
-     * @property {*} texture - Compatibility alias for the current WebGL texture resource.
-     * @property {number} width - Prepared source width in pixels.
-     * @property {number} height - Prepared source height in pixels.
-     * @property {number} textureDepth - Number of backend texture layers.
-     * @property {number} packCount - Number of source packs represented by the resource.
-     * @property {number} channelCount - Number of source channels represented by the resource.
-     */
-
-    /**
-     * Failed prepared tile result.
-     *
-     * @typedef {object} PreparedTileFailure
-     * @property {false} ok - Whether preparation succeeded.
-     * @property {"tainted-data"|"invalid-data"|"unsupported-data"|"webgl-upload-failed"} reason - Stable preparation failure reason.
-     * @property {*} [error] - Original backend/browser error, when available.
-     */
-
-    /**
-     * Prepared tile result.
-     *
-     * @typedef {PreparedTileSuccess | PreparedTileFailure} PreparedTileResult
      */
 
     /**
@@ -541,7 +592,7 @@
          * by the active backend.
          *
          * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
-         * @returns {Promise<PreparedTileResult>} Preparation result.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
          */
         async prepareBitmapTile(options = {}) {
             if (!this.backend || typeof this.backend.prepareBitmapTile !== "function") {
@@ -562,7 +613,7 @@
          * validation, upload, and cleanup behavior to the active backend.
          *
          * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
-         * @returns {Promise<PreparedTileResult>} Preparation result.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
          */
         async prepareGpuTextureTile(options = {}) {
             if (!this.backend || typeof this.backend.prepareGpuTextureTile !== "function") {
@@ -577,11 +628,32 @@
         }
 
         /**
+         * Prepare vector mesh tile data as backend-owned render resources.
+         *
+         * This method is renderer-neutral and delegates concrete buffer/resource
+         * creation to the active backend.
+         *
+         * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+         * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+         */
+        async prepareVectorTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareVectorTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support vector tile preparation.")
+                };
+            }
+
+            return this.backend.prepareVectorTile(options);
+        }
+
+        /**
          * Release a backend-owned prepared tile resource.
          *
-         * Callers that store resources returned by `prepareBitmapTile(...)` or
-         * `prepareGpuTextureTile(...)` must release them through this method
-         * rather than touching backend internals directly.
+         * Callers that store resources returned by `prepareBitmapTile(...)`,
+         * `prepareGpuTextureTile(...)`, or `prepareVectorTile(...)` must release
+         * them through this method rather than touching backend internals directly.
          *
          * @param {*} resource - Backend-owned prepared tile resource.
          * @returns {void}
@@ -1710,8 +1782,14 @@
                 this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
                 this._debugPreviewColorRB = null;
             }
+
             this.backend.destroy();
             this._programImplementations = {};
+
+            let ext = this.gl.getExtension('WEBGL_lose_context');
+            if (ext) {
+                ext.loseContext();
+            }
         }
 
         static sanitizeKey(key) {

@@ -463,6 +463,18 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
 
         this.firstAtlas.destroy();
         this.secondAtlas.destroy();
+
+        // clean all texture units; adapted from https://stackoverflow.com/a/23606581/1214731
+        const numTextureUnits = this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS);
+
+        for (let unit = 0; unit < numTextureUnits; ++unit) {
+            this.gl.activeTexture(this.gl.TEXTURE0 + unit);
+            this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+            this.gl.bindTexture(this.gl.TEXTURE_2D_ARRAY, null);
+        }
+
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     }
 
     _createColorTarget(width, height, options = {}) {
@@ -752,7 +764,7 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
      * Prepare bitmap-like tile data as a WebGL2 texture array resource.
      *
      * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
-     * @returns {Promise<PreparedTileResult>} Preparation result.
+     * @returns {Promise<PreparedRasterTileResult>} Preparation result.
      */
     async prepareBitmapTile(options = {}) {
         const gl = this.gl;
@@ -857,7 +869,7 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
      * Prepare packed GPU texture-set tile data as a WebGL2 texture array resource.
      *
      * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
-     * @returns {Promise<PreparedTileResult>} Preparation result.
+     * @returns {Promise<PreparedRasterTileResult>} Preparation result.
      */
     async prepareGpuTextureTile(options = {}) {
         const gl = this.gl;
@@ -1004,12 +1016,257 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
     }
 
     /**
+     * Prepare vector mesh tile data as WebGL2 buffer resources.
+     *
+     * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+     * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+     */
+    async prepareVectorTile(options = {}) {
+        const data = options.data;
+
+        if (!data || typeof data !== "object") {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("Vector tile preparation requires a vector mesh object.")
+            );
+        }
+
+        const vectors = {};
+
+        try {
+            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
+            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
+
+            if (data.fills && data.fills.length) {
+                vectors.fills = this._prepareVectorTileBatch(data.fills);
+            }
+
+            if (hasMeshLines) {
+                vectors.lines = this._prepareVectorTileBatch(data.lines);
+            }
+
+            if (hasNativeLines) {
+                const linePrimitiveGroups = new Map();
+
+                for (const mesh of data.linePrimitives) {
+                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
+                        ? mesh.lineWidth
+                        : 1;
+                    const key = String(lineWidth);
+
+                    if (!linePrimitiveGroups.has(key)) {
+                        linePrimitiveGroups.set(key, []);
+                    }
+
+                    linePrimitiveGroups.get(key).push(mesh);
+                }
+
+                vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map((meshes) => {
+                    return this._prepareVectorTileBatch(meshes);
+                });
+            }
+
+            if (data.points && data.points.length) {
+                vectors.points = this._prepareVectorTileBatch(data.points);
+            }
+
+            this._preparedTileResources.add(vectors);
+
+            return {
+                ok: true,
+                resource: vectors,
+                vectors: vectors
+            };
+        } catch (error) {
+            this._releasePreparedVectorTileResource(vectors);
+
+            return this._makePreparedTileFailure(
+                "webgl-upload-failed",
+                error
+            );
+        }
+    }
+
+    _prepareVectorTileBatch(meshes) {
+        const gl = this.gl;
+
+        if (!Array.isArray(meshes) || !meshes.length) {
+            throw new TypeError("Vector tile batch requires at least one mesh.");
+        }
+
+        let vCount = 0;
+        let iCount = 0;
+
+        for (const mesh of meshes) {
+            if (!mesh || !mesh.vertices || !mesh.indices) {
+                throw new TypeError("Vector mesh requires vertices and indices.");
+            }
+
+            vCount += mesh.vertices.length / 4;
+            iCount += mesh.indices.length;
+        }
+
+        const positions = new Float32Array(vCount * 4);
+        const parameters = new Float32Array(vCount * 4);
+        const indices = new Uint32Array(iCount);
+
+        let vOfs = 0;
+        let iOfs = 0;
+        let baseVertex = 0;
+
+        for (const mesh of meshes) {
+            positions.set(mesh.vertices, vOfs * 4);
+
+            const rgba = mesh.color ? mesh.color : [0, 0, 0, 1];
+            const r = Math.max(0.0, Math.min(1.0, rgba[0]));
+            const g = Math.max(0.0, Math.min(1.0, rgba[1]));
+            const b = Math.max(0.0, Math.min(1.0, rgba[2]));
+            const a = Math.max(0.0, Math.min(1.0, rgba[3]));
+
+            for (let k = 0; k < mesh.vertices.length / 4; k++) {
+                const pOfs = (vOfs + k) * 4;
+                parameters[pOfs + 0] = r;
+                parameters[pOfs + 1] = g;
+                parameters[pOfs + 2] = b;
+                parameters[pOfs + 3] = a;
+            }
+
+            if (mesh.parameters) {
+                parameters.set(mesh.parameters, vOfs * 4);
+            }
+
+            for (let k = 0; k < mesh.indices.length; k++) {
+                indices[iOfs + k] = baseVertex + mesh.indices[k];
+            }
+
+            vOfs += mesh.vertices.length / 4;
+            iOfs += mesh.indices.length;
+            baseVertex += mesh.vertices.length / 4;
+        }
+
+        const batch = {
+            vboPos: null,
+            vboParam: null,
+            ibo: null,
+            count: indices.length,
+            lineWidth: 1
+        };
+
+        try {
+            batch.vboPos = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+            batch.vboParam = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+            gl.bufferData(gl.ARRAY_BUFFER, parameters, gl.STATIC_DRAW);
+
+            batch.ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+            const firstMesh = meshes[0] || {};
+            batch.lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0
+                ? firstMesh.lineWidth
+                : 1;
+
+            return batch;
+        } catch (error) {
+            this._releasePreparedVectorTileBatch(batch);
+            throw error;
+        } finally {
+            gl.bindBuffer(gl.ARRAY_BUFFER, null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+    }
+
+    _isPreparedVectorTileResource(resource) {
+        return !!(
+            resource &&
+            typeof resource === "object" &&
+            (
+                resource.fills ||
+                resource.lines ||
+                resource.linePrimitives ||
+                resource.points
+            )
+        );
+    }
+
+    _releasePreparedVectorTileResource(resource) {
+        if (!resource || typeof resource !== "object") {
+            return;
+        }
+
+        if (resource.fills) {
+            this._releasePreparedVectorTileBatch(resource.fills);
+            resource.fills = null;
+        }
+
+        if (resource.lines) {
+            this._releasePreparedVectorTileBatch(resource.lines);
+            resource.lines = null;
+        }
+
+        if (Array.isArray(resource.linePrimitives)) {
+            for (const lineBatch of resource.linePrimitives) {
+                this._releasePreparedVectorTileBatch(lineBatch);
+            }
+            resource.linePrimitives = null;
+        }
+
+        if (resource.points) {
+            this._releasePreparedVectorTileBatch(resource.points);
+            resource.points = null;
+        }
+    }
+
+    _releasePreparedVectorTileBatch(batch) {
+        if (!batch) {
+            return;
+        }
+
+        const gl = this.gl;
+
+        if (batch.vboPos) {
+            gl.deleteBuffer(batch.vboPos);
+            batch.vboPos = null;
+        }
+
+        if (batch.vboParam) {
+            gl.deleteBuffer(batch.vboParam);
+            batch.vboParam = null;
+        }
+
+        if (batch.ibo) {
+            gl.deleteBuffer(batch.ibo);
+            batch.ibo = null;
+        }
+
+        batch.count = 0;
+    }
+
+    /**
      * Release a WebGL2 prepared tile resource.
      *
      * @param {*} resource - Backend-owned resource returned by a preparation method.
      * @returns {void}
      */
     releasePreparedTileResource(resource) {
+        if (!resource) {
+            return;
+        }
+
+        if (this._isPreparedVectorTileResource(resource)) {
+            this._releasePreparedVectorTileResource(resource);
+
+            if (this._preparedTileResources) {
+                this._preparedTileResources.delete(resource);
+            }
+
+            return;
+        }
+
         const texture = resource && resource.texture ? resource.texture : resource;
 
         if (!texture) {
