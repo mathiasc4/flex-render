@@ -244,6 +244,53 @@
         getBlendingFunction(name) {
             throw("$.FlexRenderer.WebGLImplementation::blendingFunction must be implemented!");
         }
+
+        /**
+         * Prepare bitmap-like tile data as a backend-owned render resource.
+         *
+         * Concrete backends should override this method. The base implementation
+         * returns a structured unsupported result rather than throwing, because
+         * tile preparation failures are expected recoverable values.
+         *
+         * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+         * @returns {Promise<PreparedTileResult>} Preparation result.
+         */
+        async prepareBitmapTile(options = {}) {
+            return {
+                ok: false,
+                reason: "unsupported-data",
+                error: new Error(`${this.constructor.name || "Backend"} does not support bitmap tile preparation.`)
+            };
+        }
+
+        /**
+         * Prepare GPU texture-set tile data as a backend-owned render resource.
+         *
+         * Concrete backends should override this method.
+         *
+         * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+         * @returns {Promise<PreparedTileResult>} Preparation result.
+         */
+        async prepareGpuTextureTile(options = {}) {
+            return {
+                ok: false,
+                reason: "unsupported-data",
+                error: new Error(`${this.constructor.name || "Backend"} does not support GPU texture tile preparation.`)
+            };
+        }
+
+        /**
+         * Release a backend-owned prepared tile resource.
+         *
+         * Concrete backends should override this method when they return
+         * resources from preparation methods.
+         *
+         * @param {*} resource - Backend-owned prepared tile resource.
+         * @returns {void}
+         */
+        releasePreparedTileResource(resource) {
+            // no-op in the abstract backend
+        }
     };
 
     /**
