@@ -2394,10 +2394,6 @@
             }
         }
 
-        _textureFilter(gl) {
-            return this._imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
-        }
-
         internalCacheCreate(cache, tile) {
             const tiledImage = tile.tiledImage;
             const normalized = this._normalizeCacheData(cache);
