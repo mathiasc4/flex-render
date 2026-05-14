@@ -3,6 +3,15 @@ const DEMO_MAX_LEVEL = 2;
 const DEMO_WIDTH = DEMO_TILE_SIZE * 4;
 const DEMO_HEIGHT = DEMO_TILE_SIZE * 4;
 
+const SIZE_PRESETS = {
+    unequal: {
+        label: "Unequal shared sizes"
+    },
+    swapped: {
+        label: "Swapped shared sizes"
+    }
+};
+
 const state = {
     viewerA: null,
     viewerB: null,
@@ -12,6 +21,7 @@ const state = {
         sharedB: false,
         privateViewer: false
     },
+    sizePreset: "unequal",
     clearCheckActive: false,
     lastAction: "No action yet."
 };
@@ -41,6 +51,18 @@ document.getElementById("run-clear-check-button").addEventListener("click", () =
     runClearCheck();
 });
 
+document.getElementById("apply-unequal-sizes-button").addEventListener("click", () => {
+    applySizePreset("unequal");
+});
+
+document.getElementById("swap-shared-sizes-button").addEventListener("click", () => {
+    applySizePreset("swapped");
+});
+
+document.getElementById("run-resize-check-button").addEventListener("click", () => {
+    runResizeCheck();
+});
+
 window.addEventListener("beforeunload", () => {
     destroyViewers();
 });
@@ -51,6 +73,11 @@ function createViewers() {
     destroyViewers();
     resetLoadState();
     state.clearCheckActive = false;
+
+    applySizePreset(state.sizePreset, {
+        refresh: false,
+        write: false
+    });
 
     const key = getSharedContextKey();
 
@@ -78,6 +105,7 @@ function createViewers() {
     writeState(`Created OpenSeadragon viewers with shared key '${key}'.`);
 
     setTimeout(() => {
+        refreshViewersAfterContainerResize();
         writeState(`Created OpenSeadragon viewers with shared key '${key}'.`);
     }, 500);
 }
@@ -226,6 +254,136 @@ function runClearCheck() {
             before.sharedBAlpha > 0 &&
             after.sharedAAlpha === 0 &&
             after.sharedBAlpha > 0
+    });
+}
+
+async function runResizeCheck() {
+    if (!ensureViewers()) {
+        return;
+    }
+
+    const fromPreset = state.sizePreset === "swapped" ? "swapped" : "unequal";
+    const toPreset = fromPreset === "unequal" ? "swapped" : "unequal";
+
+    applySizePreset(fromPreset, {
+        write: false
+    });
+
+    await wait(300);
+    const before = getResizeValidationForDisplay();
+
+    applySizePreset(toPreset, {
+        write: false
+    });
+
+    await wait(400);
+    const after = getResizeValidationForDisplay();
+    const presentationOutput = getPresentationOutputForDisplay();
+
+    const beforeA = findResizeEntry(before, "sharedA");
+    const beforeB = findResizeEntry(before, "sharedB");
+    const afterA = findResizeEntry(after, "sharedA");
+    const afterB = findResizeEntry(after, "sharedB");
+
+    const sharedAChanged = !!beforeA && !!afterA &&
+        !sameSize(beforeA.presentationCanvas, afterA.presentationCanvas);
+    const sharedBChanged = !!beforeB && !!afterB &&
+        !sameSize(beforeB.presentationCanvas, afterB.presentationCanvas);
+
+    writeState(
+        `Ran resize check by switching from ${SIZE_PRESETS[fromPreset].label} to ${SIZE_PRESETS[toPreset].label}.`,
+        {
+            before: summarizeResizeValidation(before),
+            after: summarizeResizeValidation(after),
+            sharedAChanged,
+            sharedBChanged,
+            passed:
+                !!before.ready &&
+                !!after.ready &&
+                !!before.checks.sharedPresentationSizesDifferent &&
+                !!after.checks.sharedPresentationSizesDifferent &&
+                !!after.checks.everyPresentationMatchesRender &&
+                !!after.checks.everyDrawerCanvasMatchesPresentation &&
+                sharedAChanged &&
+                sharedBChanged &&
+                !!presentationOutput.checks.sharedA &&
+                !!presentationOutput.checks.sharedB &&
+                !!presentationOutput.checks.privateViewer
+        }
+    );
+}
+
+function applySizePreset(preset, options = {}) {
+    if (!SIZE_PRESETS[preset]) {
+        preset = "unequal";
+    }
+
+    state.sizePreset = preset;
+    state.clearCheckActive = false;
+
+    const grid = document.getElementById("viewer-grid");
+
+    if (grid) {
+        for (const presetKey of Object.keys(SIZE_PRESETS)) {
+            grid.classList.remove(`size-preset-${presetKey}`);
+        }
+
+        grid.classList.add(`size-preset-${preset}`);
+    }
+
+    if (options.refresh !== false) {
+        refreshViewersAfterContainerResize();
+
+        setTimeout(() => {
+            refreshViewersAfterContainerResize();
+        }, 50);
+    }
+
+    if (options.write !== false) {
+        writeState(`Applied ${SIZE_PRESETS[preset].label}.`);
+
+        setTimeout(() => {
+            writeState(`Applied ${SIZE_PRESETS[preset].label}.`);
+        }, 250);
+    }
+}
+
+function refreshViewersAfterContainerResize() {
+    window.dispatchEvent(new Event("resize"));
+
+    for (const viewer of [state.viewerA, state.viewerB, state.viewerPrivate]) {
+        refreshViewerAfterContainerResize(viewer);
+    }
+}
+
+function refreshViewerAfterContainerResize(viewer) {
+    if (!viewer) {
+        return;
+    }
+
+    const container = viewer.container || viewer.element;
+
+    if (
+        container &&
+        container.clientWidth > 0 &&
+        container.clientHeight > 0 &&
+        viewer.viewport &&
+        typeof viewer.viewport.resize === "function"
+    ) {
+        viewer.viewport.resize(
+            new OpenSeadragon.Point(container.clientWidth, container.clientHeight),
+            true
+        );
+    }
+
+    if (typeof viewer.forceRedraw === "function") {
+        viewer.forceRedraw();
+    }
+}
+
+function wait(ms) {
+    return new Promise(resolve => {
+        setTimeout(resolve, ms);
     });
 }
 
@@ -507,15 +665,67 @@ function getIdentityChecks() {
     };
 }
 
-function getDimensionsForDisplay() {
-    const rendererA = getRenderer(state.viewerA);
-    const rendererB = getRenderer(state.viewerB);
-    const rendererPrivate = getRenderer(state.viewerPrivate);
+function getResizeValidationForDisplay() {
+    const entries = getRendererEntries().map(entry => {
+        const renderer = entry.renderer;
+        const container = getViewerContainer(entry);
+        const renderDimensions = renderer && typeof renderer.getRenderDimensions === "function" ?
+            renderer.getRenderDimensions() :
+            null;
+        const presentationCanvas = renderer && typeof renderer.getPresentationCanvas === "function" ?
+            getCanvasSize(renderer.getPresentationCanvas()) :
+            null;
+        const webGLCanvas = renderer && typeof renderer.getWebGLCanvas === "function" ?
+            getCanvasSize(renderer.getWebGLCanvas()) :
+            null;
+        const drawerCanvas = entry.viewer && entry.viewer.drawer && entry.viewer.drawer.canvas ?
+            getCanvasSize(entry.viewer.drawer.canvas) :
+            null;
+        const containerCss = getContainerCssSize(container);
+
+        return {
+            key: entry.key,
+            label: entry.label,
+            containerCss,
+            renderDimensions,
+            presentationCanvas,
+            webGLCanvas,
+            drawerCanvas,
+            presentationToCssScale: getCanvasToCssScale(presentationCanvas, containerCss),
+            presentationMatchesRender: sameSize(presentationCanvas, renderDimensions),
+            drawerCanvasMatchesPresentation: sameSize(drawerCanvas, presentationCanvas)
+        };
+    });
+
+    const byKey = {};
+
+    for (const entry of entries) {
+        byKey[entry.key] = entry;
+    }
+
+    const ready = entries.every(entry => !!entry.renderDimensions && !!entry.presentationCanvas);
+    const sharedPresentationSizesDifferent = !!(
+        ready &&
+        byKey.sharedA &&
+        byKey.sharedB &&
+        !sameSize(byKey.sharedA.presentationCanvas, byKey.sharedB.presentationCanvas)
+    );
 
     return {
-        sharedA: rendererA ? rendererA.getRenderDimensions() : null,
-        sharedB: rendererB ? rendererB.getRenderDimensions() : null,
-        privateRenderer: rendererPrivate ? rendererPrivate.getRenderDimensions() : null
+        ready,
+        sizePreset: state.sizePreset,
+        sizePresetLabel: SIZE_PRESETS[state.sizePreset] ?
+            SIZE_PRESETS[state.sizePreset].label :
+            state.sizePreset,
+        expectation: "Shared viewer A and B should have different presentation canvas sizes, while every renderer presentation canvas should match its own render dimensions.",
+        entries,
+        checks: {
+            sharedPresentationSizesDifferent,
+            everyPresentationMatchesRender: ready &&
+                entries.every(entry => entry.presentationMatchesRender),
+            everyDrawerCanvasMatchesPresentation: ready &&
+                entries.every(entry => entry.drawerCanvasMatchesPresentation)
+        }
     };
 }
 
@@ -524,19 +734,100 @@ function getRendererEntries() {
         {
             key: "sharedA",
             label: "Shared viewer A",
+            viewer: state.viewerA,
+            containerId: "viewer-shared-a",
             renderer: getRenderer(state.viewerA)
         },
         {
             key: "sharedB",
             label: "Shared viewer B",
+            viewer: state.viewerB,
+            containerId: "viewer-shared-b",
             renderer: getRenderer(state.viewerB)
         },
         {
             key: "privateViewer",
             label: "Private viewer",
+            viewer: state.viewerPrivate,
+            containerId: "viewer-private",
             renderer: getRenderer(state.viewerPrivate)
         }
     ];
+}
+
+function getViewerContainer(entry) {
+    return entry.viewer && (entry.viewer.container || entry.viewer.element) ?
+        (entry.viewer.container || entry.viewer.element) :
+        document.getElementById(entry.containerId);
+}
+
+function getCanvasSize(canvas) {
+    if (!canvas) {
+        return null;
+    }
+
+    return {
+        width: canvas.width || 0,
+        height: canvas.height || 0
+    };
+}
+
+function getContainerCssSize(container) {
+    if (!container) {
+        return null;
+    }
+
+    const rect = container.getBoundingClientRect();
+
+    return {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        clientWidth: container.clientWidth || 0,
+        clientHeight: container.clientHeight || 0
+    };
+}
+
+function getCanvasToCssScale(canvasSize, containerCss) {
+    if (!canvasSize || !containerCss || !containerCss.clientWidth || !containerCss.clientHeight) {
+        return null;
+    }
+
+    return {
+        x: Number((canvasSize.width / containerCss.clientWidth).toFixed(3)),
+        y: Number((canvasSize.height / containerCss.clientHeight).toFixed(3))
+    };
+}
+
+function sameSize(a, b) {
+    return !!a &&
+        !!b &&
+        a.width === b.width &&
+        a.height === b.height;
+}
+
+function findResizeEntry(result, key) {
+    return result && Array.isArray(result.entries) ?
+        result.entries.find(entry => entry.key === key) || null :
+        null;
+}
+
+function summarizeResizeValidation(result) {
+    const entries = {};
+
+    for (const entry of result.entries || []) {
+        entries[entry.key] = {
+            containerCss: entry.containerCss,
+            renderDimensions: entry.renderDimensions,
+            presentationCanvas: entry.presentationCanvas,
+            drawerCanvas: entry.drawerCanvas
+        };
+    }
+
+    return {
+        sizePreset: result.sizePreset,
+        checks: result.checks,
+        entries
+    };
 }
 
 function getWebGLContextUsageForDisplay() {
@@ -683,6 +974,7 @@ function writeState(action, details = undefined) {
 
     const presentationOutput = getPresentationOutputForDisplay();
     const webGLContextUsage = getWebGLContextUsageForDisplay();
+    const resizeValidation = getResizeValidationForDisplay();
 
     writeJson("action-output", {
         action,
@@ -693,15 +985,16 @@ function writeState(action, details = undefined) {
     writeJson("identity-output", getIdentityChecks());
     writeJson("webgl-context-output", webGLContextUsage);
     writeJson("presentation-output", presentationOutput);
-    writeJson("dimensions-output", getDimensionsForDisplay());
+    writeJson("dimensions-output", resizeValidation);
 
-    renderChecks(details, presentationOutput, webGLContextUsage);
+    renderChecks(details, presentationOutput, webGLContextUsage, resizeValidation);
 }
 
 function renderChecks(
     details = undefined,
     presentationOutput = getPresentationOutputForDisplay(),
-    webGLContextUsage = getWebGLContextUsageForDisplay()
+    webGLContextUsage = getWebGLContextUsageForDisplay(),
+    resizeValidation = getResizeValidationForDisplay()
 ) {
     const list = document.getElementById("checks-list");
     const identity = getIdentityChecks();
@@ -783,6 +1076,24 @@ function renderChecks(
     checks.push({
         label: "Private FlexDrawer uses renderer presentation canvas as drawer canvas",
         pass: !!identity.ready && identity.drawerPrivateCanvasIsPresentation
+    });
+
+    checks.push({
+        label: "Shared viewer A and B have different presentation canvas sizes",
+        pass: !!resizeValidation.ready &&
+            !!resizeValidation.checks.sharedPresentationSizesDifferent
+    });
+
+    checks.push({
+        label: "Every renderer presentation canvas matches its own render dimensions",
+        pass: !!resizeValidation.ready &&
+            !!resizeValidation.checks.everyPresentationMatchesRender
+    });
+
+    checks.push({
+        label: "Every drawer canvas size matches its renderer presentation canvas size",
+        pass: !!resizeValidation.ready &&
+            !!resizeValidation.checks.everyDrawerCanvasMatchesPresentation
     });
 
     if (presentationOutput.ready && presentationOutput.allLoaded) {

@@ -53,13 +53,15 @@
         }
 
         .viewer-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            display: flex;
+            flex-direction: column;
             gap: 12px;
+            align-items: stretch;
         }
 
         .viewer-card {
             min-width: 0;
+            width: 100%;
             padding: 10px;
             border: thin gray solid;
             background: #f8f8f8;
@@ -73,11 +75,35 @@
 
         .viewer-container {
             width: 100%;
-            aspect-ratio: 4 / 3;
+            height: 240px;
             border: 1px solid #d1d5db;
             background: #ffffff;
             box-sizing: border-box;
             position: relative;
+        }
+
+        .viewer-grid.size-preset-unequal .viewer-card-shared-a .viewer-container {
+            height: 320px;
+        }
+
+        .viewer-grid.size-preset-unequal .viewer-card-shared-b .viewer-container {
+            height: 190px;
+        }
+
+        .viewer-grid.size-preset-unequal .viewer-card-private .viewer-container {
+            height: 260px;
+        }
+
+        .viewer-grid.size-preset-swapped .viewer-card-shared-a .viewer-container {
+            height: 190px;
+        }
+
+        .viewer-grid.size-preset-swapped .viewer-card-shared-b .viewer-container {
+            height: 320px;
+        }
+
+        .viewer-grid.size-preset-swapped .viewer-card-private .viewer-container {
+            height: 260px;
         }
 
         .viewer-note {
@@ -211,10 +237,6 @@
                 grid-template-columns: 1fr;
             }
 
-            .viewer-grid {
-                grid-template-columns: 1fr;
-            }
-
             .diagnostics-panel-stack,
             .side-panel-stack {
                 width: auto;
@@ -255,6 +277,12 @@
                     <button id="run-clear-check-button" type="button">Run clear check</button>
                 </div>
 
+                <div class="diagnostics-action-row">
+                    <button id="apply-unequal-sizes-button" type="button">Apply unequal sizes</button>
+                    <button id="swap-shared-sizes-button" type="button">Swap shared sizes</button>
+                    <button id="run-resize-check-button" type="button">Run resize check</button>
+                </div>
+
                 <h4>Latest action</h4>
                 <pre id="action-output" class="diagnostics-state-readout">No action yet.</pre>
             </section>
@@ -268,6 +296,8 @@
                     <li>A third viewer omits sharedContextKey and remains private.</li>
                     <li>Shared renderer output is presented through each renderer's local presentation canvas.</li>
                     <li>Shared clear() clears only the selected renderer-local presentation output.</li>
+                    <li>Shared viewer A and B are stacked vertically and deliberately use different CSS heights.</li>
+                    <li>Resize presets verify that each shared renderer keeps an independent presentation canvas size.</li>
                 </ul>
 
                 <h3>Expected after Create viewers</h3>
@@ -280,6 +310,7 @@
                     <li>The private viewer should report private-context mode.</li>
                     <li>The WebGL context usage panel should report 3 renderers using 2 WebGL contexts.</li>
                     <li>Every item in the Checks panel should pass after all viewers finish loading.</li>
+                    <li>Shared viewer A and B should have different presentation canvas sizes that match their own render dimensions.</li>
                 </ol>
 
                 <h3>Expected after Run clear check</h3>
@@ -289,6 +320,16 @@
                     <li>The private viewer should remain visible.</li>
                     <li>The latest action should report passed: true.</li>
                     <li>The alpha readout should show Shared A dropping to 0 while Shared B remains above 0.</li>
+                </ol>
+
+                <h3>Expected after Run resize check</h3>
+                <ol>
+                    <li>The demo should switch the shared viewer size preset.</li>
+                    <li>Shared viewer A and B should both redraw visibly.</li>
+                    <li>Shared viewer A and B should still use the same WebGL context.</li>
+                    <li>Shared viewer A and B should keep different presentation canvas sizes.</li>
+                    <li>Each renderer presentation canvas should match only its own render dimensions.</li>
+                    <li>The latest action should report passed: true.</li>
                 </ol>
 
                 <h3>Expected after Reload sources</h3>
@@ -305,8 +346,8 @@
         </aside>
 
         <main class="demo-main">
-            <section class="viewer-grid">
-                <div class="viewer-card">
+            <section id="viewer-grid" class="viewer-grid size-preset-unequal">
+                <div class="viewer-card viewer-card-shared-a">
                     <h3>Shared viewer A</h3>
                     <div id="viewer-shared-a" class="viewer-container"></div>
                     <p class="viewer-note">
@@ -314,7 +355,7 @@
                     </p>
                 </div>
 
-                <div class="viewer-card">
+                <div class="viewer-card viewer-card-shared-b">
                     <h3>Shared viewer B</h3>
                     <div id="viewer-shared-b" class="viewer-container"></div>
                     <p class="viewer-note">
@@ -322,7 +363,7 @@
                     </p>
                 </div>
 
-                <div class="viewer-card">
+                <div class="viewer-card viewer-card-private">
                     <h3>Private viewer</h3>
                     <div id="viewer-private" class="viewer-container"></div>
                     <p class="viewer-note">
@@ -359,7 +400,7 @@
             </section>
 
             <section class="validation-status-panel">
-                <h3>Renderer dimensions</h3>
+                <h3>Resize validation</h3>
                 <pre id="dimensions-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
             </section>
         </aside>
