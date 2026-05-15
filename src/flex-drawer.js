@@ -122,6 +122,7 @@
                 copyShaderConfig: false,
                 handleNavigator: true,
                 shaderSourceResolver: null,
+                sharedContextKey: null,
                 interaction: false,
                 // hex bg color, by default transparent
                 backgroundColor: undefined
@@ -287,7 +288,12 @@
                     for (let i = 0; i < parent.world.getItemCount(); i++) {
                         const tiledImageParent = parent.world.getItemAt(i);
                         if (tiledImageParent.source === tiledImage.source) {
-                            config.id = tiledImageParent.__shaderConfig.id;
+                            // Parent's __shaderConfig may be missing during a reset window
+                            // (tiledImageCreated deletes it when _configuredExternally is true).
+                            // Fall through to idGenerator in that case.
+                            if (tiledImageParent.__shaderConfig) {
+                                config.id = tiledImageParent.__shaderConfig.id;
+                            }
                             break;
                         }
                     }
@@ -1140,7 +1146,7 @@
          * @return {{x: number, y: number}}
          */
         _getInteractionPositionPx(event) {
-            const canvas = this.renderer && this.renderer.canvas;
+            const canvas = this.renderer && this.renderer.getPresentationCanvas();
             const target = this._getInteractionEventTarget();
 
             if (!canvas || !target || typeof target.getBoundingClientRect !== "function") {
@@ -2107,7 +2113,7 @@
             const sources = [];
             const flatShaders = this.renderer.getFlatShaderLayers(shaders, shaderOrder);
 
-            const canvas = this.renderer.canvas;
+            const canvas = this.renderer.getPresentationCanvas();
             const osdViewport = this.viewer.viewport;
             const inner = osdViewport && osdViewport._containerInnerSize;
             const sx = inner && inner.x ? canvas.width / inner.x : 1;
@@ -2326,6 +2332,7 @@
                 {
                     debug: false,
                     webGLPreferredVersion: "2.0",
+                    sharedContextKey: null,
                 },
                 // User-defined
                 this.options,
@@ -2334,6 +2341,7 @@
                     redrawCallback: () => this.viewer.forceRedraw(),
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,
+                    sharedContextKey: this.options.sharedContextKey,
                     // TODO: problem when navigator renders first
                     // Navigator must not have the handler since it would attempt to define the controls twice
                     htmlHandler: this._isNavigatorDrawer ? null : this.options.htmlHandler,
@@ -2349,7 +2357,7 @@
             this.webGLVersion = this.renderer.webglVersion;
             this.debug = rendererOptions.debug;
 
-            const canvas = this.renderer.canvas;
+            const canvas = this.renderer.getPresentationCanvas();
             let viewportSize = this._calculateCanvasSize();
 
             // SETUP CANVASES

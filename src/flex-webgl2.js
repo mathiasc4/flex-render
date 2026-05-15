@@ -52,6 +52,13 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
 
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
+        this._presentationTransferScratch = {
+            canvas: null,
+            ctx: null,
+            pixels: null,
+            flippedPixels: null,
+            imageData: null
+        };
 
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.FirstPassProgram(this, this.gl, this.firstAtlas), "firstPass");
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.SecondPassProgram(this, this.gl, this.secondAtlas), "secondPass");
@@ -499,6 +506,11 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.texture, 0);
 
+        // Make the single color attachment explicitly drawable. This matters for
+        // shared-context final targets because the second pass renders into this FBO,
+        // not into the WebGL default framebuffer.
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+
         const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
         if (status !== gl.FRAMEBUFFER_COMPLETE) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -552,9 +564,129 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         }
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
         gl.clearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * Ensure a renderer-owned color target.
+     *
+     * @param {object | null} target
+     * @param {number} width
+     * @param {number} height
+     * @param {object} [options={}]
+     * @returns {object}
+     */
+    ensureColorTarget(target, width, height, options = {}) {
+        return this._ensureColorTarget(target, width, height, options);
+    }
+
+    /**
+     * Clear a renderer-owned color target.
+     *
+     * @param {object} target
+     * @param {number[]} [rgba=[0, 0, 0, 0]]
+     * @returns {void}
+     */
+    clearColorTarget(target, rgba = [0, 0, 0, 0]) {
+        this._clearColorTarget(target, rgba);
+    }
+
+    /**
+     * Destroy a renderer-owned color target.
+     *
+     * @param {object|null} target
+     * @returns {void}
+     */
+    destroyColorTarget(target) {
+        this._destroyColorTarget(target);
+    }
+
+    /**
+     * Copy a color target into a renderer-local presentation canvas.
+     *
+     * Shared-context presentation uses readPixels because the WebGL default
+     * framebuffer is not a reliable intermediate transfer target across browsers
+     * and context configurations.
+     *
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @returns {string} Transfer mode used.
+     */
+    presentColorTargetToCanvas(target, canvas) {
+        if (!target || !target.framebuffer || !canvas) {
+            return "none";
+        }
+
+        return this._readColorTargetToCanvas(target, canvas);
+    }
+
+    /**
+     * Copy a color target into a presentation canvas through readPixels.
+     *
+     * @private
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @returns {string} Always "read-pixels".
+     */
+    _readColorTargetToCanvas(target, canvas) {
+        const gl = this.gl;
+        const targetWidth = target.width || 0;
+        const targetHeight = target.height || 0;
+        const canvasWidth = canvas.width || 0;
+        const canvasHeight = canvas.height || 0;
+        const width = Math.min(targetWidth, canvasWidth);
+        const height = Math.min(targetHeight, canvasHeight);
+        const scratch = this._presentationTransferScratch;
+
+        if (!width || !height) {
+            return "read-pixels";
+        }
+
+        const length = width * height * 4;
+        const rowLength = width * 4;
+
+        if (!scratch.pixels || scratch.pixels.length !== length) {
+            scratch.pixels = new Uint8Array(length);
+        }
+
+        if (!scratch.flippedPixels || scratch.flippedPixels.length !== length) {
+            scratch.flippedPixels = new Uint8ClampedArray(length);
+        }
+
+        const context = canvas.getContext("2d");
+
+        if (!context) {
+            return "read-pixels";
+        }
+
+        if (canvasWidth !== targetWidth || canvasHeight !== targetHeight) {
+            context.clearRect(0, 0, canvasWidth, canvasHeight);
+        }
+
+        if (!scratch.imageData || scratch.imageData.width !== width || scratch.imageData.height !== height) {
+            scratch.imageData = context.createImageData(width, height);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, scratch.pixels);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        for (let y = 0; y < height; y++) {
+            const srcStart = (height - 1 - y) * rowLength;
+            const dstStart = y * rowLength;
+            scratch.flippedPixels.set(
+                scratch.pixels.subarray(srcStart, srcStart + rowLength),
+                dstStart
+            );
+        }
+
+        scratch.imageData.data.set(scratch.flippedPixels);
+        context.putImageData(scratch.imageData, 0, 0);
+
+        return "read-pixels";
     }
 
     /**
@@ -563,8 +695,9 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * but into a reusable color target.
      */
     renderSecondPassToTexture(renderArray, options = {}) {
-        const width = options.width || this.renderer.canvas.width || this.gl.drawingBufferWidth;
-        const height = options.height || this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const dimensions = this.renderer.getRenderDimensions();
+        const width = options.width || dimensions.width || this.gl.drawingBufferWidth;
+        const height = options.height || dimensions.height || this.gl.drawingBufferHeight;
         const target = options.target ?
             this._ensureColorTarget(options.target, width, height, options) :
             this._ensureColorTarget(options.targetKey || '__second_pass_texture', width, height, options);
@@ -590,8 +723,9 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * stays inside the normal second-pass shader.
      */
     processSecondPassWithInspector(renderArray, options = undefined) {
-        const width = this.renderer.canvas.width || this.gl.drawingBufferWidth;
-        const height = this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const dimensions = this.renderer.getRenderDimensions();
+        const width = dimensions.width || this.gl.drawingBufferWidth;
+        const height = dimensions.height || this.gl.drawingBufferHeight;
 
         const fullTarget = this._ensureColorTarget("__inspector_full", width, height, { filter: this.gl.LINEAR });
 
@@ -1850,9 +1984,20 @@ ${execution}
     /**
      * Use program. Arbitrary arguments.
      */
-    use(renderOutput, renderArray, options) {
+    use(renderOutput, renderArray, options = undefined) {
         const gl = this.gl;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, options ? options.framebuffer : null);
+        const framebuffer = options && options.framebuffer !== undefined ? options.framebuffer : null;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+
+        if (framebuffer) {
+            gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        }
+
+        if (options && options.width && options.height) {
+            gl.viewport(0, 0, options.width, options.height);
+        }
+
         gl.bindVertexArray(this.vao);
 
         // TODO: is refreshing necessary here?
