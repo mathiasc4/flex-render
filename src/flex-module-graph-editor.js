@@ -1661,6 +1661,7 @@
                 `<code>${this._escapeHtml(nodeConfig.type || "unknown")}</code>`,
                 '</div>',
                 description ? `<p class="fr-module-graph-editor__description">${this._escapeHtml(description)}</p>` : "",
+                this._renderSourceChannelInspectorHtml(nodeId, nodeConfig, ModuleClass),
                 this._renderControlInspectorHtml(nodeId, nodeConfig, ModuleClass),
                 '<button type="button" class="fr-module-graph-editor__danger-button">Remove node</button>',
                 '<div class="fr-module-graph-editor__diagnostics"></div>'
@@ -1684,6 +1685,7 @@
                 });
             }
 
+            this._bindSourceChannelInspectorEvents(nodeId);
             this._bindControlInspectorEvents(nodeId);
         }
 
@@ -1875,6 +1877,97 @@
         }
 
         /**
+         * Render source-channel parameter controls for the selected module node.
+         *
+         * @private
+         * @param {string} nodeId - Selected module node id.
+         * @param {object} nodeConfig - Selected module node config.
+         * @param {?Function} ModuleClass - Registered module class.
+         * @returns {string} Source-channel Inspector HTML.
+         */
+        _renderSourceChannelInspectorHtml(nodeId, nodeConfig, ModuleClass) {
+            if (!ModuleClass || typeof ModuleClass.sourceChannelParams !== "function") {
+                return "";
+            }
+
+            const descriptors = ModuleClass.sourceChannelParams();
+
+            if (!descriptors || typeof descriptors !== "object") {
+                return "";
+            }
+
+            const params = nodeConfig.params || {};
+            const rows = [];
+
+            for (const paramName in descriptors) {
+                const descriptor = descriptors[paramName] || {};
+                const mode = descriptor.mode || "single";
+                const title = descriptor.title || paramName;
+                const description = descriptor.description || "";
+
+                if (mode === "list") {
+                    const values = Array.isArray(params[paramName]) && params[paramName].length ?
+                        params[paramName] :
+                        [0];
+
+                    rows.push([
+                        `<fieldset class="fr-module-graph-editor__source-channel" data-source-channel-param="${this._escapeHtml(paramName)}" data-source-channel-mode="list">`,
+                        `<legend>${this._escapeHtml(title)}</legend>`,
+                        description ? `<p class="fr-module-graph-editor__source-channel-description">${this._escapeHtml(description)}</p>` : "",
+                        `<div class="fr-module-graph-editor__source-channel-list">`,
+                        values.map((value, index) => this._renderSourceChannelIndexField(paramName, value, index)).join(""),
+                        `</div>`,
+                        `<button type="button" class="fr-module-graph-editor__source-channel-add" data-source-channel-param="${this._escapeHtml(paramName)}">Add channel</button>`,
+                        `</fieldset>`
+                    ].join(""));
+                    continue;
+                }
+
+                const value = Number.isFinite(Number(params[paramName])) ? Number(params[paramName]) : 0;
+
+                rows.push([
+                    `<fieldset class="fr-module-graph-editor__source-channel" data-source-channel-param="${this._escapeHtml(paramName)}" data-source-channel-mode="single">`,
+                    `<legend>${this._escapeHtml(title)}</legend>`,
+                    description ? `<p class="fr-module-graph-editor__source-channel-description">${this._escapeHtml(description)}</p>` : "",
+                    this._renderSourceChannelIndexField(paramName, value, 0),
+                    `</fieldset>`
+                ].join(""));
+            }
+
+            if (!rows.length) {
+                return "";
+            }
+
+            return [
+                '<div class="fr-module-graph-editor__inspector-group fr-module-graph-editor__inspector-group--source-channels">',
+                '<div class="fr-module-graph-editor__inspector-subtitle">Source channels</div>',
+                rows.join(""),
+                '</div>'
+            ].join("");
+        }
+
+        /**
+         * Render one numeric source-channel index field.
+         *
+         * @private
+         * @param {string} paramName - Module param name.
+         * @param {*} value - Current channel index value.
+         * @param {number} index - Index within the list param.
+         * @returns {string} Field HTML.
+         */
+        _renderSourceChannelIndexField(paramName, value, index) {
+            const numericValue = Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0;
+
+            return [
+                '<label class="fr-module-graph-editor__source-channel-row">',
+                `<span>${this._escapeHtml(paramName)}${index > 0 ? ` [${index}]` : ""}</span>`,
+                `<input class="fr-module-graph-editor__source-channel-input" data-source-channel-param="${this._escapeHtml(paramName)}" data-source-channel-index="${index}" type="number" min="0" step="1" value="${numericValue}">`,
+                `<button type="button" class="fr-module-graph-editor__source-channel-remove" data-source-channel-param="${this._escapeHtml(paramName)}" data-source-channel-index="${index}" title="Remove channel">×</button>`,
+                '</label>'
+            ].join("");
+        }
+
+        /**
          * Render one common control parameter field.
          *
          * @private
@@ -1948,6 +2041,209 @@
                     });
                 }
             }
+        }
+
+        /**
+         * Bind selected-node source-channel editor events.
+         *
+         * @private
+         * @param {string} nodeId - Selected module node id.
+         * @returns {void}
+         */
+        _bindSourceChannelInspectorEvents(nodeId) {
+            const fields = this.inspector.querySelectorAll(".fr-module-graph-editor__source-channel-input");
+
+            for (const field of fields) {
+                field.addEventListener("change", () => {
+                    const paramName = field.getAttribute("data-source-channel-param");
+                    const index = Number(field.getAttribute("data-source-channel-index"));
+
+                    this._setSourceChannelParamFromInspector(nodeId, paramName, index, field.value);
+                });
+            }
+
+            const addButtons = this.inspector.querySelectorAll(".fr-module-graph-editor__source-channel-add");
+
+            for (const button of addButtons) {
+                button.addEventListener("click", () => {
+                    const paramName = button.getAttribute("data-source-channel-param");
+
+                    this._appendSourceChannelParamFromInspector(nodeId, paramName);
+                });
+            }
+
+            const removeButtons = this.inspector.querySelectorAll(".fr-module-graph-editor__source-channel-remove");
+
+            for (const button of removeButtons) {
+                button.addEventListener("click", () => {
+                    const paramName = button.getAttribute("data-source-channel-param");
+                    const index = Number(button.getAttribute("data-source-channel-index"));
+
+                    this._removeSourceChannelParamFromInspector(nodeId, paramName, index);
+                });
+            }
+        }
+
+        /**
+         * Update one source-channel param from an Inspector field.
+         *
+         * @private
+         * @param {string} nodeId - Selected module node id.
+         * @param {string} paramName - Module param name.
+         * @param {number} index - Channel index position for list params.
+         * @param {*} value - Field value.
+         * @returns {void}
+         */
+        _setSourceChannelParamFromInspector(nodeId, paramName, index, value) {
+            const graphConfig = this._draftGraphConfig;
+            const nodeConfig = graphConfig.nodes && graphConfig.nodes[nodeId];
+
+            if (!nodeConfig || !paramName) {
+                return;
+            }
+
+            if (!nodeConfig.params || typeof nodeConfig.params !== "object" || Array.isArray(nodeConfig.params)) {
+                nodeConfig.params = {};
+            }
+
+            const channelIndex = this._parseSourceChannelIndex(value);
+
+            if (Array.isArray(nodeConfig.params[paramName])) {
+                const values = nodeConfig.params[paramName].slice();
+                values[index] = channelIndex;
+                nodeConfig.params[paramName] = values;
+            } else {
+                nodeConfig.params[paramName] = channelIndex;
+            }
+
+            this._commitSourceChannelInspectorChange(nodeId, "source-channel-change");
+        }
+
+        /**
+         * Append one channel index to a list-valued source-channel param.
+         *
+         * @private
+         * @param {string} nodeId - Selected module node id.
+         * @param {string} paramName - Module param name.
+         * @returns {void}
+         */
+        _appendSourceChannelParamFromInspector(nodeId, paramName) {
+            const graphConfig = this._draftGraphConfig;
+            const nodeConfig = graphConfig.nodes && graphConfig.nodes[nodeId];
+
+            if (!nodeConfig || !paramName) {
+                return;
+            }
+
+            if (!nodeConfig.params || typeof nodeConfig.params !== "object" || Array.isArray(nodeConfig.params)) {
+                nodeConfig.params = {};
+            }
+
+            const values = Array.isArray(nodeConfig.params[paramName]) ?
+                nodeConfig.params[paramName].slice() :
+                [this._parseSourceChannelIndex(nodeConfig.params[paramName])];
+
+            values.push(values.length ? values[values.length - 1] : 0);
+            nodeConfig.params[paramName] = values;
+
+            this._commitSourceChannelInspectorChange(nodeId, "source-channel-add");
+        }
+
+        /**
+         * Remove one channel index from a list-valued source-channel param.
+         *
+         * @private
+         * @param {string} nodeId - Selected module node id.
+         * @param {string} paramName - Module param name.
+         * @param {number} index - Index to remove.
+         * @returns {void}
+         */
+        _removeSourceChannelParamFromInspector(nodeId, paramName, index) {
+            const graphConfig = this._draftGraphConfig;
+            const nodeConfig = graphConfig.nodes && graphConfig.nodes[nodeId];
+
+            if (!nodeConfig || !paramName || !Array.isArray(nodeConfig.params && nodeConfig.params[paramName])) {
+                return;
+            }
+
+            const values = nodeConfig.params[paramName].slice();
+
+            if (values.length <= 1) {
+                return;
+            }
+
+            values.splice(index, 1);
+            nodeConfig.params[paramName] = values;
+
+            this._commitSourceChannelInspectorChange(nodeId, "source-channel-remove");
+        }
+
+        /**
+         * Parse a source-channel index from user input.
+         *
+         * @private
+         * @param {*} value - User-provided value.
+         * @returns {number} Non-negative integer channel index.
+         */
+        _parseSourceChannelIndex(value) {
+            const parsed = Number(value);
+
+            if (!Number.isFinite(parsed)) {
+                return 0;
+            }
+
+            return Math.max(0, Math.floor(parsed));
+        }
+
+        /**
+         * Commit a source-channel Inspector change into the draft graph.
+         *
+         * Scalar channelIndex changes do not rebuild LiteGraph because the node
+         * ports do not change. List add/remove changes may alter output type, so
+         * those rebuild the graph while preserving the selected node id.
+         *
+         * @private
+         * @param {string} nodeId - Changed node id.
+         * @param {string} reason - Draft change reason.
+         * @returns {void}
+         */
+        _commitSourceChannelInspectorChange(nodeId, reason) {
+            const shouldRebuildGraph =
+                reason === "source-channel-add" ||
+                reason === "source-channel-remove";
+
+            this._selectedNodeId = nodeId;
+            this.analyze();
+
+            if (shouldRebuildGraph) {
+                this._renderDraftGraph();
+
+                if (this._liteNodesById[nodeId] && this.graphCanvas && typeof this.graphCanvas.selectNode === "function") {
+                    this._selectedNodeId = nodeId;
+                    this.graphCanvas.selectNode(this._liteNodesById[nodeId]);
+                }
+            } else {
+                this._renderInspector();
+
+                if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
+                    this.graphCanvas.draw(true, true);
+                }
+            }
+
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: reason || "source-channel-change",
+                nodeId: nodeId
+            });
+
+            this.raiseEvent("selection-change", {
+                nodeId: nodeId,
+                nodeConfig: this._cloneGraphConfig(
+                    this._draftGraphConfig.nodes && this._draftGraphConfig.nodes[nodeId] ?
+                        this._draftGraphConfig.nodes[nodeId] :
+                        {}
+                )
+            });
         }
 
         /**
@@ -2652,6 +2948,51 @@
     color: #f9fafb;
     line-height: 16px;
     cursor: pointer;
+}
+
+.fr-module-graph-editor__source-channel[data-source-channel-mode="single"] .fr-module-graph-editor__source-channel-remove {
+    display: none;
+}
+
+.fr-module-graph-editor__inspector-group--source-channels {
+    margin-top: 10px;
+}
+
+.fr-module-graph-editor__source-channel {
+    margin: 0 0 8px 0;
+    padding: 8px;
+    border: 1px solid #374151;
+}
+
+.fr-module-graph-editor__source-channel legend {
+    padding: 0 4px;
+    font-size: 12px;
+    color: #d1d5db;
+}
+
+.fr-module-graph-editor__source-channel-description {
+    margin: 0 0 6px 0;
+    font-size: 11px;
+    color: #9ca3af;
+}
+
+.fr-module-graph-editor__source-channel-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 72px 24px;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+    font-size: 12px;
+}
+
+.fr-module-graph-editor__source-channel-input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.fr-module-graph-editor__source-channel-add,
+.fr-module-graph-editor__source-channel-remove {
+    font-size: 11px;
 }
 `;
             document.head.appendChild(style);
