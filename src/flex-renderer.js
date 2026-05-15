@@ -593,6 +593,13 @@
 
             // Should be last call of the constructor to make sure everything is initialized
             this.backend.init();
+
+            /**
+             * Original construction options.
+             *
+             * @type {object}
+             */
+            this.options = options || {};
         }
 
         /**
@@ -778,6 +785,32 @@
          */
         isSharedContext() {
             return !!this._sharedContextEntry;
+        }
+
+        /**
+         * Return the shared WebGL context key used by this renderer.
+         *
+         * Returns null for private-context renderers.
+         *
+         * @returns {?string} Shared context key, or null.
+         */
+        getSharedContextKey() {
+            if (!this._sharedContextEntry) {
+                return null;
+            }
+
+            return this.options && this.options.sharedContextKey ?
+                this.options.sharedContextKey :
+                null;
+        }
+
+        /**
+         * Return the configured shared-context busy policy.
+         *
+         * @returns {*|undefined} Busy policy value, if configured.
+         */
+        getSharedContextBusyPolicy() {
+            return this.options ? this.options.sharedContextBusyPolicy : undefined;
         }
 
         /**
@@ -1775,6 +1808,164 @@
                 outputType,
                 shaderId: previewShaderId
             };
+        }
+
+        /**
+         * Render a module graph output preview through an isolated preview path.
+         *
+         * The method derives the preview ShaderLayer config, computes a bounded preview
+         * size, invokes the supplied isolated draw function, and returns the structured
+         * preview result consumed by ShaderModuleGraphEditor.
+         *
+         * The draw function is intentionally injected because FlexRenderer does not own
+         * OpenSeadragon tile discovery. FlexDrawer or another adapter remains
+         * responsible for adapting live source data into the isolated render path.
+         *
+         * @param {object} options - Preview render options.
+         * @param {Function} options.drawPreview - Function that renders the derived preview configuration.
+         * @param {object} options.graphConfig - Draft module graph config.
+         * @param {string} options.nodeId - Target module node id.
+         * @param {string} options.output - Target module output name.
+         * @param {string} [options.outputType] - Target module output type.
+         * @param {string} [options.shaderLayerId] - Live modular ShaderLayer id.
+         * @param {ShaderLayer} [options.shaderLayer] - Live modular ShaderLayer instance.
+         * @param {ShaderLayerConfig} [options.shaderConfig] - Modular ShaderLayer config to clone.
+         * @param {ShaderLayer|object} [options.owner] - Owner used for graph analysis.
+         * @param {number} [options.maxWidth=256] - Maximum preview width.
+         * @param {number} [options.maxHeight=160] - Maximum preview height.
+         * @returns {Promise<object>} Structured preview result.
+         */
+        async renderModuleGraphOutputPreview(options = {}) {
+            const configResult = this.createModuleGraphOutputPreviewConfig(options);
+
+            if (!configResult.ok) {
+                return configResult;
+            }
+
+            if (typeof options.drawPreview !== "function") {
+                return {
+                    ok: false,
+                    reason: "preview-draw-function-unavailable",
+                    message: "Module output preview requires a drawPreview function.",
+                    diagnostics: configResult.diagnostics || []
+                };
+            }
+
+            const maxWidth = Math.max(1, Math.round(Number(options.maxWidth) || 256));
+            const maxHeight = Math.max(1, Math.round(Number(options.maxHeight) || 160));
+            const dimensions = typeof this.getRenderDimensions === "function" ?
+                this.getRenderDimensions() :
+                null;
+            const sourceWidth = Math.max(1, Number(options.sourceWidth || (dimensions && dimensions.width) || maxWidth));
+            const sourceHeight = Math.max(1, Number(options.sourceHeight || (dimensions && dimensions.height) || maxHeight));
+            const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+            const width = Math.max(1, Math.round(sourceWidth * scale));
+            const height = Math.max(1, Math.round(sourceHeight * scale));
+
+            try {
+                const rendered = await options.drawPreview({
+                    configuration: configResult.configuration,
+                    shaderOrder: configResult.shaderOrder,
+                    width,
+                    height,
+                    size: {
+                        x: width,
+                        y: height,
+                        width,
+                        height
+                    },
+                    nodeId: configResult.nodeId,
+                    output: configResult.output,
+                    outputType: configResult.outputType,
+                    analysis: configResult.analysis
+                });
+
+                let canvas = null;
+
+                if (rendered instanceof HTMLCanvasElement) {
+                    canvas = rendered;
+                } else if (rendered && rendered.canvas instanceof HTMLCanvasElement) {
+                    canvas = rendered.canvas;
+                } else if (rendered && rendered.getContext && rendered.nodeName === "CANVAS") {
+                    canvas = rendered;
+                }
+
+                if (!canvas) {
+                    return {
+                        ok: false,
+                        reason: "preview-render-returned-no-canvas",
+                        message: "Module output preview rendering did not return a canvas.",
+                        diagnostics: configResult.diagnostics || []
+                    };
+                }
+
+                return {
+                    ok: true,
+                    canvas,
+                    width: canvas.width || width,
+                    height: canvas.height || height,
+                    nodeId: configResult.nodeId,
+                    output: configResult.output,
+                    outputType: configResult.outputType
+                };
+            } catch (error) {
+                return {
+                    ok: false,
+                    reason: "preview-render-failed",
+                    message: error && error.message ? error.message : String(error),
+                    diagnostics: configResult.diagnostics || []
+                };
+            }
+        }
+
+        /**
+         * Render a module graph output preview using raw standalone renderer inputs.
+         *
+         * This convenience method is useful for tests and non-OpenSeadragon callers.
+         * OpenSeadragon demos should usually provide drawPreview through FlexDrawer or
+         * viewer-specific extraction so tile/source state stays adapter-owned.
+         *
+         * @param {object} options - Preview render options.
+         * @param {*} [options.inputs] - Standalone renderer inputs.
+         * @param {*} [options.sources] - Alias for inputs.
+         * @returns {Promise<object>} Structured preview result.
+         */
+        async renderModuleGraphOutputPreviewWithInputs(options = {}) {
+            const inputs = options.sources !== undefined ? options.sources : options.inputs;
+
+            return this.renderModuleGraphOutputPreview($.extend(true, {}, options, {
+                drawPreview: async (request) => {
+                    const runtime = $.makeStandaloneFlexRenderer({
+                        uniqueId: `${this.uniqueId || "renderer"}_module_preview`,
+                        width: request.width,
+                        height: request.height,
+                        webGLPreferredVersion: this.webglVersion || "2.0",
+                        backgroundColor: "#00000000",
+                        debug: false,
+                        interactive: false,
+                        canvasOptions: {
+                            stencil: true
+                        },
+                        sharedContextKey: this.isSharedContext() ? this.getSharedContextKey() : null,
+                        sharedContextBusyPolicy: this.isSharedContext() ? this.getSharedContextBusyPolicy() : undefined
+                    });
+
+                    try {
+                        const context = await runtime.drawWithConfiguration(
+                            inputs,
+                            request.configuration,
+                            undefined,
+                            request.size
+                        );
+
+                        return context && context.canvas ? context.canvas : runtime.canvas;
+                    } finally {
+                        if (runtime && typeof runtime.destroy === "function") {
+                            runtime.destroy();
+                        }
+                    }
+                }
+            }));
         }
 
         /**
