@@ -169,6 +169,14 @@
              */
             this._outputNodeId = "__output";
 
+            /**
+             * Whether LiteGraph is currently being rebuilt from draft config.
+             *
+             * @private
+             * @type {boolean}
+             */
+            this._renderingDraftGraph = false;
+
             this._registerOptionHandlers(options);
             this._ensureDefaultStyles();
             this._buildDom();
@@ -605,6 +613,7 @@
                 return;
             }
 
+            this._renderingDraftGraph = true;
             this._syncLayoutToDraft();
 
             if (typeof this.graph.clear === "function") {
@@ -644,6 +653,8 @@
             if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
                 this.graphCanvas.draw(true, true);
             }
+
+            this._renderingDraftGraph = false;
         }
 
         /**
@@ -663,10 +674,16 @@
 
             node.title = title;
             node.size = node.size || [180, 90];
+            node.inputs = node.inputs || [];
+            node.outputs = node.outputs || [];
             node.properties = {
                 moduleNodeId: nodeId,
                 moduleType: nodeConfig.type || null,
                 synthetic: false
+            };
+
+            node.onConnectionsChange = () => {
+                this._handleLiteGraphConnectionChange();
             };
 
             const inputs = this._getStaticPortMap(ModuleClass, "inputs");
@@ -674,6 +691,11 @@
 
             for (const inputName of Object.keys(inputs)) {
                 node.addInput(inputName, this._getPortType(inputs[inputName]));
+                const input = node.inputs[node.inputs.length - 1];
+
+                if (input) {
+                    input.single = true;
+                }
             }
 
             for (const outputName of Object.keys(outputs)) {
@@ -705,7 +727,15 @@
                 synthetic: true
             };
 
+            node.onConnectionsChange = () => {
+                this._handleLiteGraphConnectionChange();
+            };
+
             node.addInput("output", "*");
+
+            if (node.inputs && node.inputs[0]) {
+                node.inputs[0].single = true;
+            }
 
             const position = this._getNodePosition(layout, index);
             node.pos = [position.x, position.y];
@@ -779,6 +809,126 @@
             }
 
             sourceNode.connect(outputIndex, targetNode, inputIndex);
+        }
+
+        /**
+         * Synchronize user-edited LiteGraph links into the draft graph config.
+         *
+         * @private
+         * @returns {void}
+         */
+        _handleLiteGraphConnectionChange() {
+            if (this._renderingDraftGraph || !this.graph || !this._draftGraphConfig) {
+                return;
+            }
+
+            this._syncLiteGraphLinksToDraft();
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: "connection-change"
+            });
+            this._renderInspector();
+        }
+
+        /**
+         * Store current LiteGraph links in graph.nodes[*].inputs and graph.output.
+         *
+         * @private
+         * @returns {void}
+         */
+        _syncLiteGraphLinksToDraft() {
+            const graphConfig = this._draftGraphConfig;
+
+            if (!graphConfig.nodes || typeof graphConfig.nodes !== "object" || Array.isArray(graphConfig.nodes)) {
+                graphConfig.nodes = {};
+            }
+
+            this._syncLayoutToDraft();
+
+            for (const nodeId of Object.keys(graphConfig.nodes)) {
+                const nodeConfig = graphConfig.nodes[nodeId];
+
+                if (!nodeConfig || typeof nodeConfig !== "object") {
+                    continue;
+                }
+
+                delete nodeConfig.inputs;
+            }
+
+            graphConfig.output = null;
+
+            for (const targetNodeId of Object.keys(this._liteNodesById)) {
+                const targetNode = this._liteNodesById[targetNodeId];
+
+                if (!targetNode || !Array.isArray(targetNode.inputs)) {
+                    continue;
+                }
+
+                for (let inputIndex = 0; inputIndex < targetNode.inputs.length; inputIndex++) {
+                    const input = targetNode.inputs[inputIndex];
+
+                    if (!input || input.link === undefined || input.link === null) {
+                        continue;
+                    }
+
+                    const reference = this._getLinkOutputReference(input.link);
+
+                    if (!reference) {
+                        continue;
+                    }
+
+                    const inputName = input.name;
+
+                    if (targetNodeId === this._outputNodeId) {
+                        graphConfig.output = reference;
+                        continue;
+                    }
+
+                    const nodeConfig = graphConfig.nodes[targetNodeId];
+
+                    if (!nodeConfig) {
+                        continue;
+                    }
+
+                    if (!nodeConfig.inputs || typeof nodeConfig.inputs !== "object" || Array.isArray(nodeConfig.inputs)) {
+                        nodeConfig.inputs = {};
+                    }
+
+                    nodeConfig.inputs[inputName] = reference;
+                }
+            }
+        }
+
+        /**
+         * Return the source reference for a LiteGraph link.
+         *
+         * @private
+         * @param {number|string} linkId - LiteGraph link id.
+         * @returns {?string} Source reference in nodeId.outputName form.
+         */
+        _getLinkOutputReference(linkId) {
+            const link = this.graph && this.graph.links ? this.graph.links[linkId] : null;
+
+            if (!link) {
+                return null;
+            }
+
+            const sourceNode = this.graph.getNodeById ?
+                this.graph.getNodeById(link.origin_id) :
+                null;
+
+            if (!sourceNode || !sourceNode.properties || sourceNode.properties.synthetic) {
+                return null;
+            }
+
+            const sourceNodeId = sourceNode.properties.moduleNodeId;
+            const output = sourceNode.outputs && sourceNode.outputs[link.origin_slot];
+
+            if (!sourceNodeId || !output || !output.name) {
+                return null;
+            }
+
+            return `${sourceNodeId}.${output.name}`;
         }
 
         /**
