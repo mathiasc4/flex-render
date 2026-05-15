@@ -196,6 +196,14 @@
              */
             this._renderingDraftGraph = false;
 
+            /**
+             * Whether a controlled draft node removal is already in progress.
+             *
+             * @private
+             * @type {boolean}
+             */
+            this._removingNodeFromDraft = false;
+
             this._registerOptionHandlers(options);
             this._ensureDefaultStyles();
             this._buildDom();
@@ -362,7 +370,14 @@
                 this._selectedNodeId = null;
             }
 
-            this._renderDraftGraph();
+            this._removingNodeFromDraft = true;
+
+            try {
+                this._renderDraftGraph();
+            } finally {
+                this._removingNodeFromDraft = false;
+            }
+
             this.analyze();
 
             this.raiseEvent("draft-change", {
@@ -904,6 +919,10 @@
                 this._handleLiteGraphConnectionChange();
             };
 
+            node.onRemoved = () => {
+                this._handleLiteGraphNodeRemoved(nodeId);
+            };
+
             const inputs = this._getStaticPortMap(ModuleClass, "inputs");
             const outputs = this._getStaticPortMap(ModuleClass, "outputs");
 
@@ -947,6 +966,10 @@
 
             node.onConnectionsChange = () => {
                 this._handleLiteGraphConnectionChange();
+            };
+
+            node.onRemoved = () => {
+                this._handleLiteGraphNodeRemoved(this._outputNodeId);
             };
 
             node.addInput("output", "*");
@@ -1048,6 +1071,53 @@
                 reason: "connection-change"
             });
             this._renderInspector();
+        }
+
+        /**
+         * Synchronize LiteGraph-originated node removal into the draft graph.
+         *
+         * @private
+         * @param {string} nodeId - Removed LiteGraph node id.
+         * @returns {void}
+         */
+        _handleLiteGraphNodeRemoved(nodeId) {
+            if (this._renderingDraftGraph || this._removingNodeFromDraft || !nodeId) {
+                return;
+            }
+
+            if (nodeId === this._outputNodeId) {
+                this._renderDraftGraph();
+                return;
+            }
+
+            const graphConfig = this._draftGraphConfig;
+
+            if (!graphConfig || !graphConfig.nodes || !graphConfig.nodes[nodeId]) {
+                return;
+            }
+
+            this._syncLayoutToDraft();
+
+            delete graphConfig.nodes[nodeId];
+
+            if (graphConfig.editor && graphConfig.editor.nodes) {
+                delete graphConfig.editor.nodes[nodeId];
+            }
+
+            this._removeReferencesToNode(nodeId);
+
+            if (this._selectedNodeId === nodeId) {
+                this._selectedNodeId = null;
+            }
+
+            this._renderDraftGraph();
+            this.analyze();
+
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: "litegraph-remove-module-node",
+                nodeId: nodeId
+            });
         }
 
         /**
