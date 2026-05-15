@@ -818,8 +818,21 @@
             const webGLCanvas = this.getWebGLCanvas();
             const presentationCanvas = this.getPresentationCanvas();
 
-            webGLCanvas.width = width;
-            webGLCanvas.height = height;
+            if (this._sharedContextEntry) {
+                const requiredWidth = Math.max(0, Math.ceil(Number(width) || 0));
+                const requiredHeight = Math.max(0, Math.ceil(Number(height) || 0));
+
+                if (webGLCanvas.width < requiredWidth) {
+                    webGLCanvas.width = requiredWidth;
+                }
+
+                if (webGLCanvas.height < requiredHeight) {
+                    webGLCanvas.height = requiredHeight;
+                }
+            } else {
+                webGLCanvas.width = width;
+                webGLCanvas.height = height;
+            }
 
             if (presentationCanvas !== webGLCanvas) {
                 presentationCanvas.width = width;
@@ -1183,17 +1196,8 @@
             sharedEntry.activeRenderer = this;
 
             try {
-                const width = Math.max(1, this._renderWidth || this.getPresentationCanvas().width || this.getWebGLCanvas().width || 1);
-                const height = Math.max(1, this._renderHeight || this.getPresentationCanvas().height || this.getWebGLCanvas().height || 1);
-                const webGLCanvas = this.getWebGLCanvas();
-
-                if (webGLCanvas.width !== width) {
-                    webGLCanvas.width = width;
-                }
-
-                if (webGLCanvas.height !== height) {
-                    webGLCanvas.height = height;
-                }
+                const width = Math.max(1, this._renderWidth || this.getPresentationCanvas().width || 1);
+                const height = Math.max(1, this._renderHeight || this.getPresentationCanvas().height || 1);
 
                 if (!this.backend || typeof this.backend.ensureColorTarget !== "function") {
                     throw new Error("$.FlexRenderer::render: active backend does not support shared-context final color targets.");

@@ -247,9 +247,12 @@
         /**
          * Copy a backend-owned color target into a presentation canvas.
          *
+         * The presentation canvas size is owned by FlexRenderer#setDimensions().
+         * Implementations must not resize it.
+         *
          * @param {object} target
          * @param {HTMLCanvasElement} canvas
-         * @return {string}
+         * @returns {string} Transfer mode used.
          */
         presentColorTargetToCanvas(target, canvas) {
             throw("$.FlexRenderer.WebGLImplementation::presentColorTargetToCanvas() must be implemented!");

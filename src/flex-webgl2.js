@@ -573,11 +573,11 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     /**
      * Ensure a renderer-owned color target.
      *
-     * @param {object|null} target
+     * @param {object | null} target
      * @param {number} width
      * @param {number} height
      * @param {object} [options={}]
-     * @return {object}
+     * @returns {object}
      */
     ensureColorTarget(target, width, height, options = {}) {
         return this._ensureColorTarget(target, width, height, options);
@@ -588,7 +588,7 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      *
      * @param {object} target
      * @param {number[]} [rgba=[0, 0, 0, 0]]
-     * @return {void}
+     * @returns {void}
      */
     clearColorTarget(target, rgba = [0, 0, 0, 0]) {
         this._clearColorTarget(target, rgba);
@@ -598,26 +598,12 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * Destroy a renderer-owned color target.
      *
      * @param {object|null} target
-     * @return {void}
+     * @returns {void}
      */
     destroyColorTarget(target) {
         this._destroyColorTarget(target);
     }
 
-    /**
-     * Copy a color target into a renderer-local presentation canvas.
-     *
-     * The default "gpu-blit" mode first blits the color target to the WebGL
-     * default framebuffer and then copies the WebGL canvas into the presentation
-     * canvas. The "read-pixels" mode is slower but useful for profiling and
-     * debugging transfer behavior.
-     *
-     * @param {object} target
-     * @param {HTMLCanvasElement} canvas
-     * @param {object} [options={}]
-     * @param {"gpu-blit"|"read-pixels"} [options.mode="gpu-blit"]
-     * @return {string} Actual transfer mode used.
-     */
     /**
      * Copy a color target into a renderer-local presentation canvas.
      *
@@ -627,7 +613,7 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      *
      * @param {object} target
      * @param {HTMLCanvasElement} canvas
-     * @return {string} Transfer mode used.
+     * @returns {string} Transfer mode used.
      */
     presentColorTargetToCanvas(target, canvas) {
         if (!target || !target.framebuffer || !canvas) {
@@ -643,20 +629,20 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
      * @private
      * @param {object} target
      * @param {HTMLCanvasElement} canvas
-     * @return {string}
+     * @returns {string} Always "read-pixels".
      */
     _readColorTargetToCanvas(target, canvas) {
         const gl = this.gl;
-        const width = target.width || canvas.width || gl.drawingBufferWidth;
-        const height = target.height || canvas.height || gl.drawingBufferHeight;
+        const targetWidth = target.width || 0;
+        const targetHeight = target.height || 0;
+        const canvasWidth = canvas.width || 0;
+        const canvasHeight = canvas.height || 0;
+        const width = Math.min(targetWidth, canvasWidth);
+        const height = Math.min(targetHeight, canvasHeight);
         const scratch = this._presentationTransferScratch;
 
-        if (canvas.width !== width) {
-            canvas.width = width;
-        }
-
-        if (canvas.height !== height) {
-            canvas.height = height;
+        if (!width || !height) {
+            return "read-pixels";
         }
 
         const length = width * height * 4;
@@ -674,6 +660,10 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
 
         if (!context) {
             return "read-pixels";
+        }
+
+        if (canvasWidth !== targetWidth || canvasHeight !== targetHeight) {
+            context.clearRect(0, 0, canvasWidth, canvasHeight);
         }
 
         if (!scratch.imageData || scratch.imageData.width !== width || scratch.imageData.height !== height) {
