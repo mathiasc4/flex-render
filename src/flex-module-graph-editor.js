@@ -410,6 +410,48 @@
         }
 
         /**
+         * Patch one module-local control config in the draft graph.
+         *
+         * The stored value becomes an object so it can carry both the selected UI
+         * control type and common control parameters such as default/min/max/step.
+         *
+         * @param {string} nodeId - Module node id.
+         * @param {string} controlName - Module control name.
+         * @param {object} patch - Control params to merge.
+         * @returns {boolean} True when the control config was updated.
+         */
+        setModuleControlParams(nodeId, controlName, patch) {
+            this._assertNotDestroyed();
+
+            const graphConfig = this._draftGraphConfig;
+            const nodeConfig = graphConfig.nodes && graphConfig.nodes[nodeId];
+            const ModuleClass = nodeConfig ? this._getModuleClass(nodeConfig.type) : null;
+            const controlDefinition = this._getModuleControlDefinition(ModuleClass, controlName);
+
+            if (!nodeConfig || !controlDefinition || !patch || typeof patch !== "object") {
+                return false;
+            }
+
+            if (!nodeConfig.params || typeof nodeConfig.params !== "object" || Array.isArray(nodeConfig.params)) {
+                nodeConfig.params = {};
+            }
+
+            const current = this._getStoredControlParams(nodeConfig, controlName, controlDefinition);
+            nodeConfig.params[controlName] = $.extend(true, {}, current, patch);
+
+            this._renderInspector();
+
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: "set-module-control-params",
+                nodeId: nodeId,
+                controlName: controlName
+            });
+
+            return true;
+        }
+
+        /**
          * Analyze the current draft graph.
          *
          * Analyzer integration is added in a later phase. This method currently
@@ -1157,6 +1199,7 @@
                 `<code>${this._escapeHtml(nodeConfig.type || "unknown")}</code>`,
                 '</div>',
                 description ? `<p class="fr-module-graph-editor__description">${this._escapeHtml(description)}</p>` : "",
+                this._renderControlInspectorHtml(nodeId, nodeConfig, ModuleClass),
                 '<button type="button" class="fr-module-graph-editor__danger-button">Remove node</button>',
                 '<div class="fr-module-graph-editor__diagnostics"></div>'
             ].join("");
@@ -1180,6 +1223,276 @@
                     this.removeModuleNode(nodeId);
                 });
             }
+
+            this._bindControlInspectorEvents(nodeId);
+        }
+
+        /**
+         * Render selected-node control editing markup.
+         *
+         * @private
+         * @param {string} nodeId - Module node id.
+         * @param {object} nodeConfig - Module node config.
+         * @param {?Function} ModuleClass - Module class.
+         * @returns {string} Control editor HTML.
+         */
+        _renderControlInspectorHtml(nodeId, nodeConfig, ModuleClass) {
+            const controls = ModuleClass && ModuleClass.defaultControls ? ModuleClass.defaultControls : {};
+            const controlNames = Object.keys(controls).filter((controlName) => {
+                return controls[controlName] && controls[controlName] !== false;
+            });
+
+            if (!controlNames.length) {
+                return [
+                    '<div class="fr-module-graph-editor__section-title">Controls</div>',
+                    '<div class="fr-module-graph-editor__empty-state">This module declares no editable controls.</div>'
+                ].join("");
+            }
+
+            return [
+                '<div class="fr-module-graph-editor__section-title">Controls</div>',
+                ...controlNames.map((controlName) => {
+                    const controlDefinition = controls[controlName];
+                    const params = this._getStoredControlParams(nodeConfig, controlName, controlDefinition);
+                    const type = params.type || (controlDefinition.default && controlDefinition.default.type) || "";
+                    const compatibleTypes = this._getCompatibleControlTypes(controlDefinition);
+                    const commonFields = ["title", "default", "min", "max", "step", "interactive", "options"];
+
+                    return [
+                        `<fieldset class="fr-module-graph-editor__control" data-control-name="${this._escapeHtml(controlName)}">`,
+                        `<legend>${this._escapeHtml(controlName)}</legend>`,
+                        '<label class="fr-module-graph-editor__control-row">',
+                        '<span>Type</span>',
+                        `<select class="fr-module-graph-editor__control-type" data-control-field="type">${compatibleTypes.map((descriptor) => {
+                            const selected = descriptor.type === type ? "selected" : "";
+
+                            return `<option value="${this._escapeHtml(descriptor.type)}" ${selected}>${this._escapeHtml(descriptor.type)} (${this._escapeHtml(descriptor.glType)})</option>`;
+                        }).join("")}</select>`,
+                        '</label>',
+                        ...commonFields
+                            .filter((fieldName) => this._shouldShowControlField(params, fieldName))
+                            .map((fieldName) => this._renderControlFieldHtml(fieldName, params[fieldName])),
+                        '</fieldset>'
+                    ].join("");
+                })
+            ].join("");
+        }
+
+        /**
+         * Render one common control parameter field.
+         *
+         * @private
+         * @param {string} fieldName - Control parameter name.
+         * @param {*} value - Current control parameter value.
+         * @returns {string} Field HTML.
+         */
+        _renderControlFieldHtml(fieldName, value) {
+            if (fieldName === "interactive") {
+                const checked = value !== false ? "checked" : "";
+
+                return [
+                    '<label class="fr-module-graph-editor__control-row">',
+                    '<span>interactive</span>',
+                    `<input class="fr-module-graph-editor__control-field" data-control-field="interactive" type="checkbox" ${checked}>`,
+                    '</label>'
+                ].join("");
+            }
+
+            if (fieldName === "options") {
+                const text = value === undefined ? "" : JSON.stringify(value, null, 2);
+
+                return [
+                    '<label class="fr-module-graph-editor__control-row fr-module-graph-editor__control-row--stacked">',
+                    '<span>options</span>',
+                    `<textarea class="fr-module-graph-editor__control-field" data-control-field="options" spellcheck="false">${this._escapeHtml(text)}</textarea>`,
+                    '</label>'
+                ].join("");
+            }
+
+            const inputType = fieldName === "min" || fieldName === "max" || fieldName === "step" ? "number" : "text";
+            const valueText = value === undefined ? "" : String(value);
+
+            return [
+                '<label class="fr-module-graph-editor__control-row">',
+                `<span>${this._escapeHtml(fieldName)}</span>`,
+                `<input class="fr-module-graph-editor__control-field" data-control-field="${this._escapeHtml(fieldName)}" type="${inputType}" value="${this._escapeHtml(valueText)}">`,
+                '</label>'
+            ].join("");
+        }
+
+        /**
+         * Bind selected-node control editor events.
+         *
+         * @private
+         * @param {string} nodeId - Selected module node id.
+         * @returns {void}
+         */
+        _bindControlInspectorEvents(nodeId) {
+            const controls = this.inspector.querySelectorAll(".fr-module-graph-editor__control");
+
+            for (const control of controls) {
+                const controlName = control.getAttribute("data-control-name");
+
+                const typeSelect = control.querySelector(".fr-module-graph-editor__control-type");
+                if (typeSelect) {
+                    typeSelect.addEventListener("change", () => {
+                        this._setControlTypeFromInspector(nodeId, controlName, typeSelect.value);
+                    });
+                }
+
+                const fields = control.querySelectorAll(".fr-module-graph-editor__control-field");
+                for (const field of fields) {
+                    field.addEventListener("change", () => {
+                        const fieldName = field.getAttribute("data-control-field");
+                        const value = this._readControlFieldValue(field, fieldName);
+
+                        this.setModuleControlParams(nodeId, controlName, {
+                            [fieldName]: value
+                        });
+                    });
+                }
+            }
+        }
+
+        /**
+         * Change a module-local control type from the inspector.
+         *
+         * @private
+         * @param {string} nodeId - Module node id.
+         * @param {string} controlName - Module control name.
+         * @param {string} type - Selected UI control type.
+         * @returns {void}
+         */
+        _setControlTypeFromInspector(nodeId, controlName, type) {
+            const descriptor = $.FlexRenderer.UIControls.describeType(type);
+
+            if (!descriptor) {
+                return;
+            }
+
+            const graphConfig = this._draftGraphConfig;
+            const nodeConfig = graphConfig.nodes && graphConfig.nodes[nodeId];
+            const ModuleClass = nodeConfig ? this._getModuleClass(nodeConfig.type) : null;
+            const controlDefinition = this._getModuleControlDefinition(ModuleClass, controlName);
+            const current = nodeConfig ? this._getStoredControlParams(nodeConfig, controlName, controlDefinition) : {};
+            const next = $.extend(true, {}, descriptor.defaults || {}, current, {
+                type: type
+            });
+
+            this.setModuleControlParams(nodeId, controlName, next);
+        }
+
+        /**
+         * Return one module control definition.
+         *
+         * @private
+         * @param {?Function} ModuleClass - Module class.
+         * @param {string} controlName - Control name.
+         * @returns {?object} Control definition.
+         */
+        _getModuleControlDefinition(ModuleClass, controlName) {
+            const controls = ModuleClass && ModuleClass.defaultControls;
+
+            return controls && controls[controlName] && controls[controlName] !== false ?
+                controls[controlName] :
+                null;
+        }
+
+        /**
+         * Return stored params for one module-local control as an object.
+         *
+         * @private
+         * @param {object} nodeConfig - Module node config.
+         * @param {string} controlName - Control name.
+         * @param {object} controlDefinition - Module control definition.
+         * @returns {object} Control params object.
+         */
+        _getStoredControlParams(nodeConfig, controlName, controlDefinition) {
+            const params = nodeConfig.params || {};
+            const stored = params[controlName];
+            const defaults = controlDefinition && controlDefinition.default && typeof controlDefinition.default === "object" ?
+                controlDefinition.default :
+                {};
+
+            if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+                return $.extend(true, {}, defaults, stored);
+            }
+
+            if (stored !== undefined) {
+                return $.extend(true, {}, defaults, {
+                    default: stored
+                });
+            }
+
+            return $.extend(true, {}, defaults);
+        }
+
+        /**
+         * Return UI control descriptors compatible with a module control definition.
+         *
+         * @private
+         * @param {object} controlDefinition - Module control definition.
+         * @returns {object[]} Compatible UI control descriptors.
+         */
+        _getCompatibleControlTypes(controlDefinition) {
+            if (!$.FlexRenderer.UIControls || typeof $.FlexRenderer.UIControls.describeTypes !== "function") {
+                return [];
+            }
+
+            const descriptors = $.FlexRenderer.UIControls.describeTypes();
+
+            if (!controlDefinition || typeof controlDefinition.accepts !== "function") {
+                return descriptors;
+            }
+
+            return descriptors.filter((descriptor) => {
+                try {
+                    return controlDefinition.accepts(descriptor.glType, descriptor);
+                } catch (e) {
+                    return false;
+                }
+            });
+        }
+
+        /**
+         * Return whether a common control field should be displayed.
+         *
+         * @private
+         * @param {object} params - Current control params.
+         * @param {string} fieldName - Field name.
+         * @returns {boolean} True when the field should be visible.
+         */
+        _shouldShowControlField(params, fieldName) {
+            return Object.prototype.hasOwnProperty.call(params, fieldName);
+        }
+
+        /**
+         * Read one control field value from the inspector.
+         *
+         * @private
+         * @param {HTMLElement} field - Input or textarea element.
+         * @param {string} fieldName - Control field name.
+         * @returns {*} Parsed value.
+         */
+        _readControlFieldValue(field, fieldName) {
+            if (fieldName === "interactive") {
+                return !!field.checked;
+            }
+
+            if (fieldName === "min" || fieldName === "max" || fieldName === "step") {
+                const value = Number(field.value);
+                return Number.isFinite(value) ? value : 0;
+            }
+
+            if (fieldName === "options") {
+                try {
+                    return field.value.trim() ? JSON.parse(field.value) : [];
+                } catch (e) {
+                    return field.value;
+                }
+            }
+
+            return field.value;
         }
 
         /**
@@ -1606,6 +1919,52 @@
 
 .fr-module-graph-editor__danger-button:hover {
     background: #551818;
+}
+
+.fr-module-graph-editor__control {
+    margin: 0 0 12px;
+    padding: 8px;
+    border: 1px solid #3f3f3f;
+}
+
+.fr-module-graph-editor__control legend {
+    padding: 0 4px;
+    color: #fff;
+    font-weight: 600;
+}
+
+.fr-module-graph-editor__control-row {
+    display: grid;
+    grid-template-columns: 82px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+.fr-module-graph-editor__control-row--stacked {
+    grid-template-columns: 1fr;
+}
+
+.fr-module-graph-editor__control-row span {
+    color: #aaa;
+    font-size: 11px;
+}
+
+.fr-module-graph-editor__control-row input,
+.fr-module-graph-editor__control-row select,
+.fr-module-graph-editor__control-row textarea {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 4px 6px;
+    border: 1px solid #444;
+    background: #181818;
+    color: #eee;
+}
+
+.fr-module-graph-editor__control-row textarea {
+    min-height: 60px;
+    font-family: monospace;
+    resize: vertical;
 }
 `;
             document.head.appendChild(style);
