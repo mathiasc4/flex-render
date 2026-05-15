@@ -211,6 +211,54 @@
         }
 
         /**
+         * Ensure a reusable backend-owned color target.
+         *
+         * @param {object|null} target existing target slot, or null to allocate
+         * @param {number} width target width in physical pixels
+         * @param {number} height target height in physical pixels
+         * @param {object} [options={}]
+         * @return {object}
+         */
+        ensureColorTarget(target, width, height, options = {}) {
+            throw("$.FlexRenderer.WebGLImplementation::ensureColorTarget() must be implemented!");
+        }
+
+        /**
+         * Clear a backend-owned color target.
+         *
+         * @param {object} target
+         * @param {number[]} [rgba]
+         * @return {void}
+         */
+        clearColorTarget(target, rgba = [0, 0, 0, 0]) {
+            throw("$.FlexRenderer.WebGLImplementation::clearColorTarget() must be implemented!");
+        }
+
+        /**
+         * Destroy a backend-owned color target.
+         *
+         * @param {object|null} target
+         * @return {void}
+         */
+        destroyColorTarget(target) {
+            throw("$.FlexRenderer.WebGLImplementation::destroyColorTarget() must be implemented!");
+        }
+
+        /**
+         * Copy a backend-owned color target into a presentation canvas.
+         *
+         * The presentation canvas size is owned by FlexRenderer#setDimensions().
+         * Implementations must not resize it.
+         *
+         * @param {object} target
+         * @param {HTMLCanvasElement} canvas
+         * @returns {string} Transfer mode used.
+         */
+        presentColorTargetToCanvas(target, canvas) {
+            throw("$.FlexRenderer.WebGLImplementation::presentColorTargetToCanvas() must be implemented!");
+        }
+
+        /**
          * Execute the backend-specific inspector compositor path for modes that cannot be expressed
          * inline in the normal second pass.
          *

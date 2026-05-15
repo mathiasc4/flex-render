@@ -40,7 +40,7 @@ const GEOJSON_10K_SOURCE_KEY = "geojson_10k";
 
 const drawerOptions = {
     "flex-renderer": {
-        debug: true,
+        debug: false,
         webGLPreferredVersion: "2.0",
     },
 };
