@@ -301,6 +301,115 @@
         }
 
         /**
+         * Remove a module node from the draft graph.
+         *
+         * References from other module inputs and graph.output are removed when
+         * they point to the deleted node.
+         *
+         * @param {string} nodeId - Module node id to remove.
+         * @returns {boolean} True when a node was removed.
+         */
+        removeModuleNode(nodeId) {
+            this._assertNotDestroyed();
+
+            if (!nodeId || nodeId === this._outputNodeId) {
+                return false;
+            }
+
+            this._syncLayoutToDraft();
+
+            const graphConfig = this._draftGraphConfig;
+
+            if (!graphConfig.nodes || !graphConfig.nodes[nodeId]) {
+                return false;
+            }
+
+            delete graphConfig.nodes[nodeId];
+
+            if (graphConfig.editor && graphConfig.editor.nodes) {
+                delete graphConfig.editor.nodes[nodeId];
+            }
+
+            this._removeReferencesToNode(nodeId);
+
+            if (this._selectedNodeId === nodeId) {
+                this._selectedNodeId = null;
+            }
+
+            this._renderDraftGraph();
+
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: "remove-module-node",
+                nodeId: nodeId
+            });
+
+            return true;
+        }
+
+        /**
+         * Set an editor-only display label for a module node.
+         *
+         * The executable node id is not changed. The label is stored in
+         * graph.editor.nodes[nodeId].label.
+         *
+         * @param {string} nodeId - Module node id.
+         * @param {string} label - Display label. Empty labels remove the saved label.
+         * @returns {boolean} True when the label was updated.
+         */
+        setNodeLabel(nodeId, label) {
+            this._assertNotDestroyed();
+
+            const graphConfig = this._draftGraphConfig;
+
+            if (!nodeId || !graphConfig.nodes || !graphConfig.nodes[nodeId]) {
+                return false;
+            }
+
+            this._syncLayoutToDraft();
+
+            if (!graphConfig.editor || typeof graphConfig.editor !== "object" || Array.isArray(graphConfig.editor)) {
+                graphConfig.editor = {};
+            }
+
+            if (!graphConfig.editor.nodes || typeof graphConfig.editor.nodes !== "object" || Array.isArray(graphConfig.editor.nodes)) {
+                graphConfig.editor.nodes = {};
+            }
+
+            const layout = graphConfig.editor.nodes[nodeId] || {};
+            const nextLabel = String(label || "").trim();
+
+            if (nextLabel) {
+                layout.label = nextLabel;
+            } else {
+                delete layout.label;
+            }
+
+            graphConfig.editor.layoutVersion = 1;
+            graphConfig.editor.nodes[nodeId] = layout;
+
+            const liteNode = this._liteNodesById[nodeId];
+
+            if (liteNode) {
+                liteNode.title = this._getNodeDisplayTitle(nodeId, graphConfig.nodes[nodeId], layout);
+            }
+
+            this._renderInspector();
+
+            if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
+                this.graphCanvas.draw(true, true);
+            }
+
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: "set-node-label",
+                nodeId: nodeId
+            });
+
+            return true;
+        }
+
+        /**
          * Analyze the current draft graph.
          *
          * Analyzer integration is added in a later phase. This method currently
@@ -900,6 +1009,41 @@
         }
 
         /**
+         * Remove graph references that point to a deleted module node.
+         *
+         * @private
+         * @param {string} nodeId - Deleted module node id.
+         * @returns {void}
+         */
+        _removeReferencesToNode(nodeId) {
+            const graphConfig = this._draftGraphConfig;
+            const nodes = graphConfig.nodes || {};
+            const prefix = `${nodeId}.`;
+
+            for (const targetNodeId of Object.keys(nodes)) {
+                const nodeConfig = nodes[targetNodeId];
+
+                if (!nodeConfig || !nodeConfig.inputs || typeof nodeConfig.inputs !== "object") {
+                    continue;
+                }
+
+                for (const inputName of Object.keys(nodeConfig.inputs)) {
+                    if (typeof nodeConfig.inputs[inputName] === "string" && nodeConfig.inputs[inputName].startsWith(prefix)) {
+                        delete nodeConfig.inputs[inputName];
+                    }
+                }
+
+                if (!Object.keys(nodeConfig.inputs).length) {
+                    delete nodeConfig.inputs;
+                }
+            }
+
+            if (typeof graphConfig.output === "string" && graphConfig.output.startsWith(prefix)) {
+                graphConfig.output = null;
+            }
+        }
+
+        /**
          * Return the source reference for a LiteGraph link.
          *
          * @private
@@ -1001,8 +1145,8 @@
             this.inspector.innerHTML = [
                 '<div class="fr-module-graph-editor__section-title">Inspector</div>',
                 '<div class="fr-module-graph-editor__field">',
-                '<label>Label</label>',
-                `<div>${this._escapeHtml(this._getEditorNodeLabel(nodeId) || name || nodeId)}</div>`,
+                '<label for="fr-module-graph-editor-label">Label</label>',
+                `<input id="fr-module-graph-editor-label" class="fr-module-graph-editor__label-input" type="text" value="${this._escapeHtml(this._getEditorNodeLabel(nodeId) || name || nodeId)}">`,
                 '</div>',
                 '<div class="fr-module-graph-editor__field">',
                 '<label>Node id</label>',
@@ -1013,11 +1157,28 @@
                 `<code>${this._escapeHtml(nodeConfig.type || "unknown")}</code>`,
                 '</div>',
                 description ? `<p class="fr-module-graph-editor__description">${this._escapeHtml(description)}</p>` : "",
+                '<button type="button" class="fr-module-graph-editor__danger-button">Remove node</button>',
                 '<div class="fr-module-graph-editor__diagnostics"></div>'
             ].join("");
 
             if (diagnostics && diagnostics.innerHTML) {
                 this.inspector.querySelector(".fr-module-graph-editor__diagnostics").innerHTML = diagnostics.innerHTML;
+            }
+
+            const labelInput = this.inspector.querySelector(".fr-module-graph-editor__label-input");
+
+            if (labelInput) {
+                labelInput.addEventListener("change", () => {
+                    this.setNodeLabel(nodeId, labelInput.value);
+                });
+            }
+
+            const removeButton = this.inspector.querySelector(".fr-module-graph-editor__danger-button");
+
+            if (removeButton) {
+                removeButton.addEventListener("click", () => {
+                    this.removeModuleNode(nodeId);
+                });
             }
         }
 
@@ -1422,6 +1583,29 @@
 
 .fr-module-graph-editor__description {
     color: #ccc;
+}
+
+.fr-module-graph-editor__label-input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 5px 7px;
+    border: 1px solid #444;
+    background: #181818;
+    color: #eee;
+}
+
+.fr-module-graph-editor__danger-button {
+    width: 100%;
+    margin: 4px 0 10px;
+    padding: 6px 8px;
+    border: 1px solid #7f1d1d;
+    background: #3f1212;
+    color: #fecaca;
+    cursor: pointer;
+}
+
+.fr-module-graph-editor__danger-button:hover {
+    background: #551818;
 }
 `;
             document.head.appendChild(style);
