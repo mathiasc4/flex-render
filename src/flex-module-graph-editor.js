@@ -212,6 +212,10 @@
          * @returns {object} Draft graph config.
          */
         getDraftGraphConfig() {
+            if (!this._destroyed && this.graph) {
+                this._syncLayoutToDraft();
+            }
+
             return this._cloneGraphConfig(this._draftGraphConfig);
         }
 
@@ -825,47 +829,50 @@
             }
 
             this._renderingDraftGraph = true;
-            this._syncLayoutToDraft();
 
-            if (typeof this.graph.clear === "function") {
-                this.graph.clear();
+            try {
+                this._syncLayoutToDraft();
+
+                if (typeof this.graph.clear === "function") {
+                    this.graph.clear();
+                }
+
+                this._liteNodesById = {};
+
+                const graphConfig = this._draftGraphConfig || {};
+                const nodes = graphConfig.nodes || {};
+                const editor = graphConfig.editor || {};
+                const layoutNodes = editor.nodes || {};
+
+                let index = 0;
+
+                for (const nodeId of Object.keys(nodes)) {
+                    const nodeConfig = nodes[nodeId] || {};
+                    const node = this._createLiteGraphNode(nodeId, nodeConfig, index, layoutNodes[nodeId]);
+
+                    this.graph.add(node);
+                    this._liteNodesById[nodeId] = node;
+                    index++;
+                }
+
+                const outputNode = this._createGraphOutputNode(layoutNodes[this._outputNodeId], index);
+                this.graph.add(outputNode);
+                this._liteNodesById[this._outputNodeId] = outputNode;
+
+                this._connectDraftGraphLinks();
+
+                if (this._selectedNodeId && this._liteNodesById[this._selectedNodeId] && typeof this.graphCanvas.selectNode === "function") {
+                    this.graphCanvas.selectNode(this._liteNodesById[this._selectedNodeId]);
+                }
+
+                this._renderInspector();
+
+                if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
+                    this.graphCanvas.draw(true, true);
+                }
+            } finally {
+                this._renderingDraftGraph = false;
             }
-
-            this._liteNodesById = {};
-
-            const graphConfig = this._draftGraphConfig || {};
-            const nodes = graphConfig.nodes || {};
-            const editor = graphConfig.editor || {};
-            const layoutNodes = editor.nodes || {};
-
-            let index = 0;
-
-            for (const nodeId of Object.keys(nodes)) {
-                const nodeConfig = nodes[nodeId] || {};
-                const node = this._createLiteGraphNode(nodeId, nodeConfig, index, layoutNodes[nodeId]);
-
-                this.graph.add(node);
-                this._liteNodesById[nodeId] = node;
-                index++;
-            }
-
-            const outputNode = this._createGraphOutputNode(layoutNodes[this._outputNodeId], index);
-            this.graph.add(outputNode);
-            this._liteNodesById[this._outputNodeId] = outputNode;
-
-            this._connectDraftGraphLinks();
-
-            if (this._selectedNodeId && this._liteNodesById[this._selectedNodeId] && typeof this.graphCanvas.selectNode === "function") {
-                this.graphCanvas.selectNode(this._liteNodesById[this._selectedNodeId]);
-            }
-
-            this._renderInspector();
-
-            if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
-                this.graphCanvas.draw(true, true);
-            }
-
-            this._renderingDraftGraph = false;
         }
 
         /**
@@ -1186,7 +1193,7 @@
          * @returns {void}
          */
         _syncLayoutToDraft() {
-            if (!this.graph || !this._draftGraphConfig) {
+            if (this._renderingDraftGraph || !this.graph || !this._draftGraphConfig) {
                 return;
             }
 

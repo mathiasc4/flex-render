@@ -1083,6 +1083,7 @@ function mountModuleGraphEditor() {
     });
 
     bindModuleGraphEditorPanelEvents();
+    moduleGraphEditor.resize();
     setModuleGraphEditorStatus("Module graph editor ready.", "ok");
 }
 
@@ -1169,6 +1170,8 @@ function syncModuleGraphEditorFromConfig(reason) {
             reason
         }
     );
+
+    moduleGraphEditor.resize();
 }
 
 /**
