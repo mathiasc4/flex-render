@@ -1631,6 +1631,9 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
+/**
+ * Debug helpers exposed for manual demo verification from the browser console.
+ */
 window.modularShaderLayerDemo = {
     viewer,
     shaderLayerConfig,

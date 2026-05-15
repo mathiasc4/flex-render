@@ -8,8 +8,8 @@
     <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
     <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
     <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+    <!-- ShaderModuleGraphEditor currently treats LiteGraph as an optional peer/global dependency. -->
     <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
-<!--    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css"/>-->
 
     <script type="module" src="modular-shader-layer-demo.js"></script>
 
@@ -378,6 +378,13 @@
             font-size: 13px;
         }
 
+        .module-graph-editor-panel__description {
+            margin: 0 0 8px 0;
+            color: #4b5563;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
         .module-graph-editor-status {
             margin-bottom: 8px;
             padding: 6px 8px;
@@ -454,6 +461,9 @@
                         <button type="button" id="module-graph-editor-reset">Reset editor draft</button>
                     </div>
                 </div>
+                <p class="module-graph-editor-panel__description">
+                    Visual editor for the selected modular ShaderLayer graph. Edit the draft graph here, then apply it to update the live layer. The JSON editor above remains the exact config view.
+                </p>
                 <div id="module-graph-editor-status" class="module-graph-editor-status">
                     Loading module graph editor...
                 </div>

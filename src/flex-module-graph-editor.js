@@ -32,10 +32,12 @@
      */
 
     /**
-     * Standalone visual editor shell for modular ShaderLayer graph configs.
+     * Standalone visual editor for modular ShaderLayer graph configs.
      *
      * The editor owns DOM, LiteGraph lifecycle, and draft graph state. It does
      * not mutate live ShaderLayer, FlexRenderer, or FlexDrawer state directly.
+     * Callers load or edit a draft graph, inspect diagnostics, and use apply()
+     * to receive a validated graph config for their own commit/rebuild flow.
      */
     $.FlexRenderer.ShaderModuleGraphEditor = class extends $.EventSource {
         /**
@@ -548,7 +550,11 @@
         }
 
         /**
-         * Return an apply result without mutating renderer state.
+         * Validate and return the current draft without mutating renderer state.
+         *
+         * The returned graph config is safe for the caller to commit only when
+         * result.ok is true. Invalid drafts remain editable and are reported
+         * through result.diagnostics and the apply-failed event.
          *
          * @returns {ShaderModuleGraphEditorApplyResult} Apply result.
          */
