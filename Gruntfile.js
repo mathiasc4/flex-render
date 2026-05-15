@@ -39,6 +39,7 @@ module.exports = function(grunt) {
             "src/flex-modules/neighborhood-edge-modules.js",
             "src/flex-controls/basic-controls.js",
             "src/flex-controls/advanced-controls.js",
+            "src/flex-module-graph-editor.js",
             "src/flex-webgl-context.js",
             "src/flex-webgl2.js",
             "src/flex-webgl2-atlas.js",
