@@ -956,7 +956,7 @@
             const node = new this.LGraphNode(title);
 
             node.title = title;
-            node.size = node.size || [180, 90];
+            node.size = node.size || [220, 90];
             node.inputs = node.inputs || [];
             node.outputs = node.outputs || [];
             node.properties = {
@@ -982,17 +982,29 @@
 
                 if (input) {
                     input.single = true;
+                    input.label = "";
+                    input._frLabel = inputName;
+                    input._frType = this._getPortType(inputs[inputName]);
                 }
             }
 
             for (const outputName of Object.keys(outputs)) {
                 node.addOutput(outputName, this._getPortType(outputs[outputName]));
+                const output = node.outputs[node.outputs.length - 1];
+
+                if (output) {
+                    output.label = "";
+                    output._frLabel = outputName;
+                    output._frType = this._getPortType(outputs[outputName]);
+                }
             }
+
+            this._applyModuleNodeAutoSize(node, inputs, outputs);
 
             node._frPreviewButtons = [];
 
             node.onDrawForeground = (context) => {
-                this._drawOutputPreviewButtons(node, context);
+                this._drawModuleNodeSlots(node, context);
             };
 
             node.onMouseDown = (event, localPosition) => {
@@ -1010,6 +1022,76 @@
             node.pos = [position.x, position.y];
 
             return node;
+        }
+
+        /**
+         * Expand a LiteGraph module node so custom input/output slot labels do not overlap.
+         *
+         * @private
+         * @param {object} node - LiteGraph node.
+         * @param {object} inputs - Static module input declarations.
+         * @param {object} outputs - Static module output declarations.
+         * @returns {void}
+         */
+        _applyModuleNodeAutoSize(node, inputs, outputs) {
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+
+            if (!context) {
+                node.size = [
+                    Math.max(node.size[0] || 0, 260),
+                    Math.max(node.size[1] || 0, 90)
+                ];
+                return;
+            }
+
+            context.font = "normal 12px Arial";
+
+            const inputWidth = this._measureWidestPortContent(context, inputs);
+            const outputWidth = this._measureWidestPortContent(context, outputs);
+            const previewReserve = this._previewProvider ? 24 : 0;
+            const middleGap = 24;
+            const horizontalPadding = 32;
+
+            const width = Math.max(
+                220,
+                Math.ceil(inputWidth + outputWidth + previewReserve + middleGap + horizontalPadding)
+            );
+
+            const portCount = Math.max(
+                Object.keys(inputs || {}).length,
+                Object.keys(outputs || {}).length,
+                1
+            );
+
+            const height = Math.max(
+                node.size && node.size[1] ? node.size[1] : 0,
+                42 + portCount * 20
+            );
+
+            node.size = [width, height];
+        }
+
+        /**
+         * Measure the widest custom slot label plus type badge in a port map.
+         *
+         * @private
+         * @param {CanvasRenderingContext2D} context - Canvas context.
+         * @param {object} ports - Static module port declarations.
+         * @returns {number} Width in pixels.
+         */
+        _measureWidestPortContent(context, ports) {
+            let width = 0;
+
+            for (const portName of Object.keys(ports || {})) {
+                const type = this._getPortType(ports[portName]);
+                const labelWidth = context.measureText(portName).width;
+                const badgeWidth = this._measureTypeBadge(context, type).width;
+
+                width = Math.max(width, labelWidth + 6 + badgeWidth);
+            }
+
+            return width;
         }
 
         /**
@@ -1043,7 +1125,14 @@
 
             if (node.inputs && node.inputs[0]) {
                 node.inputs[0].single = true;
+                node.inputs[0].label = "";
+                node.inputs[0]._frLabel = "output";
+                node.inputs[0]._frType = "*";
             }
+
+            node.onDrawForeground = (context) => {
+                this._drawModuleNodeSlots(node, context);
+            };
 
             const position = this._getNodePosition(layout, index);
             node.pos = [position.x, position.y];
@@ -1052,104 +1141,277 @@
         }
 
         /**
-         * Draw output-slot preview buttons for one LiteGraph module node.
+         * Draw custom module slot labels, type badges, and output preview buttons.
          *
          * @private
          * @param {object} node - LiteGraph node.
          * @param {CanvasRenderingContext2D} context - LiteGraph canvas context.
          * @returns {void}
          */
-        _drawOutputPreviewButtons(node, context) {
-            node._frPreviewButtons = [];
-
-            if (!this._previewProvider || !node || !node.properties || node.properties.synthetic) {
+        _drawModuleNodeSlots(node, context) {
+            if (!node) {
                 return;
             }
+
+            this._drawInputSlotLabels(node, context);
+            this._drawOutputSlotLabelsAndPreviewButtons(node, context);
+        }
+
+        /**
+         * Draw custom input slot labels and type badges.
+         *
+         * @private
+         * @param {object} node - LiteGraph node.
+         * @param {CanvasRenderingContext2D} context - LiteGraph canvas context.
+         * @returns {void}
+         */
+        _drawInputSlotLabels(node, context) {
+            if (!Array.isArray(node.inputs) || typeof node.getConnectionPos !== "function") {
+                return;
+            }
+
+            for (let index = 0; index < node.inputs.length; index++) {
+                const input = node.inputs[index];
+
+                if (!input) {
+                    continue;
+                }
+
+                const slotPosition = node.getConnectionPos(true, index);
+                const slotX = slotPosition[0] - node.pos[0];
+                const slotY = slotPosition[1] - node.pos[1];
+                const label = input._frLabel || input.name || "";
+                const type = input._frType || this._getPortType(input.type || "*");
+
+                context.save();
+                context.font = "normal 12px Arial";
+                context.textAlign = "left";
+                context.textBaseline = "middle";
+
+                const labelX = slotX + 12;
+                const maxLabelWidth = Math.max(36, node.size[0] * 0.42);
+                const labelText = this._truncateCanvasText(context, label, maxLabelWidth);
+
+                context.fillStyle = "#d1d5db";
+                context.fillText(labelText, labelX, slotY);
+
+                const labelWidth = context.measureText(labelText).width;
+                this._drawTypeBadge(context, type, labelX + labelWidth + 6, slotY);
+
+                context.restore();
+            }
+        }
+
+        /**
+         * Draw custom output slot labels, type badges, and preview buttons.
+         *
+         * @private
+         * @param {object} node - LiteGraph node.
+         * @param {CanvasRenderingContext2D} context - LiteGraph canvas context.
+         * @returns {void}
+         */
+        _drawOutputSlotLabelsAndPreviewButtons(node, context) {
+            node._frPreviewButtons = [];
 
             if (!Array.isArray(node.outputs) || typeof node.getConnectionPos !== "function") {
                 return;
             }
 
-            const nodeId = node.properties.moduleNodeId;
-            const graphConfig = this._cloneGraphConfig(this._draftGraphConfig);
-
             for (let index = 0; index < node.outputs.length; index++) {
                 const output = node.outputs[index];
 
-                if (!output || !output.name) {
-                    continue;
-                }
-
-                const outputType = this._getPortType(output.type || "*");
-                const request = {
-                    editor: this,
-                    graphConfig: graphConfig,
-                    nodeId: nodeId,
-                    output: output.name,
-                    outputType: outputType,
-                    analysis: this._analysis
-                };
-
-                let available = false;
-
-                try {
-                    available = typeof this._previewProvider.isNodePreviewAvailable === "function" &&
-                        this._previewProvider.isNodePreviewAvailable(request) === true;
-                } catch (error) {
-                    available = false;
-                }
-
-                if (!available) {
+                if (!output) {
                     continue;
                 }
 
                 const slotPosition = node.getConnectionPos(false, index);
                 const slotX = slotPosition[0] - node.pos[0];
                 const slotY = slotPosition[1] - node.pos[1];
-                const size = 12;
-                const label = String(output.label || output.name || "");
+                const label = output._frLabel || output.name || "";
+                const outputType = output._frType || this._getPortType(output.type || "*");
 
                 context.save();
                 context.font = "normal 12px Arial";
-                const labelWidth = context.measureText(label).width;
-                context.restore();
-
-                const labelRight = slotX - 10;
-                const x = Math.max(
-                    12,
-                    Math.min(node.size[0] - 48, labelRight - labelWidth - size - 6)
-                );
-                const y = slotY - size / 2;
-
-                const button = {
-                    x,
-                    y,
-                    width: size,
-                    height: size,
-                    nodeId,
-                    output: output.name,
-                    outputType
-                };
-
-                node._frPreviewButtons.push(button);
-
-                context.save();
-                context.globalAlpha = 0.95;
-                context.fillStyle = "#111827";
-                context.strokeStyle = "#93c5fd";
-                context.lineWidth = 1;
-                context.beginPath();
-                context.rect(x + 0.5, y + 0.5, size, size);
-                context.fill();
-                context.stroke();
-
-                context.fillStyle = "#bfdbfe";
-                context.font = "10px Arial";
-                context.textAlign = "center";
+                context.textAlign = "right";
                 context.textBaseline = "middle";
-                context.fillText("◉", x + size / 2, y + size / 2 + 0.5);
+
+                const socketPadding = 12;
+                const previewGap = 6;
+                const typeGap = 6;
+                const buttonSize = 12;
+                const rightEdge = slotX - socketPadding;
+                const hasPreview = this._isOutputPreviewAvailable(node, output, outputType);
+                const previewX = hasPreview ? rightEdge - buttonSize : null;
+                const textRight = hasPreview ? previewX - previewGap : rightEdge;
+
+                const typeBadge = this._measureTypeBadge(context, outputType);
+                const maxLabelWidth = Math.max(
+                    36,
+                    node.size[0] * 0.42 - typeBadge.width - typeGap - (hasPreview ? buttonSize + previewGap : 0)
+                );
+                const labelText = this._truncateCanvasText(context, label, maxLabelWidth);
+                // const labelWidth = context.measureText(labelText).width;
+                const badgeX = textRight - typeBadge.width;
+                const labelX = badgeX - typeGap;
+
+                context.fillStyle = "#d1d5db";
+                context.fillText(labelText, labelX, slotY);
+
+                this._drawTypeBadge(context, outputType, badgeX, slotY);
+
+                if (hasPreview) {
+                    const button = {
+                        x: previewX,
+                        y: slotY - buttonSize / 2,
+                        width: buttonSize,
+                        height: buttonSize,
+                        nodeId: node.properties.moduleNodeId,
+                        output: output.name,
+                        outputType
+                    };
+
+                    node._frPreviewButtons.push(button);
+                    this._drawPreviewButton(context, button);
+                }
+
                 context.restore();
             }
+        }
+
+        /**
+         * Return whether an output slot should display a preview button.
+         *
+         * @private
+         * @param {object} node - LiteGraph node.
+         * @param {object} output - LiteGraph output slot.
+         * @param {string} outputType - Output value type.
+         * @returns {boolean} True when a preview button should be drawn.
+         */
+        _isOutputPreviewAvailable(node, output, outputType) {
+            if (!this._previewProvider || !node || !node.properties || node.properties.synthetic || !output || !output.name) {
+                return false;
+            }
+
+            const request = {
+                editor: this,
+                graphConfig: this._cloneGraphConfig(this._draftGraphConfig),
+                nodeId: node.properties.moduleNodeId,
+                output: output.name,
+                outputType,
+                analysis: this._analysis
+            };
+
+            try {
+                return typeof this._previewProvider.isNodePreviewAvailable === "function" &&
+                    this._previewProvider.isNodePreviewAvailable(request) === true;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        /**
+         * Measure a compact type badge.
+         *
+         * @private
+         * @param {CanvasRenderingContext2D} context - Canvas context.
+         * @param {string} type - Type label.
+         * @returns {{width: number, height: number}} Badge size.
+         */
+        _measureTypeBadge(context, type) {
+            context.save();
+            context.font = "10px Arial";
+            const width = Math.ceil(context.measureText(String(type || "*")).width) + 10;
+            context.restore();
+
+            return {
+                width,
+                height: 14
+            };
+        }
+
+        /**
+         * Draw a compact type badge.
+         *
+         * @private
+         * @param {CanvasRenderingContext2D} context - Canvas context.
+         * @param {string} type - Type label.
+         * @param {number} x - Left x coordinate.
+         * @param {number} centerY - Vertical center.
+         * @returns {void}
+         */
+        _drawTypeBadge(context, type, x, centerY) {
+            const text = String(type || "*");
+            const size = this._measureTypeBadge(context, text);
+            const y = centerY - size.height / 2;
+
+            context.save();
+            context.fillStyle = "#111827";
+            context.strokeStyle = "#4b5563";
+            context.lineWidth = 1;
+            context.beginPath();
+            context.rect(x + 0.5, y + 0.5, size.width, size.height);
+            context.fill();
+            context.stroke();
+
+            context.fillStyle = "#bfdbfe";
+            context.font = "10px Arial";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillText(text, x + size.width / 2, centerY + 0.5);
+            context.restore();
+        }
+
+        /**
+         * Draw one output preview button.
+         *
+         * @private
+         * @param {CanvasRenderingContext2D} context - Canvas context.
+         * @param {object} button - Preview button descriptor.
+         * @returns {void}
+         */
+        _drawPreviewButton(context, button) {
+            context.save();
+            context.globalAlpha = 0.95;
+            context.fillStyle = "#111827";
+            context.strokeStyle = "#93c5fd";
+            context.lineWidth = 1;
+            context.beginPath();
+            context.rect(button.x + 0.5, button.y + 0.5, button.width, button.height);
+            context.fill();
+            context.stroke();
+
+            context.fillStyle = "#bfdbfe";
+            context.font = "10px Arial";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillText("◉", button.x + button.width / 2, button.y + button.height / 2 + 0.5);
+            context.restore();
+        }
+
+        /**
+         * Truncate canvas text to fit a maximum width.
+         *
+         * @private
+         * @param {CanvasRenderingContext2D} context - Canvas context.
+         * @param {string} text - Text to truncate.
+         * @param {number} maxWidth - Maximum text width.
+         * @returns {string} Truncated text.
+         */
+        _truncateCanvasText(context, text, maxWidth) {
+            const value = String(text || "");
+
+            if (context.measureText(value).width <= maxWidth) {
+                return value;
+            }
+
+            const ellipsis = "…";
+            let end = value.length;
+
+            while (end > 0 && context.measureText(value.slice(0, end) + ellipsis).width > maxWidth) {
+                end--;
+            }
+
+            return end > 0 ? value.slice(0, end) + ellipsis : ellipsis;
         }
 
         /**
@@ -2545,8 +2807,8 @@
             }
 
             return {
-                x: 80 + (index % 4) * 240,
-                y: 80 + Math.floor(index / 4) * 150
+                x: 80 + (index % 3) * 320,
+                y: 80 + Math.floor(index / 3) * 160
             };
         }
 
