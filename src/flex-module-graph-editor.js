@@ -227,6 +227,72 @@
         }
 
         /**
+         * Add a new module node to the draft graph.
+         *
+         * @param {string} moduleType - Registered ShaderModule type.
+         * @param {object} [options={}] - Add options.
+         * @param {number} [options.x] - Initial graph-space x position.
+         * @param {number} [options.y] - Initial graph-space y position.
+         * @param {string} [options.label] - Optional editor display label.
+         * @returns {?string} Created node id, or null when the module type is unknown.
+         */
+        addModuleNode(moduleType, options = {}) {
+            this._assertNotDestroyed();
+
+            const ModuleClass = this._getModuleClass(moduleType);
+
+            if (!ModuleClass) {
+                $.console.warn(`ShaderModuleGraphEditor.addModuleNode: Unknown module type '${moduleType}'.`);
+                return null;
+            }
+
+            this._syncLayoutToDraft();
+
+            const graphConfig = this._draftGraphConfig;
+
+            if (!graphConfig.nodes || typeof graphConfig.nodes !== "object" || Array.isArray(graphConfig.nodes)) {
+                graphConfig.nodes = {};
+            }
+
+            const nodeId = this._createUniqueNodeId(moduleType);
+            graphConfig.nodes[nodeId] = {
+                type: moduleType,
+                params: this._getDefaultModuleParams(ModuleClass)
+            };
+
+            if (!graphConfig.editor || typeof graphConfig.editor !== "object" || Array.isArray(graphConfig.editor)) {
+                graphConfig.editor = {};
+            }
+
+            if (!graphConfig.editor.nodes || typeof graphConfig.editor.nodes !== "object" || Array.isArray(graphConfig.editor.nodes)) {
+                graphConfig.editor.nodes = {};
+            }
+
+            const position = this._getInitialAddedNodePosition(options);
+            graphConfig.editor.layoutVersion = 1;
+            graphConfig.editor.nodes[nodeId] = {
+                x: position.x,
+                y: position.y
+            };
+
+            if (typeof options.label === "string" && options.label.trim()) {
+                graphConfig.editor.nodes[nodeId].label = options.label.trim();
+            }
+
+            this._selectedNodeId = nodeId;
+            this._renderDraftGraph();
+
+            this.raiseEvent("draft-change", {
+                graphConfig: this.getDraftGraphConfig(),
+                reason: "add-module-node",
+                nodeId: nodeId,
+                moduleType: moduleType
+            });
+
+            return nodeId;
+        }
+
+        /**
          * Analyze the current draft graph.
          *
          * Analyzer integration is added in a later phase. This method currently
@@ -511,11 +577,14 @@
                 const item = document.createElement("button");
                 item.type = "button";
                 item.className = "fr-module-graph-editor__module-item";
-                item.disabled = true;
                 item.innerHTML = [
                     `<span class="fr-module-graph-editor__module-name">${this._escapeHtml(name)}</span>`,
                     `<span class="fr-module-graph-editor__module-type">${this._escapeHtml(type)}</span>`
                 ].join("");
+
+                item.addEventListener("click", () => {
+                    this.addModuleNode(type);
+                });
 
                 if (description) {
                     item.title = description;
@@ -565,6 +634,11 @@
             this._liteNodesById[this._outputNodeId] = outputNode;
 
             this._connectDraftGraphLinks();
+
+            if (this._selectedNodeId && this._liteNodesById[this._selectedNodeId] && typeof this.graphCanvas.selectNode === "function") {
+                this.graphCanvas.selectNode(this._liteNodesById[this._selectedNodeId]);
+            }
+
             this._renderInspector();
 
             if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
@@ -821,6 +895,83 @@
         }
 
         /**
+         * Create a unique graph node id from a module type.
+         *
+         * @private
+         * @param {string} moduleType - Registered ShaderModule type.
+         * @returns {string} Unique node id.
+         */
+        _createUniqueNodeId(moduleType) {
+            const graphConfig = this._draftGraphConfig || {};
+            const nodes = graphConfig.nodes || {};
+            let base = String(moduleType || "module").replace(/[^0-9a-zA-Z_]/g, "_");
+            base = base.replace(/_+/g, "_").replace(/^_+/, "");
+
+            if (!base) {
+                base = "module";
+            }
+
+            let index = 1;
+            let nodeId = `${base}_${index}`;
+
+            while (nodes[nodeId]) {
+                index++;
+                nodeId = `${base}_${index}`;
+            }
+
+            return nodeId;
+        }
+
+        /**
+         * Return compact default params for a newly added module.
+         *
+         * @private
+         * @param {Function} ModuleClass - ShaderModule class.
+         * @returns {object} Default node params.
+         */
+        _getDefaultModuleParams(ModuleClass) {
+            const controls = ModuleClass.defaultControls || {};
+            const params = {};
+
+            for (const controlName of Object.keys(controls)) {
+                const control = controls[controlName];
+
+                if (!control || control === false || !control.default || typeof control.default !== "object") {
+                    continue;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(control.default, "default")) {
+                    params[controlName] = this._cloneJsonValue(control.default.default);
+                }
+            }
+
+            return params;
+        }
+
+        /**
+         * Clone a JSON-compatible value used in node params.
+         *
+         * @private
+         * @param {*} value - Value to clone.
+         * @returns {*} Cloned value.
+         */
+        _cloneJsonValue(value) {
+            if (value === undefined || value === null) {
+                return value;
+            }
+
+            if (Array.isArray(value)) {
+                return value.map(item => this._cloneJsonValue(item));
+            }
+
+            if (typeof value === "object") {
+                return $.extend(true, {}, value);
+            }
+
+            return value;
+        }
+
+        /**
          * Return static module port declarations.
          *
          * @private
@@ -881,6 +1032,40 @@
                 x: 80 + (index % 4) * 240,
                 y: 80 + Math.floor(index / 4) * 150
             };
+        }
+
+        /**
+         * Return the initial position for a newly added node.
+         *
+         * @private
+         * @param {object} options - Add options.
+         * @param {number} [options.x] - Explicit graph-space x position.
+         * @param {number} [options.y] - Explicit graph-space y position.
+         * @returns {{x: number, y: number}} Initial position.
+         */
+        _getInitialAddedNodePosition(options = {}) {
+            if (Number.isFinite(options.x) && Number.isFinite(options.y)) {
+                return {
+                    x: options.x,
+                    y: options.y
+                };
+            }
+
+            const canvas = this.canvas;
+            const ds = this.graphCanvas && this.graphCanvas.ds;
+
+            if (canvas && ds && Array.isArray(ds.offset) && Number.isFinite(ds.scale) && ds.scale !== 0) {
+                return {
+                    x: Math.round((canvas.width * 0.5 - ds.offset[0]) / ds.scale),
+                    y: Math.round((canvas.height * 0.5 - ds.offset[1]) / ds.scale)
+                };
+            }
+
+            const count = this._draftGraphConfig && this._draftGraphConfig.nodes ?
+                Object.keys(this._draftGraphConfig.nodes).length :
+                0;
+
+            return this._getNodePosition(undefined, count);
         }
 
         /**
@@ -1051,8 +1236,13 @@
     text-align: left;
 }
 
-.fr-module-graph-editor__module-item:disabled {
-    opacity: 0.75;
+.fr-module-graph-editor__module-item {
+    cursor: pointer;
+}
+
+.fr-module-graph-editor__module-item:hover {
+    background: #222;
+    border-color: #666;
 }
 
 .fr-module-graph-editor__module-name {
