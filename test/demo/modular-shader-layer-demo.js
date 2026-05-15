@@ -1153,6 +1153,217 @@ function resetModuleGraphEditorDraft() {
 }
 
 /**
+ * Run a demo-local smoke test for the module graph editor integration.
+ *
+ * This test intentionally exercises the public editor API instead of private
+ * editor internals. It applies one valid graph through the demo path, then
+ * restores the previous demo graph so the live renderer is not left in a test
+ * state.
+ *
+ * @returns {{ok: boolean, checks: object[], error: (string|null)}} Smoke test result.
+ */
+function runModuleGraphEditorSmokeTest() {
+    const checks = [];
+    let previousGraph = null;
+    let previousPresetId = null;
+    let previousPendingGraphText = null;
+    let previousDiagnostics = null;
+    let previousAnalysis = null;
+    let shouldRestore = false;
+
+    const record = (name, ok, details = {}) => {
+        checks.push({
+            name,
+            ok: !!ok,
+            details
+        });
+
+        if (!ok) {
+            throw new Error(`${name} failed`);
+        }
+    };
+
+    const restorePreviousState = () => {
+        if (!shouldRestore || !previousGraph) {
+            return;
+        }
+
+        const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
+
+        shaderConfig.params = shaderConfig.params || {};
+        shaderConfig.params.graph = cloneJson(previousGraph);
+        shaderConfig.cache = {};
+
+        selectedShaderPresetId = previousPresetId;
+        pendingGraphText = previousPendingGraphText;
+        modularConfigDiagnostics = previousDiagnostics || [];
+        modularConfigAnalysis = previousAnalysis || null;
+
+        applyShaderLayerGuiConfig();
+        renderShaderConfigPanel();
+        syncModuleGraphEditorFromConfig("module-graph-editor-smoke-test-restore");
+    };
+
+    try {
+        if (!moduleGraphEditor) {
+            mountModuleGraphEditor();
+        }
+
+        record("editor-mounted", !!moduleGraphEditor);
+
+        previousGraph = cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID]));
+        previousPresetId = selectedShaderPresetId;
+        previousPendingGraphText = pendingGraphText;
+        previousDiagnostics = cloneJson(modularConfigDiagnostics);
+        previousAnalysis = modularConfigAnalysis;
+        shouldRestore = true;
+
+        const testGraph = {
+            nodes: {
+                sample_1: {
+                    type: "sample-source-channel",
+                    params: {
+                        sourceIndex: 0,
+                        channelIndex: 0
+                    }
+                },
+                threshold_1: {
+                    type: "threshold-mask",
+                    inputs: {
+                        value: "sample_1.value"
+                    },
+                    params: {
+                        threshold: {
+                            type: "range",
+                            default: 0.5,
+                            min: 0,
+                            max: 1,
+                            step: 0.01,
+                            title: "Threshold"
+                        }
+                    }
+                },
+                colorize_1: {
+                    type: "colorize",
+                    inputs: {
+                        value: "sample_1.value",
+                        alpha: "threshold_1.mask"
+                    },
+                    params: {
+                        color: "#00ffff"
+                    }
+                }
+            },
+            output: "colorize_1.color"
+        };
+
+        moduleGraphEditor.setDraftGraphConfig(cloneJson(testGraph), {
+            updateSource: true,
+            reason: "module-graph-editor-smoke-test"
+        });
+
+        const draft = moduleGraphEditor.getDraftGraphConfig();
+
+        record("draft-has-nodes", !!draft.nodes && !!draft.nodes.sample_1 && !!draft.nodes.threshold_1 && !!draft.nodes.colorize_1, {
+            nodeIds: Object.keys(draft.nodes || {})
+        });
+
+        record("draft-has-threshold-reference", draft.nodes.threshold_1.inputs.value === "sample_1.value", {
+            value: draft.nodes.threshold_1.inputs && draft.nodes.threshold_1.inputs.value
+        });
+
+        record("draft-has-colorize-references", (
+            draft.nodes.colorize_1.inputs.value === "sample_1.value" &&
+            draft.nodes.colorize_1.inputs.alpha === "threshold_1.mask"
+        ), {
+            inputs: draft.nodes.colorize_1.inputs
+        });
+
+        record("draft-has-vec4-output", draft.output === "colorize_1.color", {
+            output: draft.output
+        });
+
+        const invalidApply = (() => {
+            moduleGraphEditor.setDraftGraphConfig({
+                nodes: {
+                    sample_1: {
+                        type: "sample-source-channel",
+                        params: {
+                            sourceIndex: 0,
+                            channelIndex: 0
+                        }
+                    }
+                },
+                output: "missing.value"
+            }, {
+                updateSource: false,
+                reason: "module-graph-editor-smoke-test-invalid"
+            });
+
+            return moduleGraphEditor.apply();
+        })();
+
+        record("invalid-apply-blocked", invalidApply.ok === false, {
+            diagnostics: invalidApply.diagnostics
+        });
+
+        moduleGraphEditor.setDraftGraphConfig(cloneJson(testGraph), {
+            updateSource: true,
+            reason: "module-graph-editor-smoke-test-valid"
+        });
+
+        const validApply = moduleGraphEditor.apply();
+
+        record("valid-apply-ok", validApply.ok === true, {
+            diagnostics: validApply.diagnostics
+        });
+
+        applyModuleGraphEditorDraft();
+
+        const liveGraph = getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID]);
+
+        record("demo-config-updated", !!liveGraph.nodes && liveGraph.output === "colorize_1.color", {
+            output: liveGraph.output,
+            nodeIds: Object.keys(liveGraph.nodes || {})
+        });
+
+        restorePreviousState();
+        shouldRestore = false;
+
+        setModuleGraphEditorStatus("Module graph editor smoke test passed. Previous graph restored.", "ok");
+
+        return {
+            ok: true,
+            checks,
+            error: null
+        };
+    } catch (error) {
+        try {
+            restorePreviousState();
+        } catch (restoreError) {
+            checks.push({
+                name: "restore-previous-state",
+                ok: false,
+                details: {
+                    error: restoreError && restoreError.message ? restoreError.message : String(restoreError)
+                }
+            });
+        }
+
+        setModuleGraphEditorStatus(
+            `Module graph editor smoke test failed: ${error && error.message ? error.message : String(error)}`,
+            "error"
+        );
+
+        return {
+            ok: false,
+            checks,
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+/**
  * Replace the editor draft with the current demo graph config.
  *
  * @param {string} reason - Synchronization reason.
@@ -1439,6 +1650,7 @@ window.modularShaderLayerDemo = {
     syncModuleGraphEditorFromConfig,
     applyModuleGraphEditorDraft,
     resetModuleGraphEditorDraft,
+    runModuleGraphEditorSmokeTest,
     getModuleGraphEditor: () => moduleGraphEditor,
     cloneJson,
 };
