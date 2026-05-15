@@ -199,6 +199,14 @@
             this._activePreviewPopover = null;
 
             /**
+             * Document-level handler used to close preview popovers on outside clicks.
+             *
+             * @private
+             * @type {?Function}
+             */
+            this._previewOutsidePointerHandler = null;
+
+            /**
              * Selected module node id, or null when no graph node is selected.
              *
              * @private
@@ -245,6 +253,22 @@
              * @type {boolean}
              */
             this._removingNodeFromDraft = false;
+
+            /**
+             * Whether the module palette panel is collapsed.
+             *
+             * @private
+             * @type {boolean}
+             */
+            this._modulesPanelCollapsed = false;
+
+            /**
+             * Whether the inspector panel is collapsed.
+             *
+             * @private
+             * @type {boolean}
+             */
+            this._inspectorPanelCollapsed = false;
 
             this._registerOptionHandlers(options);
             this._ensureDefaultStyles();
@@ -747,14 +771,27 @@
             this.palette = document.createElement("div");
             this.palette.className = "fr-module-graph-editor__palette";
             this.palette.innerHTML = [
+                '<div class="fr-module-graph-editor__palette-header">',
                 '<div class="fr-module-graph-editor__section-title">Modules</div>',
+                '<button type="button" class="fr-module-graph-editor__palette-toggle" title="Collapse modules panel">‹</button>',
+                '</div>',
                 '<input class="fr-module-graph-editor__palette-search" type="search" placeholder="Search modules...">',
                 '<div class="fr-module-graph-editor__module-list"></div>'
             ].join("");
 
             this.paletteSearch = this.palette.querySelector(".fr-module-graph-editor__palette-search");
             this.moduleList = this.palette.querySelector(".fr-module-graph-editor__module-list");
-            this.paletteSearch.addEventListener("input", () => this._renderModulePalette());
+            this.paletteToggle = this.palette.querySelector(".fr-module-graph-editor__palette-toggle");
+
+            if (this.paletteSearch) {
+                this.paletteSearch.addEventListener("input", () => this._renderModulePalette());
+            }
+
+            if (this.paletteToggle) {
+                this.paletteToggle.addEventListener("click", () => {
+                    this._setModulesPanelCollapsed(!this._modulesPanelCollapsed);
+                });
+            }
 
             /**
              * Canvas host element.
@@ -764,6 +801,36 @@
              */
             this.canvasHost = document.createElement("div");
             this.canvasHost.className = "fr-module-graph-editor__canvas";
+
+            /**
+             * Collapsed module palette toggle rail.
+             *
+             * @private
+             * @type {HTMLElement}
+             */
+            this.paletteRail = document.createElement("button");
+            this.paletteRail.type = "button";
+            this.paletteRail.className = "fr-module-graph-editor__palette-rail";
+            this.paletteRail.title = "Expand modules panel";
+            this.paletteRail.textContent = "Modules ›";
+            this.paletteRail.addEventListener("click", () => {
+                this._setModulesPanelCollapsed(false);
+            });
+
+            /**
+             * Collapsed inspector toggle rail.
+             *
+             * @private
+             * @type {HTMLElement}
+             */
+            this.inspectorRail = document.createElement("button");
+            this.inspectorRail.type = "button";
+            this.inspectorRail.className = "fr-module-graph-editor__inspector-rail";
+            this.inspectorRail.title = "Expand inspector panel";
+            this.inspectorRail.textContent = "‹ Inspector";
+            this.inspectorRail.addEventListener("click", () => {
+                this._setInspectorPanelCollapsed(false);
+            });
 
             /**
              * LiteGraph canvas element.
@@ -784,16 +851,89 @@
             this.inspector = document.createElement("div");
             this.inspector.className = "fr-module-graph-editor__inspector";
             this.inspector.innerHTML = [
+                '<div class="fr-module-graph-editor__inspector-header">',
                 '<div class="fr-module-graph-editor__section-title">Inspector</div>',
+                '<button type="button" class="fr-module-graph-editor__inspector-toggle" title="Collapse inspector panel">›</button>',
+                '</div>',
                 '<div class="fr-module-graph-editor__empty-state">No node selected.</div>',
                 '<div class="fr-module-graph-editor__diagnostics"></div>'
             ].join("");
 
+            this.inspectorToggle = this.inspector.querySelector(".fr-module-graph-editor__inspector-toggle");
+
+            if (this.inspectorToggle) {
+                this.inspectorToggle.addEventListener("click", () => {
+                    this._setInspectorPanelCollapsed(!this._inspectorPanelCollapsed);
+                });
+            }
+
             this.root.appendChild(this.palette);
+            this.root.appendChild(this.paletteRail);
             this.root.appendChild(this.canvasHost);
+            this.root.appendChild(this.inspectorRail);
             this.root.appendChild(this.inspector);
 
             this.container.appendChild(this.root);
+        }
+
+        /**
+         * Collapse or expand the module palette panel.
+         *
+         * @private
+         * @param {boolean} collapsed - Whether the palette should be collapsed.
+         * @returns {void}
+         */
+        _setModulesPanelCollapsed(collapsed) {
+            this._modulesPanelCollapsed = collapsed === true;
+
+            if (this.root) {
+                this.root.classList.toggle("fr-module-graph-editor--modules-collapsed", this._modulesPanelCollapsed);
+            }
+
+            if (this.paletteToggle) {
+                this.paletteToggle.textContent = this._modulesPanelCollapsed ? "›" : "‹";
+                this.paletteToggle.title = this._modulesPanelCollapsed ? "Expand modules panel" : "Collapse modules panel";
+            }
+
+            this._resizeAfterPanelLayoutChange();
+        }
+
+        /**
+         * Collapse or expand the inspector panel.
+         *
+         * @private
+         * @param {boolean} collapsed - Whether the inspector should be collapsed.
+         * @returns {void}
+         */
+        _setInspectorPanelCollapsed(collapsed) {
+            this._inspectorPanelCollapsed = collapsed === true;
+
+            if (this.root) {
+                this.root.classList.toggle("fr-module-graph-editor--inspector-collapsed", this._inspectorPanelCollapsed);
+            }
+
+            if (this.inspectorToggle) {
+                this.inspectorToggle.textContent = this._inspectorPanelCollapsed ? "‹" : "›";
+                this.inspectorToggle.title = this._inspectorPanelCollapsed ? "Expand inspector panel" : "Collapse inspector panel";
+            }
+
+            this._resizeAfterPanelLayoutChange();
+        }
+
+        /**
+         * Resize LiteGraph after CSS grid panel layout changes have applied.
+         *
+         * @private
+         * @returns {void}
+         */
+        _resizeAfterPanelLayoutChange() {
+            this.resize();
+
+            window.requestAnimationFrame(() => {
+                if (!this._destroyed) {
+                    this.resize();
+                }
+            });
         }
 
         /**
@@ -1551,6 +1691,8 @@
             popover.style.top = `${top}px`;
 
             this._activePreviewPopover = popover;
+
+            this._installPreviewOutsidePointerHandler();
         }
 
         /**
@@ -1565,6 +1707,37 @@
             }
 
             this._activePreviewPopover = null;
+
+            if (this._previewOutsidePointerHandler) {
+                document.removeEventListener("pointerdown", this._previewOutsidePointerHandler, true);
+                this._previewOutsidePointerHandler = null;
+            }
+        }
+
+        /**
+         * Install a document-level listener that closes preview popovers on outside clicks.
+         *
+         * @private
+         * @returns {void}
+         */
+        _installPreviewOutsidePointerHandler() {
+            if (this._previewOutsidePointerHandler) {
+                return;
+            }
+
+            this._previewOutsidePointerHandler = (event) => {
+                if (!this._activePreviewPopover) {
+                    return;
+                }
+
+                if (this._activePreviewPopover.contains(event.target)) {
+                    return;
+                }
+
+                this._closePreviewPopover();
+            };
+
+            document.addEventListener("pointerdown", this._previewOutsidePointerHandler, true);
         }
 
         /**
@@ -1896,11 +2069,12 @@
 
             if (!nodeId || !nodeConfig) {
                 this.inspector.innerHTML = [
-                    '<div class="fr-module-graph-editor__section-title">Inspector</div>',
+                    this._renderInspectorHeaderHtml(),
                     '<div class="fr-module-graph-editor__empty-state">No module node selected.</div>',
                     '<div class="fr-module-graph-editor__diagnostics"></div>'
                 ].join("");
                 this._renderDiagnostics();
+                this._bindInspectorToggle();
                 return;
             }
 
@@ -1909,7 +2083,7 @@
             const description = ModuleClass && typeof ModuleClass.description === "function" ? ModuleClass.description() : "";
 
             this.inspector.innerHTML = [
-                '<div class="fr-module-graph-editor__section-title">Inspector</div>',
+                this._renderInspectorHeaderHtml(),
                 '<div class="fr-module-graph-editor__field">',
                 '<label for="fr-module-graph-editor-label">Label</label>',
                 `<input id="fr-module-graph-editor-label" class="fr-module-graph-editor__label-input" type="text" value="${this._escapeHtml(this._getEditorNodeLabel(nodeId) || name || nodeId)}">`,
@@ -1931,6 +2105,8 @@
 
             this._renderDiagnostics();
 
+            this._bindInspectorToggle();
+
             const labelInput = this.inspector.querySelector(".fr-module-graph-editor__label-input");
 
             if (labelInput) {
@@ -1949,6 +2125,43 @@
 
             this._bindSourceChannelInspectorEvents(nodeId);
             this._bindControlInspectorEvents(nodeId);
+        }
+
+        /**
+         * Render the Inspector panel header.
+         *
+         * @private
+         * @returns {string} Inspector header HTML.
+         */
+        _renderInspectorHeaderHtml() {
+            return [
+                '<div class="fr-module-graph-editor__inspector-header">',
+                '<div class="fr-module-graph-editor__section-title">Inspector</div>',
+                '<button type="button" class="fr-module-graph-editor__inspector-toggle" title="Collapse inspector panel">›</button>',
+                '</div>'
+            ].join("");
+        }
+
+        /**
+         * Bind the Inspector collapse/expand toggle after Inspector HTML is re-rendered.
+         *
+         * @private
+         * @returns {void}
+         */
+        _bindInspectorToggle() {
+            this.inspectorToggle = this.inspector ?
+                this.inspector.querySelector(".fr-module-graph-editor__inspector-toggle") :
+                null;
+
+            if (!this.inspectorToggle) {
+                return;
+            }
+
+            this.inspectorToggle.textContent = this._inspectorPanelCollapsed ? "‹" : "›";
+            this.inspectorToggle.title = this._inspectorPanelCollapsed ? "Expand inspector panel" : "Collapse inspector panel";
+            this.inspectorToggle.addEventListener("click", () => {
+                this._setInspectorPanelCollapsed(!this._inspectorPanelCollapsed);
+            });
         }
 
         /**
@@ -2936,7 +3149,7 @@
             style.textContent = `
 .fr-module-graph-editor {
     display: grid;
-    grid-template-columns: 220px minmax(300px, 1fr) 280px;
+    grid-template-columns: 220px 0 minmax(300px, 1fr) 0 280px;
     min-height: 360px;
     border: 1px solid #333;
     background: #1f1f1f;
@@ -2954,11 +3167,153 @@
 }
 
 .fr-module-graph-editor__palette {
+    grid-column: 1;
+    transition: transform 160ms ease, opacity 160ms ease;
+    z-index: 2;
+}
+
+.fr-module-graph-editor__palette-rail {
+    grid-column: 2;
+    align-self: stretch;
+    width: 28px;
+    padding: 0;
+    border: 0;
+    border-right: 1px solid #333;
+    background: #202020;
+    color: #d1d5db;
+    font-size: 11px;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fr-module-graph-editor__canvas {
+    grid-column: 3;
+}
+
+.fr-module-graph-editor__inspector-rail {
+    grid-column: 4;
+}
+
+.fr-module-graph-editor__inspector {
+    grid-column: 5;
+}
+
+.fr-module-graph-editor__palette-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.fr-module-graph-editor__palette-header .fr-module-graph-editor__section-title {
+    margin-bottom: 0;
+}
+
+.fr-module-graph-editor__palette-toggle {
+    width: 24px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid #444;
+    background: #181818;
+    color: #eee;
+    cursor: pointer;
+}
+
+.fr-module-graph-editor__palette-toggle:hover,
+.fr-module-graph-editor__palette-rail:hover {
+    background: #2a2a2a;
+}
+
+.fr-module-graph-editor--modules-collapsed {
+    grid-template-columns: 0 28px minmax(300px, 1fr) 0 280px;
+}
+
+.fr-module-graph-editor--modules-collapsed .fr-module-graph-editor__palette {
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fr-module-graph-editor--modules-collapsed .fr-module-graph-editor__palette-rail {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.fr-module-graph-editor__inspector-rail {
+    grid-column: 4;
+    align-self: stretch;
+    width: 28px;
+    padding: 0;
+    border: 0;
+    border-left: 1px solid #333;
+    background: #202020;
+    color: #d1d5db;
+    font-size: 11px;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fr-module-graph-editor__inspector-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.fr-module-graph-editor__inspector-header .fr-module-graph-editor__section-title {
+    margin-bottom: 0;
+}
+
+.fr-module-graph-editor__inspector-toggle {
+    width: 24px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid #444;
+    background: #181818;
+    color: #eee;
+    cursor: pointer;
+}
+
+.fr-module-graph-editor__inspector-toggle:hover,
+.fr-module-graph-editor__inspector-rail:hover {
+    background: #2a2a2a;
+}
+
+.fr-module-graph-editor__palette {
     border-right: 1px solid #333;
 }
 
 .fr-module-graph-editor__inspector {
     border-left: 1px solid #333;
+    transition: transform 160ms ease, opacity 160ms ease;
+    z-index: 2;
+}
+
+.fr-module-graph-editor--inspector-collapsed {
+    grid-template-columns: 220px 0 minmax(300px, 1fr) 28px 0;
+}
+
+.fr-module-graph-editor--inspector-collapsed .fr-module-graph-editor__inspector {
+    transform: translateX(100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fr-module-graph-editor--inspector-collapsed .fr-module-graph-editor__inspector-rail {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.fr-module-graph-editor--modules-collapsed.fr-module-graph-editor--inspector-collapsed {
+    grid-template-columns: 0 28px minmax(300px, 1fr) 28px 0;
 }
 
 .fr-module-graph-editor__canvas {
