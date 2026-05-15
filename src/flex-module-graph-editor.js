@@ -113,8 +113,8 @@
 
             if (!this.LiteGraph || !this.LGraph || !this.LGraphCanvas || !this.LGraphNode) {
                 throw new Error(
-                    "ShaderModuleGraphEditor requires LiteGraph. Include LiteGraph before flex-module-graph-editor.js " +
-                    "or pass options.LiteGraph, options.LGraph, options.LGraphCanvas, and options.LGraphNode."
+                    "ShaderModuleGraphEditor requires LiteGraph. Use a FlexRenderer build that includes src/vendor/litegraph.min.js " +
+                    "before flex-module-graph-editor.js, or pass options.LiteGraph, options.LGraph, options.LGraphCanvas, and options.LGraphNode."
                 );
             }
 

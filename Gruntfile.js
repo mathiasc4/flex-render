@@ -69,6 +69,9 @@ module.exports = function(grunt) {
             "src/geojson-tile-source.js",
             "src/configurator.js"
         ],
+        shaderModuleGraphEditorDeps = [
+            "src/vendor/litegraph.min.js",
+        ],
         mvtWorkerDeps = [
             "src/vendor/pbf.min.js",
             "src/vendor/vector-tile.min.js",
@@ -206,12 +209,14 @@ module.exports = function(grunt) {
                 dest: "build/openseadragon/geojson-worker.inline.js"
             },
             dist: {
-                // keep your existing dist concat; just ensure the inline is appended:
-                src: ["<banner>"].concat(sources).concat([
-                    "build/openseadragon/mvt-worker.inline.js",
-                    "build/openseadragon/fabric-worker.inline.js",
-                    "build/openseadragon/geojson-worker.inline.js"
-                ]),
+                src: ["<banner>"]
+                    .concat(shaderModuleGraphEditorDeps)
+                    .concat(sources)
+                    .concat([
+                        "build/openseadragon/mvt-worker.inline.js",
+                        "build/openseadragon/fabric-worker.inline.js",
+                        "build/openseadragon/geojson-worker.inline.js"
+                    ]),
                 dest: distribution
             }
         },
