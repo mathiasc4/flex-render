@@ -1,5 +1,5 @@
 (function($) {
-    $.FlexRenderer.ShaderMediator.registerLayer(
+    $.FlexRenderer.ShaderLayerRegistry.register(
         class ModularShaderLayer extends $.FlexRenderer.ShaderLayer {
             static type() {
                 return "modular";
@@ -108,13 +108,13 @@
                 const resetOptions = $.extend(
                     true,
                     {},
-                    this._customControls,
+                    this._params,
                     this._moduleGraph.getBuiltInParams()
                 );
 
                 this.resetChannel(resetOptions, false, false);
-                this.resetMode(this._customControls, false, false);
-                this.resetFilters(this._customControls, false, false);
+                this.resetMode(this._params, false, false);
+                this.resetFilters(this._params, false, false);
                 this._buildControls();
             }
 

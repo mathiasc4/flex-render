@@ -365,7 +365,7 @@
          * @returns {*}
          */
         getControlParams(controlName) {
-            return this._customControls[controlName];
+            return this._params[controlName];
         }
 
         /**

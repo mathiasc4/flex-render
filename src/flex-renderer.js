@@ -1864,7 +1864,6 @@
                     name: 'Self test',
                     type: 'identity',
                     visible: 1,
-                    fixed: false,
                     tiledImages: [0],
                     params: {},
                     cache: {}
