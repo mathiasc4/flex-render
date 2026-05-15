@@ -687,6 +687,7 @@ let pendingGraphText = null;
 let modularConfigDiagnostics = [];
 let modularConfigAnalysis = null;
 let selectedShaderPresetId = "heatmap-threshold";
+let moduleGraphEditor = null;
 
 function renderShaderLayerControls(shaderLayer, shaderConfig) {
     const container = document.getElementById("my-shader-ui-container");
@@ -1023,10 +1024,176 @@ function applyShaderLayerPreset(presetId) {
 
     applyShaderLayerGuiConfig();
     renderShaderConfigPanel();
+    syncModuleGraphEditorFromConfig("apply-shader-layer-preset");
 }
 
 function resetDefaultGraph() {
     applyShaderLayerPreset("heatmap-threshold");
+}
+
+/**
+ * Mount the standalone module graph editor into the demo panel.
+ *
+ * @returns {void}
+ */
+function mountModuleGraphEditor() {
+    const container = document.getElementById("module-graph-editor-container");
+
+    if (!container) {
+        return;
+    }
+
+    if (!OpenSeadragon.FlexRenderer.ShaderModuleGraphEditor) {
+        setModuleGraphEditorStatus("ShaderModuleGraphEditor is not available in the current build.", "error");
+        return;
+    }
+
+    if (moduleGraphEditor) {
+        moduleGraphEditor.destroy();
+        moduleGraphEditor = null;
+    }
+
+    container.innerHTML = "";
+
+    moduleGraphEditor = new OpenSeadragon.FlexRenderer.ShaderModuleGraphEditor({
+        container,
+        graphConfig: cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID])),
+        height: 560,
+        analysisOwner: makeDraftModuleGraphOwner,
+        onDraftChange: () => {
+            setModuleGraphEditorStatus("Editor draft changed. Apply the graph editor changes to update the live shader layer.", "info");
+        },
+        onDiagnosticsChange: (event) => {
+            const diagnostics = event.diagnostics || [];
+            const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+
+            if (errorCount) {
+                setModuleGraphEditorStatus(`${errorCount} graph editor diagnostic error(s). Fix them before applying.`, "error");
+            }
+        },
+        onApply: () => {
+            setModuleGraphEditorStatus("Graph editor draft applied to the demo shader layer.", "ok");
+        },
+        onApplyFailed: (result) => {
+            const diagnostics = result.diagnostics || [];
+            const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+
+            setModuleGraphEditorStatus(`Graph editor apply failed with ${errorCount} error(s).`, "error");
+        }
+    });
+
+    bindModuleGraphEditorPanelEvents();
+    setModuleGraphEditorStatus("Module graph editor ready.", "ok");
+}
+
+/**
+ * Bind graph editor panel buttons.
+ *
+ * @returns {void}
+ */
+function bindModuleGraphEditorPanelEvents() {
+    const applyButton = document.getElementById("module-graph-editor-apply");
+    const resetButton = document.getElementById("module-graph-editor-reset");
+
+    if (applyButton) {
+        applyButton.onclick = applyModuleGraphEditorDraft;
+    }
+
+    if (resetButton) {
+        resetButton.onclick = resetModuleGraphEditorDraft;
+    }
+}
+
+/**
+ * Apply a valid graph editor draft into the demo ShaderLayer config.
+ *
+ * @returns {void}
+ */
+function applyModuleGraphEditorDraft() {
+    if (!moduleGraphEditor) {
+        return;
+    }
+
+    const result = moduleGraphEditor.apply();
+
+    if (!result.ok) {
+        modularConfigAnalysis = result.analysis;
+        modularConfigDiagnostics = result.diagnostics || [];
+        renderShaderConfigPanel();
+        bindModuleGraphEditorPanelEvents();
+        return;
+    }
+
+    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
+
+    selectedShaderPresetId = CUSTOM_SHADER_PRESET_ID;
+    shaderConfig.params = shaderConfig.params || {};
+    shaderConfig.params.graph = cloneJson(result.graphConfig);
+    shaderConfig.cache = {};
+
+    pendingGraphText = null;
+    modularConfigAnalysis = result.analysis;
+    modularConfigDiagnostics = result.diagnostics || [];
+
+    applyShaderLayerGuiConfig();
+    renderShaderConfigPanel();
+    bindModuleGraphEditorPanelEvents();
+    setModuleGraphEditorStatus("Graph editor changes applied to the live modular ShaderLayer.", "ok");
+}
+
+/**
+ * Reset the graph editor draft from the current live demo graph config.
+ *
+ * @returns {void}
+ */
+function resetModuleGraphEditorDraft() {
+    syncModuleGraphEditorFromConfig("reset-editor-draft");
+    setModuleGraphEditorStatus("Graph editor draft reset from the current shader layer config.", "ok");
+}
+
+/**
+ * Replace the editor draft with the current demo graph config.
+ *
+ * @param {string} reason - Synchronization reason.
+ * @returns {void}
+ */
+function syncModuleGraphEditorFromConfig(reason) {
+    if (!moduleGraphEditor) {
+        return;
+    }
+
+    moduleGraphEditor.setDraftGraphConfig(
+        cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID])),
+        {
+            updateSource: true,
+            reason
+        }
+    );
+}
+
+/**
+ * Update the graph editor status message.
+ *
+ * @param {string} message - Status message.
+ * @param {"info"|"ok"|"error"} [kind="info"] - Status kind.
+ * @returns {void}
+ */
+function setModuleGraphEditorStatus(message, kind = "info") {
+    const status = document.getElementById("module-graph-editor-status");
+
+    if (!status) {
+        return;
+    }
+
+    status.className = "module-graph-editor-status";
+
+    if (kind === "ok") {
+        status.classList.add("module-graph-editor-status--ok");
+    } else if (kind === "error") {
+        status.classList.add("module-graph-editor-status--error");
+    }
+
+    status.textContent = message;
 }
 
 function updateDraftGraphDiagnostics(text) {
@@ -1061,6 +1228,7 @@ function commitModularGraphFromText(text) {
 
     applyShaderLayerGuiConfig();
     renderShaderConfigPanel();
+    syncModuleGraphEditorFromConfig("commit-modular-graph-json");
 }
 
 function analyzeGraphText(text) {
@@ -1264,9 +1432,15 @@ window.modularShaderLayerDemo = {
     renderShaderConfigPanel,
     shaderPresets: MODULAR_SHADER_PRESETS,
     applyShaderLayerPreset,
+    mountModuleGraphEditor,
+    syncModuleGraphEditorFromConfig,
+    applyModuleGraphEditorDraft,
+    resetModuleGraphEditorDraft,
+    getModuleGraphEditor: () => moduleGraphEditor,
     cloneJson,
 };
 
 applyShaderLayerGuiConfig();
 renderImageSourceIndexPanel();
 renderShaderConfigPanel();
+mountModuleGraphEditor();

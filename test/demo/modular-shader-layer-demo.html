@@ -8,6 +8,8 @@
     <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
     <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
     <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
+<!--    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css"/>-->
 
     <script type="module" src="modular-shader-layer-demo.js"></script>
 
@@ -346,6 +348,62 @@
             color: #7c2d12;
         }
 
+        .module-graph-editor-panel {
+            margin-top: 12px;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            box-sizing: border-box;
+        }
+
+        .module-graph-editor-panel__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .module-graph-editor-panel__header h3 {
+            margin: 0;
+        }
+
+        .module-graph-editor-panel__actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .module-graph-editor-panel__actions button {
+            font-size: 13px;
+        }
+
+        .module-graph-editor-status {
+            margin-bottom: 8px;
+            padding: 6px 8px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            color: #374151;
+            font-size: 12px;
+        }
+
+        .module-graph-editor-status--error {
+            border-color: #fecaca;
+            background: #fff1f2;
+            color: #7f1d1d;
+        }
+
+        .module-graph-editor-status--ok {
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+            color: #14532d;
+        }
+
+        .module-graph-editor-container {
+            height: 560px;
+            min-height: 420px;
+        }
+
         @media (max-width: 1000px) {
             .demo-layout {
                 grid-template-columns: 1fr;
@@ -387,6 +445,20 @@
                     Loading shader layer configuration...
                 </div>
             </div>
+
+            <section class="module-graph-editor-panel">
+                <div class="module-graph-editor-panel__header">
+                    <h3>Module graph editor</h3>
+                    <div class="module-graph-editor-panel__actions">
+                        <button type="button" id="module-graph-editor-apply">Apply graph editor changes</button>
+                        <button type="button" id="module-graph-editor-reset">Reset editor draft</button>
+                    </div>
+                </div>
+                <div id="module-graph-editor-status" class="module-graph-editor-status">
+                    Loading module graph editor...
+                </div>
+                <div id="module-graph-editor-container" class="module-graph-editor-container"></div>
+            </section>
         </main>
 
         <aside class="shader-controls-panel">
