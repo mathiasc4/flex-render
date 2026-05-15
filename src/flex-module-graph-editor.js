@@ -15,7 +15,9 @@
      * @property {Function} [onDraftChange] - Handler registered for draft-change events.
      * @property {Function} [onSelectionChange] - Handler registered for selection-change events.
      * @property {Function} [onDiagnosticsChange] - Handler registered for diagnostics-change events.
+     * @property {object|Function} [analysisOwner] - ShaderModule owner object, or function returning one, used by the graph analyzer.
      * @property {Function} [onApply] - Handler registered for apply events.
+     * @property {Function} [onApplyFailed] - Handler registered for apply-failed events.
      */
 
     /**
@@ -24,7 +26,8 @@
      * @typedef {object} ShaderModuleGraphEditorApplyResult
      * @property {boolean} ok - Whether the draft can be applied.
      * @property {object} graphConfig - Defensive copy of the draft graph config.
-     * @property {?object} analysis - Last graph analysis result, or null before analyzer integration.
+     * @property {?object} analysis - Last graph analysis result.
+     * @property {object[]} diagnostics - Diagnostics produced while applying.
      * @property {boolean} changed - Whether the draft differs from the current apply baseline.
      */
 
@@ -138,6 +141,22 @@
             this._analysis = null;
 
             /**
+             * Last analyzer diagnostics.
+             *
+             * @private
+             * @type {object[]}
+             */
+            this._diagnostics = [];
+
+            /**
+             * ShaderModule owner object, or function returning one, used for analysis.
+             *
+             * @private
+             * @type {object|Function|null}
+             */
+            this._analysisOwner = options.analysisOwner || null;
+
+            /**
              * Selected module node id, or null when no graph node is selected.
              *
              * @private
@@ -183,6 +202,7 @@
             this._createLiteGraph();
             this._renderModulePalette();
             this._renderDraftGraph();
+            this.analyze();
             this.resize(options.width || "100%", options.height || 480);
         }
 
@@ -214,6 +234,7 @@
             }
 
             this._renderDraftGraph();
+            this.analyze();
 
             this.raiseEvent("draft-change", {
                 graphConfig: this.getDraftGraphConfig(),
@@ -289,6 +310,7 @@
 
             this._selectedNodeId = nodeId;
             this._renderDraftGraph();
+            this.analyze();
 
             this.raiseEvent("draft-change", {
                 graphConfig: this.getDraftGraphConfig(),
@@ -337,6 +359,7 @@
             }
 
             this._renderDraftGraph();
+            this.analyze();
 
             this.raiseEvent("draft-change", {
                 graphConfig: this.getDraftGraphConfig(),
@@ -439,6 +462,7 @@
             const current = this._getStoredControlParams(nodeConfig, controlName, controlDefinition);
             nodeConfig.params[controlName] = $.extend(true, {}, current, patch);
 
+            this.analyze();
             this._renderInspector();
 
             this.raiseEvent("draft-change", {
@@ -454,20 +478,51 @@
         /**
          * Analyze the current draft graph.
          *
-         * Analyzer integration is added in a later phase. This method currently
-         * emits an empty diagnostics-change event so callers can depend on the
-         * editor lifecycle shape.
-         *
          * @returns {?object} Last analysis result.
          */
         analyze() {
             this._assertNotDestroyed();
 
-            this._analysis = null;
+            const Analyzer = $.FlexRenderer.ShaderModuleGraphAnalyzer;
+            const owner = this._getAnalysisOwner();
+            const graphConfig = this.getDraftGraphConfig();
+
+            if (!Analyzer || typeof Analyzer.analyze !== "function") {
+                this._analysis = null;
+                this._diagnostics = [{
+                    severity: "error",
+                    code: "graph-analyzer-unavailable",
+                    message: "ShaderModuleGraphAnalyzer.analyze(...) is not available in the current FlexRenderer build.",
+                    path: [],
+                    details: {}
+                }];
+            } else {
+                try {
+                    this._analysis = Analyzer.analyze(owner, graphConfig);
+                    this._diagnostics = Array.isArray(this._analysis.diagnostics) ?
+                        this._analysis.diagnostics.slice() :
+                        [];
+                } catch (error) {
+                    this._analysis = null;
+                    this._diagnostics = [{
+                        severity: "error",
+                        code: "graph-analyzer-threw",
+                        message: error && error.message ? error.message : String(error),
+                        path: [],
+                        details: {
+                            error: String(error)
+                        }
+                    }];
+                }
+            }
+
+            this._renderDiagnostics();
+            this._applyDiagnosticHighlights();
+
             this.raiseEvent("diagnostics-change", {
                 analysis: this._analysis,
-                diagnostics: [],
-                reason: "analyze-unavailable"
+                diagnostics: this._diagnostics.slice(),
+                reason: "analyze-draft-graph"
             });
 
             return this._analysis;
@@ -476,28 +531,32 @@
         /**
          * Return an apply result without mutating renderer state.
          *
-         * Full validation is added in a later phase. This shell implementation
-         * commits the current draft as the new reset/apply baseline.
-         *
          * @returns {ShaderModuleGraphEditorApplyResult} Apply result.
          */
         apply() {
             this._assertNotDestroyed();
 
             this._syncLayoutToDraft();
-
+            const analysis = this.analyze();
             const graphConfig = this.getDraftGraphConfig();
+            const diagnostics = this._diagnostics.slice();
+            const ok = !!analysis && analysis.ok === true && !diagnostics.some((diagnostic) => diagnostic.severity === "error");
             const changed = JSON.stringify(this._sourceGraphConfig) !== JSON.stringify(graphConfig);
 
-            this._sourceGraphConfig = this._cloneGraphConfig(graphConfig);
-
             const result = {
-                ok: true,
+                ok: ok,
                 graphConfig: graphConfig,
-                analysis: this._analysis,
+                analysis: analysis,
+                diagnostics: diagnostics,
                 changed: changed
             };
 
+            if (!ok) {
+                this.raiseEvent("apply-failed", result);
+                return result;
+            }
+
+            this._sourceGraphConfig = this._cloneGraphConfig(graphConfig);
             this.raiseEvent("apply", result);
 
             return result;
@@ -583,7 +642,8 @@
                 "draft-change": options.onDraftChange,
                 "selection-change": options.onSelectionChange,
                 "diagnostics-change": options.onDiagnosticsChange,
-                apply: options.onApply
+                apply: options.onApply,
+                "apply-failed": options.onApplyFailed
             };
 
             for (const eventName in callbacks) {
@@ -974,6 +1034,8 @@
             }
 
             this._syncLiteGraphLinksToDraft();
+            this.analyze();
+
             this.raiseEvent("draft-change", {
                 graphConfig: this.getDraftGraphConfig(),
                 reason: "connection-change"
@@ -1166,7 +1228,6 @@
                 return;
             }
 
-            const diagnostics = this.inspector.querySelector(".fr-module-graph-editor__diagnostics");
             const nodeId = this._selectedNodeId;
             const graphConfig = this._draftGraphConfig || {};
             const nodeConfig = graphConfig.nodes && graphConfig.nodes[nodeId];
@@ -1177,6 +1238,7 @@
                     '<div class="fr-module-graph-editor__empty-state">No module node selected.</div>',
                     '<div class="fr-module-graph-editor__diagnostics"></div>'
                 ].join("");
+                this._renderDiagnostics();
                 return;
             }
 
@@ -1204,9 +1266,7 @@
                 '<div class="fr-module-graph-editor__diagnostics"></div>'
             ].join("");
 
-            if (diagnostics && diagnostics.innerHTML) {
-                this.inspector.querySelector(".fr-module-graph-editor__diagnostics").innerHTML = diagnostics.innerHTML;
-            }
+            this._renderDiagnostics();
 
             const labelInput = this.inspector.querySelector(".fr-module-graph-editor__label-input");
 
@@ -1225,6 +1285,142 @@
             }
 
             this._bindControlInspectorEvents(nodeId);
+        }
+
+        /**
+         * Render the diagnostics panel.
+         *
+         * @private
+         * @returns {void}
+         */
+        _renderDiagnostics() {
+            const target = this.inspector && this.inspector.querySelector(".fr-module-graph-editor__diagnostics");
+
+            if (!target) {
+                return;
+            }
+
+            const diagnostics = this._diagnostics.filter((diagnostic) => diagnostic && diagnostic.severity !== "info");
+
+            if (!diagnostics.length) {
+                target.innerHTML = '<div class="fr-module-graph-editor__diagnostic fr-module-graph-editor__diagnostic--ok">No graph diagnostics.</div>';
+                return;
+            }
+
+            target.innerHTML = diagnostics.map((diagnostic) => {
+                const severity = diagnostic.severity || "warning";
+                const path = Array.isArray(diagnostic.path) && diagnostic.path.length ?
+                    `<code>${this._escapeHtml(this._formatDiagnosticPath(diagnostic.path))}</code>` :
+                    "";
+
+                return [
+                    `<div class="fr-module-graph-editor__diagnostic fr-module-graph-editor__diagnostic--${this._escapeHtml(severity)}" data-node-id="${this._escapeHtml(diagnostic.nodeId || "")}">`,
+                    `<div class="fr-module-graph-editor__diagnostic-code">${this._escapeHtml(diagnostic.code || "diagnostic")}</div>`,
+                    path ? `<div class="fr-module-graph-editor__diagnostic-path">${path}</div>` : "",
+                    `<div>${this._escapeHtml(diagnostic.message || "Graph diagnostic.")}</div>`,
+                    '</div>'
+                ].join("");
+            }).join("");
+
+            const items = target.querySelectorAll(".fr-module-graph-editor__diagnostic[data-node-id]");
+
+            for (const item of items) {
+                const nodeId = item.getAttribute("data-node-id");
+
+                if (!nodeId) {
+                    continue;
+                }
+
+                item.addEventListener("click", () => {
+                    const node = this._liteNodesById[nodeId];
+
+                    if (node && this.graphCanvas && typeof this.graphCanvas.selectNode === "function") {
+                        this._selectedNodeId = nodeId;
+                        this.graphCanvas.selectNode(node);
+                        this._renderInspector();
+                    }
+                });
+            }
+        }
+
+        /**
+         * Apply diagnostic highlights to LiteGraph nodes.
+         *
+         * @private
+         * @returns {void}
+         */
+        _applyDiagnosticHighlights() {
+            for (const nodeId of Object.keys(this._liteNodesById || {})) {
+                const node = this._liteNodesById[nodeId];
+
+                if (!node) {
+                    continue;
+                }
+
+                node.boxcolor = null;
+                node.color = null;
+            }
+
+            for (const diagnostic of this._diagnostics) {
+                const nodeId = diagnostic && diagnostic.nodeId;
+
+                if (!nodeId || !this._liteNodesById[nodeId]) {
+                    continue;
+                }
+
+                const node = this._liteNodesById[nodeId];
+
+                if (diagnostic.severity === "error") {
+                    node.boxcolor = "#ef4444";
+                    node.color = "#3b1515";
+                } else if (diagnostic.severity === "warning" && node.boxcolor !== "#ef4444") {
+                    node.boxcolor = "#f59e0b";
+                    node.color = "#33240d";
+                }
+            }
+
+            if (this.graphCanvas && typeof this.graphCanvas.draw === "function") {
+                this.graphCanvas.draw(true, true);
+            }
+        }
+
+        /**
+         * Return the owner object passed to ShaderModuleGraphAnalyzer.
+         *
+         * @private
+         * @returns {object} Analysis owner.
+         */
+        _getAnalysisOwner() {
+            if (typeof this._analysisOwner === "function") {
+                const owner = this._analysisOwner();
+
+                if (owner) {
+                    return owner;
+                }
+            } else if (this._analysisOwner) {
+                return this._analysisOwner;
+            }
+
+            return {
+                id: "module_graph_editor",
+                uid: "module_graph_editor",
+                constructor: {
+                    type: () => "modular"
+                }
+            };
+        }
+
+        /**
+         * Format a diagnostic path for display.
+         *
+         * @private
+         * @param {Array<string|number>} path - Diagnostic path.
+         * @returns {string} Formatted path.
+         */
+        _formatDiagnosticPath(path) {
+            return path.map((part) => {
+                return typeof part === "number" ? `[${part}]` : String(part);
+            }).join(".");
         }
 
         /**
@@ -1965,6 +2161,46 @@
     min-height: 60px;
     font-family: monospace;
     resize: vertical;
+}
+
+.fr-module-graph-editor__diagnostic {
+    margin: 6px 0;
+    padding: 7px 8px;
+    border: 1px solid #444;
+    background: #1b1b1b;
+    color: #ddd;
+}
+
+.fr-module-graph-editor__diagnostic[data-node-id]:not([data-node-id=""]) {
+    cursor: pointer;
+}
+
+.fr-module-graph-editor__diagnostic--ok {
+    border-color: #14532d;
+    background: #102016;
+    color: #bbf7d0;
+}
+
+.fr-module-graph-editor__diagnostic--error {
+    border-color: #7f1d1d;
+    background: #2b1111;
+    color: #fecaca;
+}
+
+.fr-module-graph-editor__diagnostic--warning {
+    border-color: #78350f;
+    background: #2b1f10;
+    color: #fed7aa;
+}
+
+.fr-module-graph-editor__diagnostic-code {
+    margin-bottom: 2px;
+    font-weight: 600;
+}
+
+.fr-module-graph-editor__diagnostic-path {
+    margin-bottom: 2px;
+    color: #aaa;
 }
 `;
             document.head.appendChild(style);
