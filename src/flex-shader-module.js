@@ -1294,8 +1294,6 @@
         for (const portName of Object.keys(definitions)) {
             const port = definitions[portName];
 
-            console.log(port);
-
             if (!isGraphObject(port)) {
                 addGraphDiagnostic(diagnostics, {
                     severity: "error",

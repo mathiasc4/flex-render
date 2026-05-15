@@ -1176,6 +1176,33 @@ function runModuleGraphEditorSmokeTest() {
     let previousAnalysis = null;
     let shouldRestore = false;
 
+    const assert = (condition, message, details = undefined) => {
+        checks.push({
+            ok: !!condition,
+            message,
+            details
+        });
+
+        if (!condition) {
+            throw new Error(message);
+        }
+    };
+
+    const getNodeByType = (graphConfig, moduleType) => {
+        const nodes = graphConfig && graphConfig.nodes ? graphConfig.nodes : {};
+
+        for (const nodeId of Object.keys(nodes)) {
+            if (nodes[nodeId] && nodes[nodeId].type === moduleType) {
+                return {
+                    nodeId,
+                    nodeConfig: nodes[nodeId]
+                };
+            }
+        }
+
+        return null;
+    };
+
     const record = (name, ok, details = {}) => {
         checks.push({
             name,
@@ -1223,6 +1250,210 @@ function runModuleGraphEditorSmokeTest() {
         previousAnalysis = modularConfigAnalysis;
         shouldRestore = true;
 
+        /*
+         * Source-channel Inspector smoke checks.
+         *
+         * These checks intentionally run before the existing valid/invalid apply checks.
+         * The existing smoke-test restore path below still restores the previous live
+         * demo graph at the end.
+         */
+        const scalarGraph = {
+            nodes: {
+                sample_source_channel_smoke: {
+                    type: "sample-source-channel",
+                    params: {
+                        sourceIndex: 0,
+                        channelIndex: 4
+                    }
+                }
+            },
+            output: "sample_source_channel_smoke.value",
+            editor: {
+                layoutVersion: 1,
+                nodes: {
+                    sample_source_channel_smoke: {
+                        x: 80,
+                        y: 80
+                    }
+                }
+            }
+        };
+
+        moduleGraphEditor.setDraftGraphConfig(scalarGraph, {
+            reason: "smoke-test-scalar-channel-index"
+        });
+
+        let draft = moduleGraphEditor.getDraftGraphConfig();
+        let scalarNode = getNodeByType(draft, "sample-source-channel");
+
+        assert(
+            scalarNode && scalarNode.nodeConfig.params.channelIndex === 4,
+            "Scalar source sampler preserves channelIndex.",
+            scalarNode
+        );
+
+        assert(
+            scalarNode && !Object.prototype.hasOwnProperty.call(scalarNode.nodeConfig.params, "sourceChannels"),
+            "Scalar source sampler does not create sourceChannels.",
+            scalarNode
+        );
+
+        if (moduleGraphEditor.graphCanvas && moduleGraphEditor._liteNodesById && moduleGraphEditor._liteNodesById.sample_source_channel_smoke) {
+            moduleGraphEditor._selectedNodeId = "sample_source_channel_smoke";
+            moduleGraphEditor.graphCanvas.selectNode(moduleGraphEditor._liteNodesById.sample_source_channel_smoke);
+            moduleGraphEditor._renderInspector();
+
+            const channelInput = moduleGraphEditor.inspector &&
+                moduleGraphEditor.inspector.querySelector('.fr-module-graph-editor__source-channel-input[data-source-channel-param="channelIndex"]');
+
+            assert(
+                !!channelInput,
+                "Inspector exposes channelIndex input for scalar source sampler."
+            );
+
+            if (channelInput) {
+                channelInput.value = "7";
+                channelInput.dispatchEvent(new Event("change", {
+                    bubbles: true
+                }));
+
+                draft = moduleGraphEditor.getDraftGraphConfig();
+                scalarNode = getNodeByType(draft, "sample-source-channel");
+
+                assert(
+                    scalarNode && scalarNode.nodeConfig.params.channelIndex === 7,
+                    "Inspector updates scalar channelIndex.",
+                    scalarNode
+                );
+
+                assert(
+                    moduleGraphEditor._selectedNodeId === "sample_source_channel_smoke",
+                    "Scalar channelIndex edit keeps the source sampler selected.",
+                    {
+                        selectedNodeId: moduleGraphEditor._selectedNodeId
+                    }
+                );
+            }
+        }
+
+        const vectorGraph = {
+            nodes: {
+                sample_source_channels_smoke: {
+                    type: "sample-source-channels",
+                    params: {
+                        sourceIndex: 0,
+                        channelIndexes: [0, 4, 7]
+                    }
+                }
+            },
+            output: "sample_source_channels_smoke.value",
+            editor: {
+                layoutVersion: 1,
+                nodes: {
+                    sample_source_channels_smoke: {
+                        x: 80,
+                        y: 80
+                    }
+                }
+            }
+        };
+
+        moduleGraphEditor.setDraftGraphConfig(vectorGraph, {
+            reason: "smoke-test-channel-indexes"
+        });
+
+        draft = moduleGraphEditor.getDraftGraphConfig();
+        let vectorNode = getNodeByType(draft, "sample-source-channels");
+
+        assert(
+            vectorNode && Array.isArray(vectorNode.nodeConfig.params.channelIndexes) &&
+            vectorNode.nodeConfig.params.channelIndexes.join(",") === "0,4,7",
+            "Multi-channel source sampler preserves channelIndexes.",
+            vectorNode
+        );
+
+        assert(
+            vectorNode && !Object.prototype.hasOwnProperty.call(vectorNode.nodeConfig.params, "sourceChannels"),
+            "Multi-channel source sampler does not create sourceChannels.",
+            vectorNode
+        );
+
+        if (moduleGraphEditor.graphCanvas && moduleGraphEditor._liteNodesById && moduleGraphEditor._liteNodesById.sample_source_channels_smoke) {
+            moduleGraphEditor._selectedNodeId = "sample_source_channels_smoke";
+            moduleGraphEditor.graphCanvas.selectNode(moduleGraphEditor._liteNodesById.sample_source_channels_smoke);
+            moduleGraphEditor._renderInspector();
+
+            const channelInputs = moduleGraphEditor.inspector ?
+                moduleGraphEditor.inspector.querySelectorAll('.fr-module-graph-editor__source-channel-input[data-source-channel-param="channelIndexes"]') :
+                [];
+
+            assert(
+                channelInputs.length === 3,
+                "Inspector exposes channelIndexes inputs for multi-channel source sampler.",
+                {
+                    inputCount: channelInputs.length
+                }
+            );
+
+            if (channelInputs.length >= 2) {
+                channelInputs[1].value = "6";
+                channelInputs[1].dispatchEvent(new Event("change", {
+                    bubbles: true
+                }));
+
+                draft = moduleGraphEditor.getDraftGraphConfig();
+                vectorNode = getNodeByType(draft, "sample-source-channels");
+
+                assert(
+                    vectorNode && vectorNode.nodeConfig.params.channelIndexes.join(",") === "0,6,7",
+                    "Inspector updates one channelIndexes entry.",
+                    vectorNode
+                );
+            }
+
+            const addButton = moduleGraphEditor.inspector &&
+                moduleGraphEditor.inspector.querySelector('.fr-module-graph-editor__source-channel-add[data-source-channel-param="channelIndexes"]');
+
+            assert(
+                !!addButton,
+                "Inspector exposes Add channel for channelIndexes."
+            );
+
+            if (addButton) {
+                addButton.click();
+
+                draft = moduleGraphEditor.getDraftGraphConfig();
+                vectorNode = getNodeByType(draft, "sample-source-channels");
+
+                assert(
+                    vectorNode && vectorNode.nodeConfig.params.channelIndexes.length === 4,
+                    "Inspector can add a channelIndexes entry.",
+                    vectorNode
+                );
+            }
+
+            const removeButton = moduleGraphEditor.inspector &&
+                moduleGraphEditor.inspector.querySelector('.fr-module-graph-editor__source-channel-remove[data-source-channel-param="channelIndexes"][data-source-channel-index="3"]');
+
+            if (removeButton) {
+                removeButton.click();
+
+                draft = moduleGraphEditor.getDraftGraphConfig();
+                vectorNode = getNodeByType(draft, "sample-source-channels");
+
+                assert(
+                    vectorNode && vectorNode.nodeConfig.params.channelIndexes.length === 3,
+                    "Inspector can remove a channelIndexes entry.",
+                    vectorNode
+                );
+            }
+        }
+
+        moduleGraphEditor.setDraftGraphConfig(cloneJson(previousGraph), {
+            updateSource: false,
+            reason: "smoke-test-restore-draft-before-apply-checks"
+        });
+
         const testGraph = {
             nodes: {
                 sample_1: {
@@ -1267,7 +1498,7 @@ function runModuleGraphEditorSmokeTest() {
             reason: "module-graph-editor-smoke-test"
         });
 
-        const draft = moduleGraphEditor.getDraftGraphConfig();
+        draft = moduleGraphEditor.getDraftGraphConfig();
 
         record("draft-has-nodes", !!draft.nodes && !!draft.nodes.sample_1 && !!draft.nodes.threshold_1 && !!draft.nodes.colorize_1, {
             nodeIds: Object.keys(draft.nodes || {})
