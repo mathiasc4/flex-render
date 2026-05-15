@@ -1104,9 +1104,22 @@
                 }
 
                 const slotPosition = node.getConnectionPos(false, index);
-                const x = Math.max(34, node.size[0] - 34);
-                const y = slotPosition[1] - node.pos[1] - 7;
-                const size = 14;
+                const slotX = slotPosition[0] - node.pos[0];
+                const slotY = slotPosition[1] - node.pos[1];
+                const size = 12;
+                const label = String(output.label || output.name || "");
+
+                context.save();
+                context.font = "normal 12px Arial";
+                const labelWidth = context.measureText(label).width;
+                context.restore();
+
+                const labelRight = slotX - 10;
+                const x = Math.max(
+                    12,
+                    Math.min(node.size[0] - 48, labelRight - labelWidth - size - 6)
+                );
+                const y = slotY - size / 2;
 
                 const button = {
                     x,

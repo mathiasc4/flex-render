@@ -688,6 +688,7 @@ let modularConfigDiagnostics = [];
 let modularConfigAnalysis = null;
 let selectedShaderPresetId = "heatmap-threshold";
 let moduleGraphEditor = null;
+let moduleGraphPreviewDrawer = null;
 
 function renderShaderLayerControls(shaderLayer, shaderConfig) {
     const container = document.getElementById("my-shader-ui-container");
@@ -963,6 +964,10 @@ function bindShaderConfigPanelEvents() {
         shaderConfig.tiledImages = [Number(this.value)];
         applyShaderLayerGuiConfig();
         renderShaderConfigPanel();
+
+        if (moduleGraphEditor) {
+            moduleGraphEditor.resize();
+        }
     });
 
     $(".shader-config-module-textarea").on("input", function() {
@@ -1059,7 +1064,7 @@ function mountModuleGraphEditor() {
         container,
         graphConfig: cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID])),
         height: 560,
-        analysisOwner: makeDraftModuleGraphOwner,
+        previewProvider: createModuleGraphPreviewProvider(),
         onDraftChange: () => {
             setModuleGraphEditorStatus("Editor draft changed. Apply the graph editor changes to update the live shader layer.", "info");
         },
@@ -1531,6 +1536,214 @@ function makeDraftModuleGraphOwner() {
     };
 }
 
+/**
+ * Create the preview provider used by the module graph editor.
+ *
+ * The provider keeps demo/OpenSeadragon state outside the editor. Structural
+ * preview validation is delegated to the live FlexRenderer, while drawing uses
+ * the current FlexDrawer extraction path so the preview reflects the active
+ * source/view state.
+ *
+ * @returns {object} Preview provider for ShaderModuleGraphEditor.
+ */
+function createModuleGraphPreviewProvider() {
+    return {
+        isNodePreviewAvailable(request) {
+            const renderer = getLiveFlexRenderer();
+            const layer = getLiveModularShaderLayer();
+            const tiledImages = getModuleGraphPreviewTiledImages();
+
+            if (!renderer || !layer || !tiledImages.length) {
+                return false;
+            }
+
+            if (typeof renderer.canPreviewModuleGraphOutput !== "function") {
+                return false;
+            }
+
+            return renderer.canPreviewModuleGraphOutput({
+                shaderLayer: layer,
+                graphConfig: request.graphConfig,
+                nodeId: request.nodeId,
+                output: request.output,
+                outputType: request.outputType,
+                owner: makeDraftModuleGraphOwner()
+            });
+        },
+
+        renderNodePreview(request) {
+            const renderer = getLiveFlexRenderer();
+            const layer = getLiveModularShaderLayer();
+            const tiledImages = getModuleGraphPreviewTiledImages();
+
+            if (!renderer || !layer) {
+                return {
+                    ok: false,
+                    reason: "renderer-unavailable",
+                    message: "The live FlexRenderer or modular ShaderLayer is not available.",
+                    diagnostics: []
+                };
+            }
+
+            const previewDrawer = getModuleGraphPreviewDrawer();
+
+            if (!previewDrawer || typeof previewDrawer.drawWithConfiguration !== "function") {
+                return {
+                    ok: false,
+                    reason: "drawer-preview-unavailable",
+                    message: "The standalone FlexDrawer preview extraction API is not available.",
+                    diagnostics: []
+                };
+            }
+
+            if (!tiledImages.length) {
+                return {
+                    ok: false,
+                    reason: "preview-source-unavailable",
+                    message: "No active tiled image is available for this module graph preview.",
+                    diagnostics: []
+                };
+            }
+
+            if (typeof renderer.renderModuleGraphOutputPreview !== "function") {
+                return {
+                    ok: false,
+                    reason: "renderer-preview-unavailable",
+                    message: "The live FlexRenderer does not expose renderModuleGraphOutputPreview(...).",
+                    diagnostics: []
+                };
+            }
+
+            const dimensions = getModuleGraphPreviewSourceDimensions();
+
+            return renderer.renderModuleGraphOutputPreview({
+                shaderLayer: layer,
+                graphConfig: request.graphConfig,
+                nodeId: request.nodeId,
+                output: request.output,
+                outputType: request.outputType,
+                owner: makeDraftModuleGraphOwner(),
+                sourceWidth: dimensions.width,
+                sourceHeight: dimensions.height,
+                maxWidth: 256,
+                maxHeight: 160,
+                drawPreview: async (preview) => {
+                    const context = await previewDrawer.drawWithConfiguration(
+                        tiledImages,
+                        preview.configuration,
+                        getModuleGraphPreviewView(),
+                        {
+                            x: preview.width,
+                            y: preview.height
+                        }
+                    );
+
+                    return context && context.canvas ? context.canvas : null;
+                }
+            });
+        }
+    };
+}
+
+/**
+ * Return the tiled images used by the live modular ShaderLayer.
+ *
+ * @returns {OpenSeadragon.TiledImage[]} Tiled images currently bound to the demo layer.
+ */
+function getModuleGraphPreviewTiledImages() {
+    if (!viewer || !viewer.world || typeof viewer.world.getItemAt !== "function") {
+        return [];
+    }
+
+    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID] || {};
+    const indexes = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
+        shaderConfig.tiledImages :
+        [0];
+    const result = [];
+
+    for (const index of indexes) {
+        const numericIndex = Number(index);
+
+        if (!Number.isFinite(numericIndex)) {
+            continue;
+        }
+
+        const tiledImage = viewer.world.getItemAt(numericIndex);
+
+        if (tiledImage) {
+            result.push(tiledImage);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Return dimensions used to preserve preview aspect ratio.
+ *
+ * @returns {{width: number, height: number}} Preview source dimensions.
+ */
+function getModuleGraphPreviewSourceDimensions() {
+    const tiledImages = getModuleGraphPreviewTiledImages();
+    const tiledImage = tiledImages[0];
+
+    if (tiledImage && tiledImage.source && tiledImage.source.dimensions) {
+        return {
+            width: Math.max(1, Number(tiledImage.source.dimensions.x) || 1),
+            height: Math.max(1, Number(tiledImage.source.dimensions.y) || 1)
+        };
+    }
+
+    if (viewer && viewer.drawer && viewer.drawer.canvas) {
+        return {
+            width: Math.max(1, Number(viewer.drawer.canvas.width) || 1),
+            height: Math.max(1, Number(viewer.drawer.canvas.height) || 1)
+        };
+    }
+
+    return {
+        width: 256,
+        height: 160
+    };
+}
+
+/**
+ * Return the standalone drawer used for module output previews.
+ *
+ * @returns {?OpenSeadragon.FlexDrawer} Standalone extraction drawer, or null.
+ */
+function getModuleGraphPreviewDrawer() {
+    if (moduleGraphPreviewDrawer) {
+        return moduleGraphPreviewDrawer;
+    }
+
+    if (typeof OpenSeadragon.makeStandaloneFlexDrawer !== "function") {
+        return null;
+    }
+
+    moduleGraphPreviewDrawer = OpenSeadragon.makeStandaloneFlexDrawer(viewer);
+    return moduleGraphPreviewDrawer;
+}
+
+/**
+ * Return the current viewer view for standalone preview rendering.
+ *
+ * @returns {object} Current viewport state.
+ */
+function getModuleGraphPreviewView() {
+    const bounds = viewer.viewport.getBoundsNoRotateWithMargins(true);
+
+    return {
+        bounds,
+        center: new OpenSeadragon.Point(
+            bounds.x + bounds.width / 2,
+            bounds.y + bounds.height / 2
+        ),
+        rotation: viewer.viewport.getRotation(true) * Math.PI / 180,
+        zoom: viewer.viewport.getZoom(true)
+    };
+}
+
 function renderGraphDiagnostics(diagnostics) {
     const visibleDiagnostics = diagnostics.filter((diagnostic) =>
         diagnostic && diagnostic.severity !== "info"
@@ -1643,6 +1856,9 @@ window.modularShaderLayerDemo = {
     getLiveFlexRenderer,
     getLiveModularShaderLayer,
     makeDraftModuleGraphOwner,
+    createModuleGraphPreviewProvider,
+    getModuleGraphPreviewTiledImages,
+    getModuleGraphPreviewSourceDimensions,
     analyzeGraphText,
     analyzeGraphConfig,
     resetDefaultGraph,
