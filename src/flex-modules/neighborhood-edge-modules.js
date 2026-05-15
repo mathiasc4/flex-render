@@ -315,6 +315,18 @@
                 return "Samples a 3x3 source neighborhood and outputs each sample separately.";
             }
 
+            static sourceChannelParams() {
+                return {
+                    channelIndexes: {
+                        mode: "list",
+                        title: "Neighborhood channel indexes",
+                        description: "Zero-based logical source channels sampled at each 3x3 neighborhood position.",
+                        minLength: 1,
+                        maxLength: 4
+                    }
+                };
+            }
+
             static outputs() {
                 const out = {};
                 for (const name of neighborhood3x3Names()) {
@@ -429,6 +441,16 @@
 
             static description() {
                 return "Computes a mean or Gaussian-weighted local mean over a square scalar neighborhood.";
+            }
+
+            static sourceChannelParams() {
+                return {
+                    channelIndex: {
+                        mode: "single",
+                        title: "Window channel index",
+                        description: "Zero-based logical source channel used for local window sampling."
+                    }
+                };
             }
 
             static outputs() {
@@ -1019,6 +1041,16 @@ vec3 ${gy} = -${ul} - 2.0 * ${up} - ${ur} + ${ll} + 2.0 * ${down} + ${lr};
                         type: "float",
                         required: false,
                         description: "UV sampling distance. Defaults to 0.01 when not connected."
+                    }
+                };
+            }
+
+            static sourceChannelParams() {
+                return {
+                    channelIndex: {
+                        mode: "single",
+                        title: "Neighborhood channel index",
+                        description: "Zero-based logical source channel sampled for the dynamic scalar neighborhood."
                     }
                 };
             }

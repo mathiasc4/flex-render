@@ -201,6 +201,16 @@
                 return "Samples one numeric channel from one source slot.";
             }
 
+            static sourceChannelParams() {
+                return {
+                    channelIndex: {
+                        mode: "single",
+                        title: "Channel index",
+                        description: "Zero-based logical source channel sampled by this module."
+                    }
+                };
+            }
+
             static outputs() {
                 return {
                     value: {
@@ -301,6 +311,18 @@
 
             static description() {
                 return "Samples one to four numeric channels from one source slot and returns float, vec2, vec3, or vec4.";
+            }
+
+            static sourceChannelParams() {
+                return {
+                    channelIndexes: {
+                        mode: "list",
+                        title: "Channel indexes",
+                        description: "Zero-based logical source channels sampled by this module.",
+                        minLength: 1,
+                        maxLength: 4
+                    }
+                };
             }
 
             static outputs() {
