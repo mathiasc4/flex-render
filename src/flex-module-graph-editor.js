@@ -18,6 +18,30 @@
      * @property {object|Function} [analysisOwner] - ShaderModule owner object, or function returning one, used by the graph analyzer.
      * @property {Function} [onApply] - Handler registered for apply events.
      * @property {Function} [onApplyFailed] - Handler registered for apply-failed events.
+     * @property {ShaderModuleGraphEditorPreviewProvider} [previewProvider] - Optional provider for output-slot preview availability and rendering.
+     */
+
+    /**
+     * Request passed from ShaderModuleGraphEditor to a preview provider.
+     *
+     * @typedef {object} ShaderModuleGraphEditorPreviewRequest
+     * @property {object} editor - Editor instance issuing the request.
+     * @property {string} nodeId - Modular graph node id.
+     * @property {string} output - Module output name.
+     * @property {string} outputType - Module output value type.
+     * @property {object} [graphConfig] - Defensive copy of the draft graph config, present for render requests.
+     * @property {?object} [analysis] - Last graph analysis result available to the editor.
+     */
+
+    /**
+     * Provider used by ShaderModuleGraphEditor to expose output previews.
+     *
+     * Availability checks should be synchronous and cheap because they may run while
+     * drawing LiteGraph nodes. Rendering may return either a value or a Promise.
+     *
+     * @typedef {object} ShaderModuleGraphEditorPreviewProvider
+     * @property {Function} isNodePreviewAvailable - Return true when the requested output should show a preview button.
+     * @property {Function} renderNodePreview - Render the requested output preview and return a structured result object.
      */
 
     /**
@@ -159,6 +183,22 @@
             this._analysisOwner = options.analysisOwner || null;
 
             /**
+             * Provider used to determine output-preview availability and render previews.
+             *
+             * @private
+             * @type {?ShaderModuleGraphEditorPreviewProvider}
+             */
+            this._previewProvider = options.previewProvider || null;
+
+            /**
+             * Currently open preview popover, or null when no preview is visible.
+             *
+             * @private
+             * @type {?HTMLElement}
+             */
+            this._activePreviewPopover = null;
+
+            /**
              * Selected module node id, or null when no graph node is selected.
              *
              * @private
@@ -240,6 +280,8 @@
          */
         setDraftGraphConfig(graphConfig, options = {}) {
             this._assertNotDestroyed();
+
+            this._closePreviewPopover();
 
             this._draftGraphConfig = this._cloneGraphConfig(graphConfig || {});
 
@@ -634,6 +676,8 @@
                 return;
             }
 
+            this._closePreviewPopover();
+
             this._destroyed = true;
 
             if (this.graphCanvas && typeof this.graphCanvas.stopRendering === "function") {
@@ -945,6 +989,23 @@
                 node.addOutput(outputName, this._getPortType(outputs[outputName]));
             }
 
+            node._frPreviewButtons = [];
+
+            node.onDrawForeground = (context) => {
+                this._drawOutputPreviewButtons(node, context);
+            };
+
+            node.onMouseDown = (event, localPosition) => {
+                const button = this._getOutputPreviewButtonAt(node, localPosition);
+
+                if (!button) {
+                    return false;
+                }
+
+                this._handleOutputPreviewClick(event, button);
+                return true;
+            };
+
             const position = this._getNodePosition(layout, index);
             node.pos = [position.x, position.y];
 
@@ -988,6 +1049,247 @@
             node.pos = [position.x, position.y];
 
             return node;
+        }
+
+        /**
+         * Draw output-slot preview buttons for one LiteGraph module node.
+         *
+         * @private
+         * @param {object} node - LiteGraph node.
+         * @param {CanvasRenderingContext2D} context - LiteGraph canvas context.
+         * @returns {void}
+         */
+        _drawOutputPreviewButtons(node, context) {
+            node._frPreviewButtons = [];
+
+            if (!this._previewProvider || !node || !node.properties || node.properties.synthetic) {
+                return;
+            }
+
+            if (!Array.isArray(node.outputs) || typeof node.getConnectionPos !== "function") {
+                return;
+            }
+
+            const nodeId = node.properties.moduleNodeId;
+            const graphConfig = this._cloneGraphConfig(this._draftGraphConfig);
+
+            for (let index = 0; index < node.outputs.length; index++) {
+                const output = node.outputs[index];
+
+                if (!output || !output.name) {
+                    continue;
+                }
+
+                const outputType = this._getPortType(output.type || "*");
+                const request = {
+                    editor: this,
+                    graphConfig: graphConfig,
+                    nodeId: nodeId,
+                    output: output.name,
+                    outputType: outputType,
+                    analysis: this._analysis
+                };
+
+                let available = false;
+
+                try {
+                    available = typeof this._previewProvider.isNodePreviewAvailable === "function" &&
+                        this._previewProvider.isNodePreviewAvailable(request) === true;
+                } catch (error) {
+                    available = false;
+                }
+
+                if (!available) {
+                    continue;
+                }
+
+                const slotPosition = node.getConnectionPos(false, index);
+                const x = Math.max(34, node.size[0] - 34);
+                const y = slotPosition[1] - node.pos[1] - 7;
+                const size = 14;
+
+                const button = {
+                    x,
+                    y,
+                    width: size,
+                    height: size,
+                    nodeId,
+                    output: output.name,
+                    outputType
+                };
+
+                node._frPreviewButtons.push(button);
+
+                context.save();
+                context.globalAlpha = 0.95;
+                context.fillStyle = "#111827";
+                context.strokeStyle = "#93c5fd";
+                context.lineWidth = 1;
+                context.beginPath();
+                context.rect(x + 0.5, y + 0.5, size, size);
+                context.fill();
+                context.stroke();
+
+                context.fillStyle = "#bfdbfe";
+                context.font = "10px Arial";
+                context.textAlign = "center";
+                context.textBaseline = "middle";
+                context.fillText("◉", x + size / 2, y + size / 2 + 0.5);
+                context.restore();
+            }
+        }
+
+        /**
+         * Return the preview button under a local node position.
+         *
+         * @private
+         * @param {object} node - LiteGraph node.
+         * @param {number[]} localPosition - Pointer position relative to the node.
+         * @returns {?object} Preview button descriptor, or null when none was hit.
+         */
+        _getOutputPreviewButtonAt(node, localPosition) {
+            if (!node || !Array.isArray(node._frPreviewButtons) || !localPosition) {
+                return null;
+            }
+
+            const x = localPosition[0];
+            const y = localPosition[1];
+
+            for (const button of node._frPreviewButtons) {
+                if (
+                    x >= button.x &&
+                    x <= button.x + button.width &&
+                    y >= button.y &&
+                    y <= button.y + button.height
+                ) {
+                    return button;
+                }
+            }
+
+            return null;
+        }
+
+        /**
+         * Request and display a preview for one module output.
+         *
+         * @private
+         * @param {MouseEvent|PointerEvent} event - Original LiteGraph mouse event.
+         * @param {object} button - Preview button descriptor.
+         * @returns {void}
+         */
+        _handleOutputPreviewClick(event, button) {
+            this._closePreviewPopover();
+
+            if (!this._previewProvider || typeof this._previewProvider.renderNodePreview !== "function") {
+                this._showPreviewPopover(event, {
+                    ok: false,
+                    reason: "preview-provider-unavailable",
+                    message: "No preview provider is available.",
+                    diagnostics: []
+                }, button);
+                return;
+            }
+
+            const request = {
+                editor: this,
+                graphConfig: this.getDraftGraphConfig(),
+                analysis: this._analysis,
+                nodeId: button.nodeId,
+                output: button.output,
+                outputType: button.outputType
+            };
+
+            Promise.resolve()
+                .then(() => this._previewProvider.renderNodePreview(request))
+                .then((result) => {
+                    if (this._destroyed) {
+                        return;
+                    }
+
+                    this._showPreviewPopover(event, result || {
+                        ok: false,
+                        reason: "empty-preview-result",
+                        message: "The preview provider returned an empty result.",
+                        diagnostics: []
+                    }, request);
+                })
+                .catch((error) => {
+                    if (this._destroyed) {
+                        return;
+                    }
+
+                    this._showPreviewPopover(event, {
+                        ok: false,
+                        reason: "preview-render-threw",
+                        message: error && error.message ? error.message : String(error),
+                        diagnostics: []
+                    }, request);
+                });
+        }
+
+        /**
+         * Show a preview or preview error popover.
+         *
+         * @private
+         * @param {MouseEvent|PointerEvent} event - Original click event.
+         * @param {object} result - Structured preview result.
+         * @param {object} request - Preview request or button descriptor.
+         * @returns {void}
+         */
+        _showPreviewPopover(event, result, request) {
+            this._closePreviewPopover();
+
+            const popover = document.createElement("div");
+            popover.className = "fr-module-graph-editor__preview-popover";
+
+            const title = document.createElement("div");
+            title.className = "fr-module-graph-editor__preview-title";
+            title.textContent = `${request.nodeId}.${request.output}`;
+            popover.appendChild(title);
+
+            if (result && result.ok === true && result.canvas) {
+                result.canvas.classList.add("fr-module-graph-editor__preview-canvas");
+                popover.appendChild(result.canvas);
+            } else {
+                const error = document.createElement("div");
+                error.className = "fr-module-graph-editor__preview-error";
+                error.textContent = result && result.message ?
+                    result.message :
+                    "Preview rendering failed.";
+                popover.appendChild(error);
+            }
+
+            const closeButton = document.createElement("button");
+            closeButton.type = "button";
+            closeButton.className = "fr-module-graph-editor__preview-close";
+            closeButton.textContent = "×";
+            closeButton.addEventListener("click", () => this._closePreviewPopover());
+            popover.appendChild(closeButton);
+
+            this.canvasHost.appendChild(popover);
+
+            const hostRect = this.canvasHost.getBoundingClientRect();
+            const left = Math.max(8, event.clientX - hostRect.left + 12);
+            const top = Math.max(8, event.clientY - hostRect.top + 12);
+
+            popover.style.left = `${left}px`;
+            popover.style.top = `${top}px`;
+
+            this._activePreviewPopover = popover;
+        }
+
+        /**
+         * Close the currently open preview popover.
+         *
+         * @private
+         * @returns {void}
+         */
+        _closePreviewPopover() {
+            if (this._activePreviewPopover && this._activePreviewPopover.parentNode) {
+                this._activePreviewPopover.parentNode.removeChild(this._activePreviewPopover);
+            }
+
+            this._activePreviewPopover = null;
         }
 
         /**
@@ -1068,6 +1370,8 @@
             if (this._renderingDraftGraph || !this.graph || !this._draftGraphConfig) {
                 return;
             }
+
+            this._closePreviewPopover();
 
             this._syncLiteGraphLinksToDraft();
             this.analyze();
@@ -2284,6 +2588,57 @@
 .fr-module-graph-editor__diagnostic-path {
     margin-bottom: 2px;
     color: #aaa;
+}
+
+.fr-module-graph-editor__preview-popover {
+    position: absolute;
+    z-index: 20;
+    min-width: 180px;
+    max-width: 280px;
+    padding: 8px;
+    border: 1px solid #4b5563;
+    background: #111827;
+    color: #f9fafb;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    box-sizing: border-box;
+}
+
+.fr-module-graph-editor__preview-title {
+    margin: 0 22px 6px 0;
+    font-size: 11px;
+    color: #bfdbfe;
+    word-break: break-word;
+}
+
+.fr-module-graph-editor__preview-canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #374151;
+    background: #000;
+}
+
+.fr-module-graph-editor__preview-error {
+    padding: 6px;
+    border: 1px solid #7f1d1d;
+    background: #450a0a;
+    color: #fecaca;
+    font-size: 12px;
+    white-space: pre-wrap;
+}
+
+.fr-module-graph-editor__preview-close {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid #4b5563;
+    background: #1f2937;
+    color: #f9fafb;
+    line-height: 16px;
+    cursor: pointer;
 }
 `;
             document.head.appendChild(style);

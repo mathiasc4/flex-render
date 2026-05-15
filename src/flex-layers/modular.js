@@ -85,6 +85,10 @@
                     graph: {
                         type: "shader-module-graph",
                         usage: "Module graph with nodes, typed edges, and one non-void output port."
+                    },
+                    __previewOutputType: {
+                        type: "string",
+                        usage: "Internal module-output preview adapter type. Used only by renderer-generated preview configs."
                     }
                 };
             }
@@ -156,7 +160,71 @@
             }
 
             getFragmentShaderExecution() {
-                return `return ${this.executeModuleGraph()};`;
+                const expr = this.executeModuleGraph();
+                const previewOutputType = this._params && this._params.__previewOutputType;
+                const prefix = `${this.uid}_preview`;
+
+                if (!previewOutputType) {
+                    return `return ${expr};`;
+                }
+
+                switch (previewOutputType) {
+                    case "bool":
+                        return `
+float ${prefix}_v = ${expr} ? 1.0 : 0.0;
+return vec4(vec3(${prefix}_v), 1.0);
+`;
+
+                    case "int":
+                        return `
+int ${prefix}_i = ${expr};
+float ${prefix}_h = fract(sin(float(abs(${prefix}_i)) * 12.9898) * 43758.5453);
+return vec4(fract(${prefix}_h + 0.00), fract(${prefix}_h + 0.37), fract(${prefix}_h + 0.71), 1.0);
+`;
+
+                    case "uint":
+                        return `
+uint ${prefix}_u = ${expr};
+float ${prefix}_h = fract(sin(float(${prefix}_u % 4096u) * 12.9898) * 43758.5453);
+return vec4(fract(${prefix}_h + 0.00), fract(${prefix}_h + 0.37), fract(${prefix}_h + 0.71), 1.0);
+`;
+
+                    case "float":
+                        return `
+float ${prefix}_v = clamp(${expr}, 0.0, 1.0);
+vec3 ${prefix}_c = clamp(vec3(
+    1.5 * ${prefix}_v - 0.5,
+    1.5 - abs(2.0 * ${prefix}_v - 1.0),
+    1.0 - 1.5 * ${prefix}_v
+), 0.0, 1.0);
+return vec4(${prefix}_c, 1.0);
+`;
+
+                    case "vec2":
+                        return `
+vec2 ${prefix}_v = ${expr};
+float ${prefix}_m = clamp(length(${prefix}_v), 0.0, 1.0);
+float ${prefix}_a = atan(${prefix}_v.y, ${prefix}_v.x);
+vec3 ${prefix}_dir = 0.5 + 0.5 * cos(${prefix}_a + vec3(0.0, 2.0943951, 4.1887902));
+return vec4(${prefix}_dir * max(${prefix}_m, 0.15), 1.0);
+`;
+
+                    case "vec3":
+                        return `
+vec3 ${prefix}_v = clamp(${expr}, 0.0, 1.0);
+return vec4(${prefix}_v, 1.0);
+`;
+
+                    case "vec4":
+                        return `
+return clamp(${expr}, 0.0, 1.0);
+`;
+
+                    default:
+                        return `
+return vec4(1.0, 0.0, 1.0, 1.0);
+`;
+                }
             }
 
             _readGraphConfig() {

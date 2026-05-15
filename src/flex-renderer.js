@@ -1578,6 +1578,206 @@
         }
 
         /**
+         * Return whether a module graph output can be prepared for preview rendering.
+         *
+         * This checks the derived output subgraph, output type, and source-backed
+         * requirement. It does not inspect OpenSeadragon tile readiness; adapters or
+         * preview providers should still check that active source data can be rendered.
+         *
+         * @param {object} options - Preview target options.
+         * @param {string} [options.shaderLayerId] - Live modular ShaderLayer id.
+         * @param {ShaderLayer} [options.shaderLayer] - Live modular ShaderLayer instance.
+         * @param {ShaderLayerConfig} [options.shaderConfig] - Modular ShaderLayer config to clone.
+         * @param {object} options.graphConfig - Draft module graph config.
+         * @param {string} options.nodeId - Target module node id.
+         * @param {string} options.output - Target module output name.
+         * @param {string} [options.outputType] - Target module output value type.
+         * @param {ShaderLayer|object} [options.owner] - Owner used for graph analysis.
+         * @returns {boolean} True when the preview config can be created.
+         */
+        canPreviewModuleGraphOutput(options = {}) {
+            return this.createModuleGraphOutputPreviewConfig(options).ok === true;
+        }
+
+        /**
+         * Create a temporary modular ShaderLayer configuration for one module output preview.
+         *
+         * The returned configuration is intended for an isolated preview render path. It
+         * does not mutate the live ShaderLayer, live renderer shader map, or draft graph.
+         *
+         * @param {object} options - Preview target options.
+         * @param {string} [options.shaderLayerId] - Live modular ShaderLayer id.
+         * @param {ShaderLayer} [options.shaderLayer] - Live modular ShaderLayer instance.
+         * @param {ShaderLayerConfig} [options.shaderConfig] - Modular ShaderLayer config to clone.
+         * @param {object} options.graphConfig - Draft module graph config.
+         * @param {string} options.nodeId - Target module node id.
+         * @param {string} options.output - Target module output name.
+         * @param {string} [options.outputType] - Target module output value type.
+         * @param {ShaderLayer|object} [options.owner] - Owner used for graph analysis.
+         * @param {string} [options.previewShaderId] - Optional shader id for the generated preview layer.
+         * @returns {object} Structured preview config result.
+         */
+        createModuleGraphOutputPreviewConfig(options = {}) {
+            const shaderLayer = options.shaderLayer ||
+                (options.shaderLayerId ? this.getShaderLayer(options.shaderLayerId) : null);
+            const shaderConfig = options.shaderConfig ||
+                (shaderLayer && typeof shaderLayer.getConfig === "function" ? shaderLayer.getConfig() : null);
+
+            if (!shaderConfig || shaderConfig.type !== "modular") {
+                return {
+                    ok: false,
+                    reason: "not-modular-shader-layer",
+                    message: "Module output previews require a modular ShaderLayer config.",
+                    diagnostics: []
+                };
+            }
+
+            if (!options.graphConfig || typeof options.graphConfig !== "object" || Array.isArray(options.graphConfig)) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-graph",
+                    message: "Module output preview requires a graphConfig object.",
+                    diagnostics: []
+                };
+            }
+
+            const nodeId = String(options.nodeId || "");
+            const output = String(options.output || "");
+
+            if (!nodeId || !output) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-target",
+                    message: "Module output preview requires nodeId and output.",
+                    diagnostics: []
+                };
+            }
+
+            if (!$.FlexRenderer.idPattern.test(nodeId) || !$.FlexRenderer.idPattern.test(output)) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-target",
+                    message: `Preview target '${nodeId}.${output}' is not GLSL-safe.`,
+                    diagnostics: []
+                };
+            }
+
+            const previewGraphConfig = $.extend(true, {}, options.graphConfig);
+            previewGraphConfig.output = `${nodeId}.${output}`;
+
+            const Analyzer = $.FlexRenderer.ShaderModuleGraphAnalyzer;
+
+            if (!Analyzer || typeof Analyzer.analyze !== "function") {
+                return {
+                    ok: false,
+                    reason: "graph-analyzer-unavailable",
+                    message: "ShaderModuleGraphAnalyzer.analyze(...) is not available.",
+                    diagnostics: []
+                };
+            }
+
+            const owner = options.owner || shaderLayer || {
+                id: "module_graph_preview",
+                uid: "module_graph_preview",
+                constructor: {
+                    type: () => "modular"
+                }
+            };
+
+            let analysis;
+
+            try {
+                analysis = Analyzer.analyze(owner, previewGraphConfig);
+            } catch (error) {
+                return {
+                    ok: false,
+                    reason: "graph-analysis-threw",
+                    message: error && error.message ? error.message : String(error),
+                    diagnostics: []
+                };
+            }
+
+            const diagnostics = Array.isArray(analysis && analysis.diagnostics) ?
+                analysis.diagnostics.slice() :
+                [];
+
+            if (!analysis || analysis.ok !== true || diagnostics.some(diagnostic => diagnostic && diagnostic.severity === "error")) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-subgraph",
+                    message: "The selected module output does not produce a valid preview subgraph.",
+                    diagnostics
+                };
+            }
+
+            const nodeAnalysis = analysis.partial &&
+                analysis.partial.nodeAnalyses &&
+                analysis.partial.nodeAnalyses[nodeId];
+            const outputDefinition = nodeAnalysis &&
+                nodeAnalysis.outputDefinitions &&
+                nodeAnalysis.outputDefinitions[output];
+            const outputType = options.outputType || (outputDefinition && outputDefinition.type) || "";
+
+            if (!["bool", "int", "uint", "float", "vec2", "vec3", "vec4"].includes(outputType)) {
+                return {
+                    ok: false,
+                    reason: "unsupported-preview-output-type",
+                    message: `Module output '${nodeId}.${output}' has unsupported preview type '${outputType || "unknown"}'.`,
+                    diagnostics
+                };
+            }
+
+            const sourceDefinitions = analysis.partial && Array.isArray(analysis.partial.sourceDefinitions) ?
+                analysis.partial.sourceDefinitions :
+                [];
+            const hasSourceRequirement = sourceDefinitions.some(source => {
+                return source &&
+                    (
+                        Number(source.requiredChannelCount) > 0 ||
+                        (Array.isArray(source.sampledChannels) && source.sampledChannels.length > 0)
+                    );
+            });
+
+            if (!hasSourceRequirement) {
+                return {
+                    ok: false,
+                    reason: "preview-output-not-source-backed",
+                    message: `Module output '${nodeId}.${output}' is not backed by a source-sampling subgraph.`,
+                    diagnostics
+                };
+            }
+
+            const previewShaderId = $.FlexRenderer.sanitizeKey(
+                options.previewShaderId ||
+                `${shaderLayer && shaderLayer.id ? shaderLayer.id : "modular"}_preview`
+            );
+            const previewShaderConfig = $.extend(true, {}, shaderConfig);
+
+            previewShaderConfig.name = `${shaderConfig.name || previewShaderId} preview`;
+            previewShaderConfig.type = "modular";
+            previewShaderConfig.visible = 1;
+            previewShaderConfig.params = $.extend(true, {}, previewShaderConfig.params || {});
+            previewShaderConfig.params.graph = previewGraphConfig;
+            previewShaderConfig.params.__previewOutputType = outputType;
+            previewShaderConfig.cache = {};
+
+            return {
+                ok: true,
+                configuration: {
+                    [previewShaderId]: previewShaderConfig
+                },
+                shaderOrder: [previewShaderId],
+                graphConfig: previewGraphConfig,
+                analysis,
+                diagnostics,
+                nodeId,
+                output,
+                outputType,
+                shaderId: previewShaderId
+            };
+        }
+
+        /**
          * Change a layer's shader type and trigger a rebuild.
          * Use this rather than mutating shaderConfig.type directly: it scrubs orphan
          * params from the previous type before the rebuild loop re-instantiates the shader.
