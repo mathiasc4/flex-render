@@ -1,6 +1,6 @@
 (function($) {
 
-    $.FlexRenderer.ShaderMediator.registerLayer(class Threshold extends $.FlexRenderer.ShaderLayer {
+    $.FlexRenderer.ShaderLayerRegistry.register(class Threshold extends $.FlexRenderer.ShaderLayer {
 
         static type() {
             return "threshold";

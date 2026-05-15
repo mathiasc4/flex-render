@@ -361,7 +361,7 @@
         },
 
         compileDocsModel() {
-            const shaders = $.FlexRenderer.ShaderMediator.availableShaders().map(Shader => {
+            const shaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers().map(Shader => {
                 const sources = typeof Shader.sources === "function" ? (Shader.sources() || []) : [];
                 const controls = this._compileControlDescriptors(Shader);
                 const customParams = Shader.customParams || {};
@@ -407,7 +407,7 @@
         },
 
         compileConfigSchemaModel() {
-            const availableShaders = $.FlexRenderer.ShaderMediator.availableShaders();
+            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
             const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
             const shaderModules = this._compileShaderModuleJsonSchemas();
             const shaderModuleGraph = this._compileShaderModuleGraphJsonSchema(shaderModules);
@@ -691,11 +691,11 @@
          * The schema model only ships serialization-friendly entries (no functions).
          */
         getShaderCouplingValidators(shaderType) {
-            const Mediator = $.FlexRenderer.ShaderMediator;
+            const Mediator = $.FlexRenderer.ShaderLayerRegistry;
             const Shader = Mediator && (typeof Mediator.getShaderByType === "function"
                 ? Mediator.getShaderByType(shaderType)
-                : typeof Mediator.getClass === "function"
-                    ? Mediator.getClass(shaderType)
+                : typeof Mediator.get === "function"
+                    ? Mediator.get(shaderType)
                     : null);
             if (!Shader || typeof Shader.controlCouplings !== "function") {
                 return [];
@@ -912,7 +912,7 @@
                 this._previewSession = null;
             }
 
-            const Shader = $.FlexRenderer.ShaderMediator.getClass(shaderId);
+            const Shader = $.FlexRenderer.ShaderLayerRegistry.get(shaderId);
             if (!Shader) {
                 throw new Error(`Invalid shader: ${shaderId}. Not present.`);
             }
@@ -2105,8 +2105,8 @@
                 kind: "built-in",
                 type: "string",
                 usage: "Blend function used when the current use_mode applies blending.",
-                allowedValues: deepClone($.FlexRenderer.BLEND_MODE || []),
-                default: firstDefined(spec.required, spec.default, ($.FlexRenderer.BLEND_MODE || [])[0], null),
+                allowedValues: deepClone($.FlexRenderer.SUPPORTED_BLEND_MODES || []),
+                default: firstDefined(spec.required, spec.default, ($.FlexRenderer.SUPPORTED_BLEND_MODES || [])[0], null),
                 required: firstDefined(spec.required, null)
             };
         },
@@ -2866,7 +2866,7 @@
                 return;
             }
 
-            const Shader = $.FlexRenderer.ShaderMediator.getClass(this.setup.shader.type);
+            const Shader = $.FlexRenderer.ShaderLayerRegistry.get(this.setup.shader.type);
             if (!Shader) {
                 return;
             }
@@ -3257,7 +3257,7 @@
             this.__uicontrols = {};
 
             const types = $.FlexRenderer.UIControls.types();
-            const ShaderClass = $.FlexRenderer.ShaderMediator.getClass("identity");
+            const ShaderClass = $.FlexRenderer.ShaderLayerRegistry.get("identity");
 
             const fallbackLayer = new ShaderClass("id", {
                 shaderConfig: {

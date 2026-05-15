@@ -14,7 +14,7 @@
  * the value itself is encoded in opacity (close to 1 if too low or too high), user can define two colors, for low and high values respectively
  */
 
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static type() {
         return "bipolar-heatmap";

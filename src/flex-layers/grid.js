@@ -17,7 +17,7 @@
  * configured size by snapping cellX/cellY to powers of two — merge when the
  * cell would drop below ½ original; subdivide when it would exceed 2×.
  */
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static type() {
         return "grid";

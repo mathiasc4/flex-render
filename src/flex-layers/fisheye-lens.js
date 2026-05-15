@@ -316,6 +316,6 @@ float ${this.uid}_ring(
         }
     }
 
-    $.FlexRenderer.ShaderMediator.registerLayer(FisheyeLens);
+    $.FlexRenderer.ShaderLayerRegistry.register(FisheyeLens);
 
 })(OpenSeadragon);

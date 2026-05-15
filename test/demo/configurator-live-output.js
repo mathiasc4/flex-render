@@ -1,6 +1,6 @@
 (function() {
     const ShaderConfigurator = OpenSeadragon.FlexRenderer.ShaderConfigurator;
-    const ShaderMediator = OpenSeadragon.FlexRenderer.ShaderMediator;
+    const ShaderMediator = OpenSeadragon.FlexRenderer.ShaderLayerRegistry;
     const demoUniqueId = "configurator_live_output_demo";
     const sourceImagePath = "../data/rainbow.png";
     const defaultShaderId = "identity";
@@ -22,7 +22,7 @@
 
     function renderShaderOptions() {
         const select = document.getElementById("shader-selector");
-        const shaders = ShaderMediator.availableShaders()
+        const shaders = ShaderMediator.availableShaderLayers()
             .map(Shader => ({
                 id: Shader.type(),
                 name: typeof Shader.name === "function" ? Shader.name() : Shader.type()
@@ -263,7 +263,7 @@
         const select = document.getElementById("shader-selector");
         activeShaderId = select.value || defaultShaderId;
         updateShaderStatus(`Loading shader: ${activeShaderId}`);
-        const Shader = ShaderMediator.getClass(activeShaderId);
+        const Shader = ShaderMediator.get(activeShaderId);
 
         if (previousShaderId !== activeShaderId) {
             ShaderConfigurator.setup.shader.params = {};

@@ -412,7 +412,7 @@
         /**
          * Draws the viewer with the given configuration.
          * @param {Array<OpenSeadragon.TiledImage>} tiledImages
-         * @param {Object.<string, ShaderConfig>} [configuration]
+         * @param {Object.<string, ShaderLayerConfig>} [configuration]
          * @param {object|OpenSeadragon.FlexDrawer} [view] draw desired viewport (full pass) or re-use last frame
          *    - The viewport to draw, see {@link OpenSeadragon.FlexDrawer#draw}
          *    - Or, the reference to the drawer to draw the same viewport as the previous one. By default, the
