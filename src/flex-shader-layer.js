@@ -339,12 +339,33 @@
         }
 
         /**
+         * Instance-level source definition hook.
+         * Override when source requirements depend on current config/state.
+         *
+         * @returns {channelSettings[]}
+         */
+        getSourceDefinitions() {
+            return this.constructor.sources();
+        }
+
+        /**
          * Instance-level control definition hook.
          * Override when the available controls depend on current config/state.
+         *
          * @returns {object}
          */
         getControlDefinitions() {
             return $.extend(true, {}, this.constructor.defaultControls);
+        }
+
+        /**
+         * Return caller-provided parameters for one expanded control.
+         *
+         * @param {string} controlName - Expanded control name.
+         * @returns {*}
+         */
+        getControlParams(controlName) {
+            return this._params[controlName];
         }
 
         /**
@@ -422,7 +443,14 @@
                     continue;
                 }
 
-                const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this._params[controlName]);
+                const control = $.FlexRenderer.UIControls.build(
+                    this,
+                    controlName,
+                    controlConfig,
+                    this.id + '_' + controlName,
+                    this.getControlParams(controlName)
+                );
+
                 // enables iterating over the owned controls
                 this._controls[controlName] = control;
                 // simplify usage of controls (e.g. this.opacity instead of this._controls.opacity)
@@ -602,14 +630,15 @@
 
             // regex to compare with value used with use_channel, to check its correctness
             const channelPattern = new RegExp('[rgba]{1,4}');
+            const controlDefinitions = this.getControlDefinitions();
             this.__channels = [];
             this.__baseChannels = [];
 
             const parseChannel = (def, sourceDef, index) => {
                 const controlName = `use_channel${index}`;
-                const predefined = this.constructor.defaultControls[controlName];
+                const predefined = controlDefinitions[controlName];
                 const baseName = `use_channel_base${index}`;
-                const predefinedBase = this.constructor.defaultControls[baseName];
+                const predefinedBase = controlDefinitions[baseName];
 
                 let base = 0;
                 let channel;
@@ -676,7 +705,7 @@
                 this.__baseChannels[index] = base;
             };
 
-            const sources = this.constructor.sources();
+            const sources = this.getSourceDefinitions();
             for (let i = 0; i < sources.length; i++) {
                 parseChannel("r", sources[i], i);
             }
@@ -739,6 +768,78 @@
 
             const chanPattern = this.__channels[sourceIndex] || "r";
             const glslExpr = this._buildChannelSampleExpr(sourceIndex, textureCoords, baseChannel, chanPattern);
+
+            return raw ? glslExpr : this.filter(glslExpr);
+        }
+
+        /**
+         * Sample one logical channel from one source slot by numeric index.
+         *
+         * This bypasses legacy use_channel/use_channel_base swizzle handling and samples
+         * the flattened logical channel index directly. It is intended for modular graph
+         * source-sampling nodes and custom ShaderLayers that address arbitrary-channel
+         * sources numerically.
+         *
+         * @param {string} textureCoords - GLSL vec2 expression used as texture coordinates.
+         * @param {number|string} [sourceIndex=0] - Source slot index or GLSL int expression.
+         * @param {number|string} [channelIndex=0] - Flattened channel index or GLSL int expression.
+         * @param {object|boolean} [options={}] - Options object, or boolean raw flag.
+         * @param {boolean} [options.raw=false] - When true, do not apply layer filters.
+         * @returns {string} GLSL expression returning float.
+         * @throws {Error} Thrown when a static index is invalid.
+         */
+        sampleSourceChannel(textureCoords, sourceIndex = 0, channelIndex = 0, options = {}) {
+            const raw = typeof options === "boolean" ? options : !!(options && options.raw);
+
+            const indexExpr = (value, label) => {
+                if (typeof value === "string") {
+                    return value;
+                }
+
+                const index = Number.parseInt(value, 10);
+                if (!Number.isInteger(index) || index < 0) {
+                    throw new Error(`${this.constructor.name}::sampleSourceChannel: ${label} must be a non-negative integer or GLSL expression.`);
+                }
+
+                return `${index}`;
+            };
+
+            const sourceExpr = indexExpr(sourceIndex, "sourceIndex");
+            const channelExpr = indexExpr(channelIndex, "channelIndex");
+            const glslExpr = `osd_channel(${sourceExpr}, ${channelExpr}, ${textureCoords})`;
+
+            return raw ? glslExpr : this.filter(glslExpr);
+        }
+
+        /**
+         * Sample one to four logical channels from one source slot by numeric indexes.
+         *
+         * @param {string} textureCoords - GLSL vec2 expression used as texture coordinates.
+         * @param {number|string} [sourceIndex=0] - Source slot index or GLSL int expression.
+         * @param {Array<number|string>} [channelIndexes=[0]] - Flattened channel indexes.
+         * @param {object|boolean} [options={}] - Options object, or boolean raw flag.
+         * @param {boolean} [options.raw=false] - When true, do not apply layer filters.
+         * @returns {string} GLSL expression returning float, vec2, vec3, or vec4.
+         * @throws {Error} Thrown when channelIndexes has an unsupported shape.
+         */
+        sampleSourceChannels(textureCoords, sourceIndex = 0, channelIndexes = [0], options = {}) {
+            const raw = typeof options === "boolean" ? options : !!(options && options.raw);
+            const indexes = Array.isArray(channelIndexes) && channelIndexes.length ? channelIndexes : [0];
+
+            if (indexes.length > 4) {
+                throw new Error(`${this.constructor.name}::sampleSourceChannels: at most four channels can be sampled into one GLSL value.`);
+            }
+
+            const samples = indexes.map(channelIndex =>
+                this.sampleSourceChannel(textureCoords, sourceIndex, channelIndex, { raw: true })
+            );
+
+            let glslExpr;
+            if (samples.length === 1) {
+                glslExpr = samples[0];
+            } else {
+                glslExpr = `vec${samples.length}(${samples.join(", ")})`;
+            }
 
             return raw ? glslExpr : this.filter(glslExpr);
         }

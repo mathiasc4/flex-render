@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Configurator Tests</title>
+
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/ajv/8.17.1/ajv7.min.js"></script>
+    <script type="text/javascript">
+        (function() {
+            function loadScript(src) {
+                return new Promise((resolve, reject) => {
+                    const script = document.createElement("script");
+                    script.src = src;
+                    script.async = false;
+                    script.onload = () => resolve(src);
+                    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+                    document.head.appendChild(script);
+                });
+            }
+
+            async function loadFirst(candidates) {
+                for (const src of candidates) {
+                    try {
+                        await loadScript(src);
+                        return src;
+                    } catch (_) {
+                        // Try next candidate.
+                    }
+                }
+                throw new Error(`Unable to load any candidate: ${candidates.join(", ")}`);
+            }
+
+            window.__configuratorDocsSchemaTestsBoot = (async() => {
+                await loadFirst([
+                    "../../openseadragon/openseadragon.js",
+                    "/openseadragon/openseadragon.js",
+                    "../openseadragon/openseadragon.js"
+                ]);
+
+                await loadFirst([
+                    "../../build/openseadragon/flex-renderer.js",
+                    "../../build/openseadragon/flex-renderer.min.js",
+                    "/build/openseadragon/flex-renderer.js",
+                    "/build/openseadragon/flex-renderer.min.js"
+                ]);
+
+                await loadFirst([
+                    "./configurator-tests.js",
+                    "/test/demo/configurator-tests.js",
+                    "/demo/configurator-tests.js"
+                ]);
+            })().catch(error => {
+                window.__configuratorDocsSchemaTestsBootError = error;
+                console.error(error);
+
+                window.addEventListener("DOMContentLoaded", () => {
+                    const status = document.getElementById("run-status");
+                    const output = document.getElementById("json-output");
+
+                    if (status) {
+                        status.textContent = "Boot failed";
+                        status.className = "status status--fail";
+                    }
+                    if (output) {
+                        output.textContent = String(error && error.message ? error.message : error);
+                    }
+                });
+            });
+        })();
+    </script>
+
+    <style>
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .content {
+            max-width: 1280px;
+            min-height: 100vh;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        .demo-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+            gap: 20px;
+            align-items: stretch;
+            flex: 0 0 auto;
+            margin-bottom: 12px;
+        }
+
+        .demo-main {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .viewer-title {
+            margin: 0 0 8px 0;
+        }
+
+        .configuration-panels {
+            display: flex;
+            align-items: stretch;
+            gap: 12px;
+            margin-top: 12px;
+            flex: 0 0 auto;
+        }
+
+        .shader-controls-panel,
+        .image-source-index-panel,
+        .shader-config-panel {
+            margin: 0;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        .shader-controls-panel {
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .image-source-index-panel {
+            flex: 0 0 280px;
+            min-height: 0;
+        }
+
+        .shader-config-panel {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .image-source-index-panel h3,
+        .shader-config-panel h3,
+        .shader-controls-panel h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .shader-config-help {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .stats {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin: 0;
+        }
+
+        .stat {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+            margin: 0;
+            padding: 6px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+
+        .stat-label {
+            min-width: 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .stat-value {
+            font-family: monospace;
+            color: #111;
+            font-size: 13px;
+        }
+
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        button {
+            font-size: 12px;
+        }
+
+        code {
+            font-family: monospace;
+            color: #111;
+            background: #ffffff;
+            border: 1px solid #d1d5db;
+            padding: 1px 4px;
+        }
+
+        .status {
+            display: inline-block;
+            width: fit-content;
+            padding: 2px 6px;
+            border-radius: 999px;
+            border: 1px solid #9ca3af;
+            background: #ffffff;
+            color: #374151;
+            font-family: monospace;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .status.pass,
+        .status.status--pass {
+            color: #166534;
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .status.fail,
+        .status.status--fail {
+            color: #b91c1c;
+            border-color: #fecaca;
+            background: #fff1f2;
+        }
+
+        .status.skip,
+        .status.status--skip {
+            color: #7c2d12;
+            border-color: #fed7aa;
+            background: #fff7ed;
+        }
+
+        .suite-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 12px 0 6px 0;
+        }
+
+        .suite-title h2 {
+            margin: 0;
+            font-size: 15px;
+        }
+
+        .table-wrap {
+            margin: 0 0 10px 0;
+            overflow: auto;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        th,
+        td {
+            border: 1px solid #d1d5db;
+            padding: 5px 6px;
+            vertical-align: top;
+            text-align: left;
+        }
+
+        th {
+            background: #eeeeee;
+            color: #111;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        td {
+            background: #ffffff;
+        }
+
+        .details {
+            color: #666;
+            min-width: 140px;
+            max-width: 360px;
+        }
+
+        .details-empty {
+            color: #aaa;
+        }
+
+        .details-toggle {
+            max-width: 360px;
+        }
+
+        .details-toggle summary {
+            cursor: pointer;
+            color: #374151;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .details-toggle summary:hover {
+            text-decoration: underline;
+        }
+
+        .details-body {
+            margin-top: 4px;
+            padding: 4px 6px;
+            max-height: 160px;
+            overflow: auto;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            color: #666;
+            font-family: monospace;
+            font-size: 11px;
+            line-height: 1.3;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        pre {
+            margin: 0;
+            padding: 6px 8px;
+            min-height: 420px;
+            max-height: calc(100vh - 240px);
+            overflow: auto;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            color: #111;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.35;
+            box-sizing: border-box;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .json-report-panel {
+            margin-top: 12px;
+        }
+
+        @media (max-width: 1000px) {
+            .demo-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .configuration-panels {
+                flex-direction: column;
+            }
+
+            .image-source-index-panel {
+                flex-basis: auto;
+            }
+
+            .shader-controls-panel {
+                width: auto;
+                max-height: none;
+            }
+
+            pre {
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="content">
+    <h2>Configurator Tests</h2>
+
+    <h3 id="title-w" class="viewer-title">
+        Tests for generated ShaderConfigurator documentation and schema output
+    </h3>
+
+    <div class="demo-layout">
+        <main class="demo-main">
+            <div class="configuration-panels">
+                <div class="image-source-index-panel">
+                    <h3>Summary</h3>
+
+                    <p id="run-description" class="shader-config-help">
+                        Tests have not run yet.
+                    </p>
+
+                    <div class="stats" style="margin-top: 8px;">
+                        <div class="stat">
+                            <span class="stat-label">Run status</span>
+                            <span class="status" id="run-status">Idle</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Total</span>
+                            <span class="stat-value" id="total-count">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Passed</span>
+                            <span class="stat-value" id="pass-count">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Failed</span>
+                            <span class="stat-value" id="fail-count">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Skipped</span>
+                            <span class="stat-value" id="skip-count">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Docs version</span>
+                            <span class="stat-value" id="docs-version">-</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Schema version</span>
+                            <span class="stat-value" id="schema-version">-</span>
+                        </div>
+                    </div>
+
+                    <div class="actions">
+                        <button id="run-tests-btn" type="button">Run tests</button>
+                        <button id="copy-report-btn" type="button">Copy JSON report</button>
+                    </div>
+                </div>
+
+                <div class="shader-config-panel">
+                    <div class="suite-title">
+                        <h2>Results</h2>
+                        <span class="status" id="last-run-at">Not run</span>
+                    </div>
+
+                    <div id="results-root"></div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="shader-controls-panel">
+            <h3>JSON report</h3>
+            <pre id="json-output">Click Run tests.</pre>
+        </aside>
+    </div>
+</div>
+</body>
+</html>

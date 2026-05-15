@@ -656,7 +656,9 @@
         backgroundColor = "#00000000",
         debug = false,
         interactive = false,
-        canvasOptions = { stencil: true }
+        canvasOptions = { stencil: true },
+        sharedContextKey = null,
+        sharedContextBusyPolicy = undefined
     } = {}) {
         const runtime = {};
         const mutex = createLock();
@@ -671,8 +673,11 @@
             debug: !!debug,
             interactive: !!interactive,
             backgroundColor,
-            canvasOptions
+            canvasOptions,
+            sharedContextKey,
+            sharedContextBusyPolicy
         });
+
         runtime.renderer.setDataBlendingEnabled(true);
         runtime.renderer.setDimensions(0, 0, width, height, 1, 1);
         runtime.canvas = runtime.renderer.getPresentationCanvas();

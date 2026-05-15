@@ -593,6 +593,13 @@
 
             // Should be last call of the constructor to make sure everything is initialized
             this.backend.init();
+
+            /**
+             * Original construction options.
+             *
+             * @type {object}
+             */
+            this.options = options || {};
         }
 
         /**
@@ -778,6 +785,32 @@
          */
         isSharedContext() {
             return !!this._sharedContextEntry;
+        }
+
+        /**
+         * Return the shared WebGL context key used by this renderer.
+         *
+         * Returns null for private-context renderers.
+         *
+         * @returns {?string} Shared context key, or null.
+         */
+        getSharedContextKey() {
+            if (!this._sharedContextEntry) {
+                return null;
+            }
+
+            return this.options && this.options.sharedContextKey ?
+                this.options.sharedContextKey :
+                null;
+        }
+
+        /**
+         * Return the configured shared-context busy policy.
+         *
+         * @returns {*|undefined} Busy policy value, if configured.
+         */
+        getSharedContextBusyPolicy() {
+            return this.options ? this.options.sharedContextBusyPolicy : undefined;
         }
 
         /**
@@ -1578,6 +1611,364 @@
         }
 
         /**
+         * Return whether a module graph output can be prepared for preview rendering.
+         *
+         * This checks the derived output subgraph, output type, and source-backed
+         * requirement. It does not inspect OpenSeadragon tile readiness; adapters or
+         * preview providers should still check that active source data can be rendered.
+         *
+         * @param {object} options - Preview target options.
+         * @param {string} [options.shaderLayerId] - Live modular ShaderLayer id.
+         * @param {ShaderLayer} [options.shaderLayer] - Live modular ShaderLayer instance.
+         * @param {ShaderLayerConfig} [options.shaderConfig] - Modular ShaderLayer config to clone.
+         * @param {object} options.graphConfig - Draft module graph config.
+         * @param {string} options.nodeId - Target module node id.
+         * @param {string} options.output - Target module output name.
+         * @param {string} [options.outputType] - Target module output value type.
+         * @param {ShaderLayer|object} [options.owner] - Owner used for graph analysis.
+         * @returns {boolean} True when the preview config can be created.
+         */
+        canPreviewModuleGraphOutput(options = {}) {
+            return this.createModuleGraphOutputPreviewConfig(options).ok === true;
+        }
+
+        /**
+         * Create a temporary modular ShaderLayer configuration for one module output preview.
+         *
+         * The returned configuration is intended for an isolated preview render path. It
+         * does not mutate the live ShaderLayer, live renderer shader map, or draft graph.
+         *
+         * @param {object} options - Preview target options.
+         * @param {string} [options.shaderLayerId] - Live modular ShaderLayer id.
+         * @param {ShaderLayer} [options.shaderLayer] - Live modular ShaderLayer instance.
+         * @param {ShaderLayerConfig} [options.shaderConfig] - Modular ShaderLayer config to clone.
+         * @param {object} options.graphConfig - Draft module graph config.
+         * @param {string} options.nodeId - Target module node id.
+         * @param {string} options.output - Target module output name.
+         * @param {string} [options.outputType] - Target module output value type.
+         * @param {ShaderLayer|object} [options.owner] - Owner used for graph analysis.
+         * @param {string} [options.previewShaderId] - Optional shader id for the generated preview layer.
+         * @returns {object} Structured preview config result.
+         */
+        createModuleGraphOutputPreviewConfig(options = {}) {
+            const shaderLayer = options.shaderLayer ||
+                (options.shaderLayerId ? this.getShaderLayer(options.shaderLayerId) : null);
+            const shaderConfig = options.shaderConfig ||
+                (shaderLayer && typeof shaderLayer.getConfig === "function" ? shaderLayer.getConfig() : null);
+
+            if (!shaderConfig || shaderConfig.type !== "modular") {
+                return {
+                    ok: false,
+                    reason: "not-modular-shader-layer",
+                    message: "Module output previews require a modular ShaderLayer config.",
+                    diagnostics: []
+                };
+            }
+
+            if (!options.graphConfig || typeof options.graphConfig !== "object" || Array.isArray(options.graphConfig)) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-graph",
+                    message: "Module output preview requires a graphConfig object.",
+                    diagnostics: []
+                };
+            }
+
+            const nodeId = String(options.nodeId || "");
+            const output = String(options.output || "");
+
+            if (!nodeId || !output) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-target",
+                    message: "Module output preview requires nodeId and output.",
+                    diagnostics: []
+                };
+            }
+
+            if (!$.FlexRenderer.idPattern.test(nodeId) || !$.FlexRenderer.idPattern.test(output)) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-target",
+                    message: `Preview target '${nodeId}.${output}' is not GLSL-safe.`,
+                    diagnostics: []
+                };
+            }
+
+            const previewGraphConfig = $.extend(true, {}, options.graphConfig);
+            previewGraphConfig.output = `${nodeId}.${output}`;
+
+            const Analyzer = $.FlexRenderer.ShaderModuleGraphAnalyzer;
+
+            if (!Analyzer || typeof Analyzer.analyze !== "function") {
+                return {
+                    ok: false,
+                    reason: "graph-analyzer-unavailable",
+                    message: "ShaderModuleGraphAnalyzer.analyze(...) is not available.",
+                    diagnostics: []
+                };
+            }
+
+            const owner = options.owner || shaderLayer || {
+                id: "module_graph_preview",
+                uid: "module_graph_preview",
+                constructor: {
+                    type: () => "modular"
+                }
+            };
+
+            let analysis;
+
+            try {
+                analysis = Analyzer.analyze(owner, previewGraphConfig);
+            } catch (error) {
+                return {
+                    ok: false,
+                    reason: "graph-analysis-threw",
+                    message: error && error.message ? error.message : String(error),
+                    diagnostics: []
+                };
+            }
+
+            const diagnostics = Array.isArray(analysis && analysis.diagnostics) ?
+                analysis.diagnostics.slice() :
+                [];
+
+            if (!analysis || analysis.ok !== true || diagnostics.some(diagnostic => diagnostic && diagnostic.severity === "error")) {
+                return {
+                    ok: false,
+                    reason: "invalid-preview-subgraph",
+                    message: "The selected module output does not produce a valid preview subgraph.",
+                    diagnostics
+                };
+            }
+
+            const nodeAnalysis = analysis.partial &&
+                analysis.partial.nodeAnalyses &&
+                analysis.partial.nodeAnalyses[nodeId];
+            const outputDefinition = nodeAnalysis &&
+                nodeAnalysis.outputDefinitions &&
+                nodeAnalysis.outputDefinitions[output];
+            const outputType = options.outputType || (outputDefinition && outputDefinition.type) || "";
+
+            if (!["bool", "int", "uint", "float", "vec2", "vec3", "vec4"].includes(outputType)) {
+                return {
+                    ok: false,
+                    reason: "unsupported-preview-output-type",
+                    message: `Module output '${nodeId}.${output}' has unsupported preview type '${outputType || "unknown"}'.`,
+                    diagnostics
+                };
+            }
+
+            const sourceDefinitions = analysis.partial && Array.isArray(analysis.partial.sourceDefinitions) ?
+                analysis.partial.sourceDefinitions :
+                [];
+            const hasSourceRequirement = sourceDefinitions.some(source => {
+                return source &&
+                    (
+                        Number(source.requiredChannelCount) > 0 ||
+                        (Array.isArray(source.sampledChannels) && source.sampledChannels.length > 0)
+                    );
+            });
+
+            if (!hasSourceRequirement) {
+                return {
+                    ok: false,
+                    reason: "preview-output-not-source-backed",
+                    message: `Module output '${nodeId}.${output}' is not backed by a source-sampling subgraph.`,
+                    diagnostics
+                };
+            }
+
+            const previewShaderId = $.FlexRenderer.sanitizeKey(
+                options.previewShaderId ||
+                `${shaderLayer && shaderLayer.id ? shaderLayer.id : "modular"}_preview`
+            );
+            const previewShaderConfig = $.extend(true, {}, shaderConfig);
+
+            previewShaderConfig.name = `${shaderConfig.name || previewShaderId} preview`;
+            previewShaderConfig.type = "modular";
+            previewShaderConfig.visible = 1;
+            previewShaderConfig.params = $.extend(true, {}, previewShaderConfig.params || {});
+            previewShaderConfig.params.graph = previewGraphConfig;
+            previewShaderConfig.params.__previewOutputType = outputType;
+            previewShaderConfig.cache = {};
+
+            return {
+                ok: true,
+                configuration: {
+                    [previewShaderId]: previewShaderConfig
+                },
+                shaderOrder: [previewShaderId],
+                graphConfig: previewGraphConfig,
+                analysis,
+                diagnostics,
+                nodeId,
+                output,
+                outputType,
+                shaderId: previewShaderId
+            };
+        }
+
+        /**
+         * Render a module graph output preview through an isolated preview path.
+         *
+         * The method derives the preview ShaderLayer config, computes a bounded preview
+         * size, invokes the supplied isolated draw function, and returns the structured
+         * preview result consumed by ShaderModuleGraphEditor.
+         *
+         * The draw function is intentionally injected because FlexRenderer does not own
+         * OpenSeadragon tile discovery. FlexDrawer or another adapter remains
+         * responsible for adapting live source data into the isolated render path.
+         *
+         * @param {object} options - Preview render options.
+         * @param {Function} options.drawPreview - Function that renders the derived preview configuration.
+         * @param {object} options.graphConfig - Draft module graph config.
+         * @param {string} options.nodeId - Target module node id.
+         * @param {string} options.output - Target module output name.
+         * @param {string} [options.outputType] - Target module output type.
+         * @param {string} [options.shaderLayerId] - Live modular ShaderLayer id.
+         * @param {ShaderLayer} [options.shaderLayer] - Live modular ShaderLayer instance.
+         * @param {ShaderLayerConfig} [options.shaderConfig] - Modular ShaderLayer config to clone.
+         * @param {ShaderLayer|object} [options.owner] - Owner used for graph analysis.
+         * @param {number} [options.maxWidth=256] - Maximum preview width.
+         * @param {number} [options.maxHeight=160] - Maximum preview height.
+         * @returns {Promise<object>} Structured preview result.
+         */
+        async renderModuleGraphOutputPreview(options = {}) {
+            const configResult = this.createModuleGraphOutputPreviewConfig(options);
+
+            if (!configResult.ok) {
+                return configResult;
+            }
+
+            if (typeof options.drawPreview !== "function") {
+                return {
+                    ok: false,
+                    reason: "preview-draw-function-unavailable",
+                    message: "Module output preview requires a drawPreview function.",
+                    diagnostics: configResult.diagnostics || []
+                };
+            }
+
+            const maxWidth = Math.max(1, Math.round(Number(options.maxWidth) || 256));
+            const maxHeight = Math.max(1, Math.round(Number(options.maxHeight) || 160));
+            const dimensions = typeof this.getRenderDimensions === "function" ?
+                this.getRenderDimensions() :
+                null;
+            const sourceWidth = Math.max(1, Number(options.sourceWidth || (dimensions && dimensions.width) || maxWidth));
+            const sourceHeight = Math.max(1, Number(options.sourceHeight || (dimensions && dimensions.height) || maxHeight));
+            const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+            const width = Math.max(1, Math.round(sourceWidth * scale));
+            const height = Math.max(1, Math.round(sourceHeight * scale));
+
+            try {
+                const rendered = await options.drawPreview({
+                    configuration: configResult.configuration,
+                    shaderOrder: configResult.shaderOrder,
+                    width,
+                    height,
+                    size: {
+                        x: width,
+                        y: height,
+                        width,
+                        height
+                    },
+                    nodeId: configResult.nodeId,
+                    output: configResult.output,
+                    outputType: configResult.outputType,
+                    analysis: configResult.analysis
+                });
+
+                let canvas = null;
+
+                if (rendered instanceof HTMLCanvasElement) {
+                    canvas = rendered;
+                } else if (rendered && rendered.canvas instanceof HTMLCanvasElement) {
+                    canvas = rendered.canvas;
+                } else if (rendered && rendered.getContext && rendered.nodeName === "CANVAS") {
+                    canvas = rendered;
+                }
+
+                if (!canvas) {
+                    return {
+                        ok: false,
+                        reason: "preview-render-returned-no-canvas",
+                        message: "Module output preview rendering did not return a canvas.",
+                        diagnostics: configResult.diagnostics || []
+                    };
+                }
+
+                return {
+                    ok: true,
+                    canvas,
+                    width: canvas.width || width,
+                    height: canvas.height || height,
+                    nodeId: configResult.nodeId,
+                    output: configResult.output,
+                    outputType: configResult.outputType
+                };
+            } catch (error) {
+                return {
+                    ok: false,
+                    reason: "preview-render-failed",
+                    message: error && error.message ? error.message : String(error),
+                    diagnostics: configResult.diagnostics || []
+                };
+            }
+        }
+
+        /**
+         * Render a module graph output preview using raw standalone renderer inputs.
+         *
+         * This convenience method is useful for tests and non-OpenSeadragon callers.
+         * OpenSeadragon demos should usually provide drawPreview through FlexDrawer or
+         * viewer-specific extraction so tile/source state stays adapter-owned.
+         *
+         * @param {object} options - Preview render options.
+         * @param {*} [options.inputs] - Standalone renderer inputs.
+         * @param {*} [options.sources] - Alias for inputs.
+         * @returns {Promise<object>} Structured preview result.
+         */
+        async renderModuleGraphOutputPreviewWithInputs(options = {}) {
+            const inputs = options.sources !== undefined ? options.sources : options.inputs;
+
+            return this.renderModuleGraphOutputPreview($.extend(true, {}, options, {
+                drawPreview: async (request) => {
+                    const runtime = $.makeStandaloneFlexRenderer({
+                        uniqueId: `${this.uniqueId || "renderer"}_module_preview`,
+                        width: request.width,
+                        height: request.height,
+                        webGLPreferredVersion: this.webglVersion || "2.0",
+                        backgroundColor: "#00000000",
+                        debug: false,
+                        interactive: false,
+                        canvasOptions: {
+                            stencil: true
+                        },
+                        sharedContextKey: this.isSharedContext() ? this.getSharedContextKey() : null,
+                        sharedContextBusyPolicy: this.isSharedContext() ? this.getSharedContextBusyPolicy() : undefined
+                    });
+
+                    try {
+                        const context = await runtime.drawWithConfiguration(
+                            inputs,
+                            request.configuration,
+                            undefined,
+                            request.size
+                        );
+
+                        return context && context.canvas ? context.canvas : runtime.canvas;
+                    } finally {
+                        if (runtime && typeof runtime.destroy === "function") {
+                            runtime.destroy();
+                        }
+                    }
+                }
+            }));
+        }
+
+        /**
          * Change a layer's shader type and trigger a rebuild.
          * Use this rather than mutating shaderConfig.type directly: it scrubs orphan
          * params from the previous type before the rebuild loop re-instantiates the shader.
@@ -2355,7 +2746,6 @@
                     name: 'Self test',
                     type: 'identity',
                     visible: 1,
-                    fixed: false,
                     tiledImages: [0],
                     params: {},
                     cache: {}
