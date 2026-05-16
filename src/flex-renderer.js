@@ -280,6 +280,51 @@
      */
 
     /**
+     * Drawer-provided profiling spans for one prepared frame.
+     *
+     * The drawer is responsible only for OpenSeadragon adaptation timing. The
+     * renderer may copy this object into the profiling history, but does not
+     * depend on it for rendering.
+     *
+     * @typedef {object} DrawerProfilingFrame
+     * @property {number} [totalMs=0] - Total drawer-side frame assembly time.
+     * @property {number} [resolveViewMs=0] - Time spent resolving the render view.
+     * @property {number} [collectFirstPassMs=0] - Time spent collecting first-pass packages.
+     * @property {number} [collectSecondPassMs=0] - Time spent collecting second-pass packages.
+     * @property {number} [tileCount=0] - Number of source tiles observed by the drawer.
+     * @property {number} [sourceCount=0] - Number of source packages observed by the drawer.
+     */
+
+    /**
+     * Tile-source-provided profiling span.
+     *
+     * This is diagnostic metadata only. Tile-source spans must not affect tile
+     * readiness, cache identity, validation, or rendering behavior.
+     *
+     * @typedef {object} TileSourceProfilingSpan
+     * @property {string} [sourceType] - Source type, for example `"geojson"`.
+     * @property {string} [tileKey] - Stable source-local tile key.
+     * @property {number} [totalMs=0] - Total source preparation time.
+     * @property {number} [workerRoundTripMs=0] - Main-thread worker round-trip time.
+     * @property {number} [workerProcessingMs=0] - Worker-side processing time.
+     * @property {number} [parseMs=0] - Parsing or source normalization time.
+     * @property {number} [filterMs=0] - Candidate filtering time.
+     * @property {number} [clipMs=0] - Geometry clipping time.
+     * @property {number} [meshMs=0] - Mesh generation time.
+     * @property {number} [featureCount=0] - Number of features/geometries processed.
+     * @property {number} [vertexCount=0] - Number of output vertices.
+     * @property {number} [indexCount=0] - Number of output indices.
+     */
+
+    /**
+     * Optional profiling metadata attached to a prepared render frame.
+     *
+     * @typedef {object} RenderFrameProfiling
+     * @property {DrawerProfilingFrame} [drawer] - Drawer-side profiling spans.
+     * @property {TileSourceProfilingSpan[]} [tileSources] - Tile-source profiling spans observed while building this frame.
+     */
+
+    /**
      * Prepared two-pass renderer frame.
      *
      * This object is the main public boundary between `FlexDrawer` and
@@ -293,6 +338,7 @@
      * @typedef {object} RenderFrame
      * @property {FPRenderPackage[]} firstPass - First-pass render packages.
      * @property {SPRenderPackage[]} secondPass - Second-pass render packages.
+     * @property {RenderFrameProfiling} [profiling] - Optional profiling metadata supplied by adapters/sources.
      */
 
     /**
@@ -321,6 +367,62 @@
      */
 
     /**
+     * Renderer profiling configuration.
+     *
+     * @typedef {object} ProfilingOptions
+     * @property {boolean} [enabled=false] - Whether renderer profiling is enabled.
+     * @property {number} [maxFrames=120] - Maximum number of recent frame profiles retained.
+     * @property {boolean} [includeTileSources=true] - Whether tile-source profiling spans are retained.
+     */
+
+    /**
+     * Renderer-owned profiling state.
+     *
+     * @typedef {object} ProfilingState
+     * @property {boolean} enabled - Whether profiling is enabled.
+     * @property {"cpu"} timingMode - Profiling timing mode.
+     * @property {number} maxFrames - Maximum number of recent frame profiles retained.
+     * @property {boolean} includeTileSources - Whether tile-source spans are retained.
+     * @property {number} nextFrameId - Next frame id.
+     * @property {ProfilingFrame[]} frames - Bounded recent frame history.
+     */
+
+    /**
+     * Shared-context profiling fields for one renderer attempt.
+     *
+     * @typedef {object} ProfilingSharedContextFrame
+     * @property {boolean} enabled - Whether the renderer uses a shared WebGL context.
+     * @property {?string} key - Shared context key, or null for private contexts.
+     * @property {boolean} busySkipped - Whether this attempt skipped because the shared context was busy.
+     * @property {boolean} lostSkipped - Whether this attempt skipped because the shared context was lost.
+     */
+
+    /**
+     * Renderer-owned profiling spans for one render attempt.
+     *
+     * @typedef {object} ProfilingRendererFrame
+     * @property {number} totalMs - Total renderer-side render time.
+     * @property {number} firstPassMs - First-pass render time.
+     * @property {number} secondPassMs - Second-pass render time.
+     * @property {number} finishMs - Time spent in the existing `gl.finish()` synchronization point.
+     * @property {ProfilingSharedContextFrame} sharedContext - Shared-context state for this attempt.
+     */
+
+    /**
+     * One recorded renderer profiling frame or skipped render attempt.
+     *
+     * @typedef {object} ProfilingFrame
+     * @property {number} frameId - Sequential profiling frame id.
+     * @property {number} timestamp - CPU timestamp in milliseconds.
+     * @property {boolean} skipped - Whether rendering was skipped.
+     * @property {?string} skipReason - Skip reason when skipped.
+     * @property {number} totalMs - Total measured render attempt duration.
+     * @property {DrawerProfilingFrame} drawer - Drawer-provided profiling spans, if present.
+     * @property {ProfilingRendererFrame} renderer - Renderer-owned profiling spans.
+     * @property {TileSourceProfilingSpan[]} tileSources - Tile-source profiling spans observed for this frame.
+     */
+
+    /**
      * @typedef {object} FlexRendererOptions
      *
      * @property {string} uniqueId
@@ -334,6 +436,8 @@
      * @property {boolean} debug                   debug mode on/off
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
+     *
+     * @property {boolean | ProfilingOptions} [profiling=false] renderer-owned CPU profiling configuration
      *
      * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
      *
@@ -385,6 +489,8 @@
             this._sharedContextBusyPolicy = options.sharedContextBusyPolicy === "throw" ? "throw" : "warn-skip";
             this._warningsEmitted = new Set();
             this._warningCounts = {};
+
+            this._profiling = this.constructor.createProfilingState(options.profiling);
 
             this._renderDiagnostics = options.renderDiagnostics !== false;
 
@@ -662,6 +768,76 @@
         }
 
         /**
+         * Return the current CPU timestamp used by renderer profiling.
+         *
+         * @returns {number} Timestamp in milliseconds.
+         */
+        static getProfilingTime() {
+            if (
+                typeof performance !== "undefined" &&
+                performance &&
+                typeof performance.now === "function"
+            ) {
+                return performance.now();
+            }
+
+            return Date.now();
+        }
+
+        /**
+         * Normalize renderer profiling options.
+         *
+         * @param {boolean|ProfilingOptions|undefined} profiling - Raw profiling option.
+         * @returns {ProfilingOptions} Normalized profiling options.
+         */
+        static normalizeProfilingOptions(profiling = false) {
+            const defaults = {
+                enabled: false,
+                maxFrames: 120,
+                includeTileSources: true
+            };
+
+            if (profiling === true) {
+                return {
+                    enabled: true,
+                    maxFrames: defaults.maxFrames,
+                    includeTileSources: defaults.includeTileSources
+                };
+            }
+
+            if (!profiling || typeof profiling !== "object") {
+                return defaults;
+            }
+
+            const maxFrames = Number(profiling.maxFrames);
+
+            return {
+                enabled: !!profiling.enabled,
+                maxFrames: Number.isFinite(maxFrames) ? Math.max(1, Math.floor(maxFrames)) : defaults.maxFrames,
+                includeTileSources: profiling.includeTileSources !== false
+            };
+        }
+
+        /**
+         * Create renderer-owned profiling state.
+         *
+         * @param {boolean|ProfilingOptions|undefined} profiling - Raw profiling option.
+         * @returns {ProfilingState} Profiling state.
+         */
+        static createProfilingState(profiling = false) {
+            const options = this.normalizeProfilingOptions(profiling);
+
+            return {
+                enabled: options.enabled,
+                timingMode: "cpu",
+                maxFrames: options.maxFrames,
+                includeTileSources: options.includeTileSources,
+                nextFrameId: 0,
+                frames: []
+            };
+        }
+
+        /**
          * Return JSON-safe diagnostic information for page-global shared WebGL contexts.
          *
          * This does not expose WebGL contexts, canvases, textures, framebuffers, backend
@@ -811,6 +987,171 @@
          */
         getSharedContextBusyPolicy() {
             return this.options ? this.options.sharedContextBusyPolicy : undefined;
+        }
+
+        /**
+         * Enable or disable renderer profiling.
+         *
+         * Passing an object uses the same shape as the constructor `profiling`
+         * option. Passing a boolean applies `options` and overrides its enabled
+         * state with the boolean argument.
+         *
+         * @param {boolean|ProfilingOptions} enabled - Enabled flag or profiling options.
+         * @param {ProfilingOptions} [options={}] - Profiling options used with a boolean enabled flag.
+         * @returns {ProfilingOptions} Active normalized profiling options.
+         */
+        setProfilingEnabled(enabled, options = {}) {
+            const profilingOptions = typeof enabled === "object" ?
+                this.constructor.normalizeProfilingOptions(enabled) :
+                this.constructor.normalizeProfilingOptions($.extend(true, {}, options, {
+                    enabled: !!enabled
+                }));
+
+            this._profiling.enabled = profilingOptions.enabled;
+            this._profiling.maxFrames = profilingOptions.maxFrames;
+            this._profiling.includeTileSources = profilingOptions.includeTileSources;
+
+            while (this._profiling.frames.length > this._profiling.maxFrames) {
+                this._profiling.frames.shift();
+            }
+
+            return {
+                enabled: this._profiling.enabled,
+                maxFrames: this._profiling.maxFrames,
+                includeTileSources: this._profiling.includeTileSources
+            };
+        }
+
+        /**
+         * Return whether renderer profiling is currently enabled.
+         *
+         * @returns {boolean} True when profiling is enabled.
+         */
+        isProfilingEnabled() {
+            return !!(this._profiling && this._profiling.enabled);
+        }
+
+        /**
+         * Clear recorded profiling history while preserving profiling options.
+         *
+         * @returns {void}
+         */
+        clearProfiling() {
+            if (!this._profiling) {
+                return;
+            }
+
+            this._profiling.nextFrameId = 0;
+            this._profiling.frames.length = 0;
+        }
+
+        /**
+         * Return a defensive JSON-compatible profiling snapshot.
+         *
+         * Totals and averages are computed on demand so normal render frames only
+         * pay the cost of recording the bounded frame entry while profiling is
+         * enabled.
+         *
+         * @returns {object} Profiling snapshot.
+         */
+        getProfilingSnapshot() {
+            const profiling = this._profiling || this.constructor.createProfilingState(false);
+            const frames = profiling.frames.map((frame) => $.extend(true, {}, frame));
+
+            const totals = {
+                totalMs: 0,
+                drawerMs: 0,
+                rendererMs: 0,
+                firstPassMs: 0,
+                secondPassMs: 0,
+                finishMs: 0,
+                tileSourceMs: 0
+            };
+
+            let renderedFrames = 0;
+            let skippedFrames = 0;
+
+            for (const frame of frames) {
+                totals.totalMs += frame.totalMs || 0;
+                totals.drawerMs += (frame.drawer && frame.drawer.totalMs) || 0;
+                totals.rendererMs += (frame.renderer && frame.renderer.totalMs) || 0;
+                totals.firstPassMs += (frame.renderer && frame.renderer.firstPassMs) || 0;
+                totals.secondPassMs += (frame.renderer && frame.renderer.secondPassMs) || 0;
+                totals.finishMs += (frame.renderer && frame.renderer.finishMs) || 0;
+
+                if (Array.isArray(frame.tileSources)) {
+                    for (const sourceProfile of frame.tileSources) {
+                        totals.tileSourceMs += (sourceProfile && sourceProfile.totalMs) || 0;
+                    }
+                }
+
+                if (frame.skipped) {
+                    skippedFrames++;
+                } else {
+                    renderedFrames++;
+                }
+            }
+
+            const renderedDivisor = renderedFrames || 1;
+            const allAttemptDivisor = frames.length || 1;
+            const sharedEntry = this._sharedContextEntry;
+
+            return {
+                enabled: profiling.enabled,
+                timingMode: profiling.timingMode,
+                maxFrames: profiling.maxFrames,
+                includeTileSources: profiling.includeTileSources,
+                frameCount: frames.length,
+                renderedFrameCount: renderedFrames,
+                skippedFrameCount: skippedFrames,
+                latestFrame: frames.length ? $.extend(true, {}, frames[frames.length - 1]) : null,
+                totals,
+                averages: {
+                    renderedFramesOnly: {
+                        totalMs: totals.totalMs / renderedDivisor,
+                        drawerMs: totals.drawerMs / renderedDivisor,
+                        rendererMs: totals.rendererMs / renderedDivisor,
+                        firstPassMs: totals.firstPassMs / renderedDivisor,
+                        secondPassMs: totals.secondPassMs / renderedDivisor,
+                        finishMs: totals.finishMs / renderedDivisor,
+                        tileSourceMs: totals.tileSourceMs / renderedDivisor
+                    },
+                    allAttempts: {
+                        totalMs: totals.totalMs / allAttemptDivisor,
+                        drawerMs: totals.drawerMs / allAttemptDivisor,
+                        rendererMs: totals.rendererMs / allAttemptDivisor,
+                        firstPassMs: totals.firstPassMs / allAttemptDivisor,
+                        secondPassMs: totals.secondPassMs / allAttemptDivisor,
+                        finishMs: totals.finishMs / allAttemptDivisor,
+                        tileSourceMs: totals.tileSourceMs / allAttemptDivisor
+                    }
+                },
+                counters: {
+                    sharedContextBusySkips: sharedEntry ? sharedEntry.busySkipCount : 0,
+                    sharedContextLostSkips: sharedEntry ? sharedEntry.contextLostSkipCount : 0,
+                    warningCounts: $.extend(true, {}, this._warningCounts)
+                },
+                frames
+            };
+        }
+
+        /**
+         * Store one profiling frame if profiling is enabled.
+         *
+         * @private
+         * @param {ProfilingFrame} frameProfile - Frame profile to record.
+         * @returns {void}
+         */
+        _recordProfilingFrame(frameProfile) {
+            if (!this.isProfilingEnabled()) {
+                return;
+            }
+
+            this._profiling.frames.push(frameProfile);
+
+            while (this._profiling.frames.length > this._profiling.maxFrames) {
+                this._profiling.frames.shift();
+            }
         }
 
         /**
@@ -1174,15 +1515,63 @@
             }
 
             const sharedEntry = this._sharedContextEntry;
+            const profilingEnabled = this.isProfilingEnabled();
+            const profilingStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
+            const frameProfiling = frame.profiling || {};
+            const frameProfile = profilingEnabled ? {
+                frameId: ++this._profiling.nextFrameId,
+                timestamp: profilingStart,
+                skipped: false,
+                skipReason: null,
+                totalMs: 0,
+                drawer: frameProfiling.drawer ? $.extend(true, {}, frameProfiling.drawer) : {},
+                renderer: {
+                    totalMs: 0,
+                    firstPassMs: 0,
+                    secondPassMs: 0,
+                    finishMs: 0,
+                    sharedContext: {
+                        enabled: !!sharedEntry,
+                        key: sharedEntry ? sharedEntry.key : null,
+                        busySkipped: false,
+                        lostSkipped: false
+                    }
+                },
+                tileSources: this._profiling.includeTileSources && Array.isArray(frameProfiling.tileSources) ?
+                    frameProfiling.tileSources.map((sourceProfile) => $.extend(true, {}, sourceProfile)) :
+                    []
+            } : null;
 
             if (!sharedEntry) {
+                const rendererStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
+
                 this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
                 this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
+                const firstPassStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
                 this.renderFirstPass(frame.firstPass);
+
+                if (profilingEnabled) {
+                    frameProfile.renderer.firstPassMs = this.constructor.getProfilingTime() - firstPassStart;
+                }
+
+                const secondPassStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
                 this.__finalPassResult = this.renderSecondPass(frame.secondPass, options.secondPassOptions);
 
+                if (profilingEnabled) {
+                    frameProfile.renderer.secondPassMs = this.constructor.getProfilingTime() - secondPassStart;
+                }
+
+                const finishStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
                 this.gl.finish();
+
+                if (profilingEnabled) {
+                    frameProfile.renderer.finishMs = this.constructor.getProfilingTime() - finishStart;
+                    frameProfile.renderer.totalMs = this.constructor.getProfilingTime() - rendererStart;
+                    frameProfile.totalMs = this.constructor.getProfilingTime() - profilingStart;
+                    this._recordProfilingFrame(frameProfile);
+                }
+
                 return;
             }
 
@@ -1200,6 +1589,15 @@
 
                 this.__firstPassResult = null;
                 this.__finalPassResult = null;
+
+                if (profilingEnabled) {
+                    frameProfile.skipped = true;
+                    frameProfile.skipReason = "shared-context-lost";
+                    frameProfile.renderer.sharedContext.lostSkipped = true;
+                    frameProfile.totalMs = this.constructor.getProfilingTime() - profilingStart;
+                    this._recordProfilingFrame(frameProfile);
+                }
+
                 return;
             }
 
@@ -1222,6 +1620,14 @@
                     $.console.warn(message);
                 }
 
+                if (profilingEnabled) {
+                    frameProfile.skipped = true;
+                    frameProfile.skipReason = "shared-context-busy";
+                    frameProfile.renderer.sharedContext.busySkipped = true;
+                    frameProfile.totalMs = this.constructor.getProfilingTime() - profilingStart;
+                    this._recordProfilingFrame(frameProfile);
+                }
+
                 return;
             }
 
@@ -1229,6 +1635,7 @@
             sharedEntry.activeRenderer = this;
 
             try {
+                const rendererStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
                 const width = Math.max(1, this._renderWidth || this.getPresentationCanvas().width || 1);
                 const height = Math.max(1, this._renderHeight || this.getPresentationCanvas().height || 1);
 
@@ -1252,18 +1659,29 @@
                 this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
                 this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
+                const firstPassStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
                 this.renderFirstPass(frame.firstPass);
+
+                if (profilingEnabled) {
+                    frameProfile.renderer.firstPassMs = this.constructor.getProfilingTime() - firstPassStart;
+                }
 
                 if (typeof this.backend.clearColorTarget === "function") {
                     this.backend.clearColorTarget(this._finalColorTarget, [0, 0, 0, 0]);
                 }
 
                 if (frame.secondPass.length) {
+                    const secondPassStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
+
                     this.renderSecondPass(frame.secondPass, $.extend(true, {}, options.secondPassOptions || {}, {
                         framebuffer: this._finalColorTarget.framebuffer,
                         width: width,
                         height: height
                     }));
+
+                    if (profilingEnabled) {
+                        frameProfile.renderer.secondPassMs = this.constructor.getProfilingTime() - secondPassStart;
+                    }
                 }
 
                 this.__finalPassResult = this._finalColorTarget;
@@ -1273,7 +1691,15 @@
                     this.getPresentationCanvas(),
                 );
 
+                const finishStart = profilingEnabled ? this.constructor.getProfilingTime() : 0;
                 this.gl.finish();
+
+                if (profilingEnabled) {
+                    frameProfile.renderer.finishMs = this.constructor.getProfilingTime() - finishStart;
+                    frameProfile.renderer.totalMs = this.constructor.getProfilingTime() - rendererStart;
+                    frameProfile.totalMs = this.constructor.getProfilingTime() - profilingStart;
+                    this._recordProfilingFrame(frameProfile);
+                }
             } finally {
                 this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
 
