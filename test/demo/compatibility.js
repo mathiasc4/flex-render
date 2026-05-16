@@ -69,7 +69,7 @@ function createReferenceViewer() {
             crossOriginPolicy: "Anonymous",
             ajaxWithCredentials: false,
             drawer: "flex-renderer",
-            drawerOptions: drawerOptions,
+            drawerOptions,
             blendTime: 0,
             showNavigator: true,
             viewportMargins: {
@@ -85,7 +85,7 @@ function createReferenceViewer() {
             success: () => {
                 setViewerStatus("Rainbow test pattern loaded with FlexRenderer.", "ok");
             },
-            error: event => {
+            error: (event) => {
                 setViewerStatus(`Rainbow test pattern failed to load: ${getEventMessage(event)}`, "error");
             },
         });
@@ -182,9 +182,7 @@ function getContext(canvas, names) {
             if (gl) {
                 return gl;
             }
-        } catch (error) {
-            // Keep trying alternative names.
-        }
+        } catch (error) {}
     }
 
     return null;
@@ -233,19 +231,23 @@ function runRendererSelfTest() {
 }
 
 function reportContextCreation(contextInfo) {
-    const status = contextInfo.webgl2Available ? "ok" : (contextInfo.webgl1Available ? "warn" : "error");
+    const status = contextInfo.webgl2Available ? "ok" : contextInfo.webgl1Available ? "warn" : "error";
     let result;
     let impact;
 
     if (contextInfo.webgl2Available) {
-        result = "WebGL2 context creation succeeded. WebGL1 context creation also " + (contextInfo.webgl1Available ? "succeeded." : "failed or was unavailable.");
+        result =
+            "WebGL2 context creation succeeded. WebGL1 context creation also " +
+            (contextInfo.webgl1Available ? "succeeded." : "failed or was unavailable.");
         impact = "The preferred FlexRenderer WebGL2 path can be attempted on this system.";
     } else if (contextInfo.webgl1Available) {
         result = "WebGL2 context creation failed, but WebGL1 context creation succeeded.";
-        impact = "This build's renderer self-test targets the WebGL2 path. WebGL1-only systems may not support the current renderer features used by the demo.";
+        impact =
+            "This build's renderer self-test targets the WebGL2 path. WebGL1-only systems may not support the current renderer features used by the demo.";
     } else {
         result = "Neither WebGL2 nor WebGL1 context creation succeeded.";
-        impact = "The browser is not exposing WebGL. FlexRenderer cannot run until WebGL/GPU acceleration is available.";
+        impact =
+            "The browser is not exposing WebGL. FlexRenderer cannot run until WebGL/GPU acceleration is available.";
     }
 
     return createCheck({
@@ -264,11 +266,7 @@ function reportContextCreation(contextInfo) {
 
 function reportLineWidthRange(gl) {
     if (!gl) {
-        return unavailableCheck(
-            "native-lines",
-            "Native gl.LINES width range",
-            "No WebGL context is available."
-        );
+        return unavailableCheck("native-lines", "Native gl.LINES width range", "No WebGL context is available.");
     }
 
     const range = toArray(gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE) || [1, 1]);
@@ -280,9 +278,10 @@ function reportLineWidthRange(gl) {
         title: "Native gl.LINES width range",
         status,
         result: `ALIASED_LINE_WIDTH_RANGE = [${formatNumber(range[0])}, ${formatNumber(range[1])}].`,
-        impact: max > 1
-            ? "Native WebGL line primitives report support for widths above 1 px. FlexRenderer native line rendering may use wider requested widths."
-            : "Native WebGL line primitives are limited to 1 px. FlexRenderer vector layers should use triangle-based stroke rendering for wider lines.",
+        impact:
+            max > 1
+                ? "Native WebGL line primitives report support for widths above 1 px. FlexRenderer native line rendering may use wider requested widths."
+                : "Native WebGL line primitives are limited to 1 px. FlexRenderer vector layers should use triangle-based stroke rendering for wider lines.",
         data: {
             aliasedLineWidthRange: range,
         },
@@ -291,11 +290,7 @@ function reportLineWidthRange(gl) {
 
 function reportTextureUnits(gl) {
     if (!gl) {
-        return unavailableCheck(
-            "texture-units",
-            "Fragment texture-unit capacity",
-            "No WebGL context is available."
-        );
+        return unavailableCheck("texture-units", "Fragment texture-unit capacity", "No WebGL context is available.");
     }
 
     const units = Number(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS));
@@ -307,9 +302,10 @@ function reportTextureUnits(gl) {
         title: "Fragment texture-unit capacity",
         status,
         result: `MAX_TEXTURE_IMAGE_UNITS = ${units}; estimated FlexRenderer raster tile batch capacity = ${capacity}.`,
-        impact: capacity < LOW_TEXTURE_BATCH_THRESHOLD
-            ? "Low fragment texture-unit capacity can force more tile draw batches and may reduce rendering throughput when many raster tiles are visible."
-            : "The fragment texture-unit count should allow a normal raster tile batch size for this renderer build.",
+        impact:
+            capacity < LOW_TEXTURE_BATCH_THRESHOLD
+                ? "Low fragment texture-unit capacity can force more tile draw batches and may reduce rendering throughput when many raster tiles are visible."
+                : "The fragment texture-unit count should allow a normal raster tile batch size for this renderer build.",
         data: {
             maxTextureImageUnits: units,
             estimatedRasterTileBatchCapacity: capacity,
@@ -319,11 +315,7 @@ function reportTextureUnits(gl) {
 
 function reportGpuBackend(gl) {
     if (!gl) {
-        return unavailableCheck(
-            "gpu-backend",
-            "GPU/backend information",
-            "No WebGL context is available."
-        );
+        return unavailableCheck("gpu-backend", "GPU/backend information", "No WebGL context is available.");
     }
 
     const extension = gl.getExtension("WEBGL_debug_renderer_info");
@@ -364,11 +356,7 @@ function reportGpuBackend(gl) {
 
 function reportShaderPrecision(gl) {
     if (!gl) {
-        return unavailableCheck(
-            "shader-precision",
-            "Fragment-shader precision",
-            "No WebGL context is available."
-        );
+        return unavailableCheck("shader-precision", "Fragment-shader precision", "No WebGL context is available.");
     }
 
     const high = getPrecision(gl, gl.HIGH_FLOAT);
@@ -412,11 +400,7 @@ function getPrecision(gl, precisionType) {
 
 function reportContextLoss(gl) {
     if (!gl) {
-        return unavailableCheck(
-            "context-loss",
-            "Context-loss handling support",
-            "No WebGL context is available."
-        );
+        return unavailableCheck("context-loss", "Context-loss handling support", "No WebGL context is available.");
     }
 
     const extension = gl.getExtension("WEBGL_lose_context");
@@ -439,11 +423,7 @@ function reportContextLoss(gl) {
 
 function reportCanvasLimits(gl, version) {
     if (!gl) {
-        return unavailableCheck(
-            "canvas-limits",
-            "Maximum canvas/render-target size",
-            "No WebGL context is available."
-        );
+        return unavailableCheck("canvas-limits", "Maximum canvas/render-target size", "No WebGL context is available.");
     }
 
     const viewportDims = toArray(gl.getParameter(gl.MAX_VIEWPORT_DIMS) || [0, 0]);
@@ -463,9 +443,13 @@ function reportCanvasLimits(gl, version) {
             `MAX_VIEWPORT_DIMS = [${formatInteger(viewportDims[0])}, ${formatInteger(viewportDims[1])}]`,
             `MAX_RENDERBUFFER_SIZE = ${formatInteger(renderbufferSize)}`,
             `MAX_TEXTURE_SIZE = ${formatInteger(textureSize)}`,
-            isWebGL2 ? `MAX_3D_TEXTURE_SIZE = ${formatInteger(max3DTextureSize)}` : `${version} probe does not expose WebGL2 texture-array limits`,
+            isWebGL2
+                ? `MAX_3D_TEXTURE_SIZE = ${formatInteger(max3DTextureSize)}`
+                : `${version} probe does not expose WebGL2 texture-array limits`,
             isWebGL2 ? `MAX_ARRAY_TEXTURE_LAYERS = ${formatInteger(maxArrayTextureLayers)}` : null,
-        ].filter(Boolean).join("; "),
+        ]
+            .filter(Boolean)
+            .join("; "),
         impact: "FlexRenderer canvases and offscreen render targets should stay under this conservative pixel dimension. High-DPI displays increase the backing-store size, so CSS size alone may understate the real canvas size.",
         data: {
             maxViewportDims: viewportDims,
@@ -502,7 +486,7 @@ function createCheck({ id, title, status, result, impact, data = null }) {
 function renderResults(payload) {
     const results = payload.results || [];
     const counts = countResults(results);
-    const context = results.find(result => result.id === "webgl-context");
+    const context = results.find((result) => result.id === "webgl-context");
 
     if (dom.results) {
         dom.results.innerHTML = results.map(renderCheckCard).join("");
@@ -521,7 +505,10 @@ function renderResults(payload) {
     }
 
     if (counts.error > 0) {
-        setStatus(`Compatibility checks completed with ${counts.error} error(s) and ${counts.warn} warning(s).`, "error");
+        setStatus(
+            `Compatibility checks completed with ${counts.error} error(s) and ${counts.warn} warning(s).`,
+            "error",
+        );
     } else if (counts.warn > 0) {
         setStatus(`Compatibility checks completed with ${counts.warn} warning(s).`, "warn");
     } else {
@@ -530,25 +517,29 @@ function renderResults(payload) {
 }
 
 function countResults(results) {
-    return results.reduce((acc, result) => {
-        if (result.status === "ok") {
-            acc.ok++;
-        } else if (result.status === "warn") {
-            acc.warn++;
-        } else if (result.status === "error") {
-            acc.error++;
-        } else {
-            acc.info++;
-        }
+    return results.reduce(
+        (acc, result) => {
+            if (result.status === "ok") {
+                acc.ok++;
+            } else if (result.status === "warn") {
+                acc.warn++;
+            } else if (result.status === "error") {
+                acc.error++;
+            } else {
+                acc.info++;
+            }
 
-        return acc;
-    }, { ok: 0, warn: 0, error: 0, info: 0 });
+            return acc;
+        },
+        { ok: 0, warn: 0, error: 0, info: 0 },
+    );
 }
 
 function renderSummary(counts, context) {
-    const webglLabel = context && context.data
-        ? `${context.data.webgl2Available ? "WebGL2" : "No WebGL2"} / ${context.data.webgl1Available ? "WebGL1" : "No WebGL1"}`
-        : "–";
+    const webglLabel =
+        context && context.data
+            ? `${context.data.webgl2Available ? "WebGL2" : "No WebGL2"} / ${context.data.webgl1Available ? "WebGL1" : "No WebGL1"}`
+            : "–";
 
     return `
         <div class="summary-card">

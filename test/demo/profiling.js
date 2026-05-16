@@ -1,4 +1,4 @@
-(function($) {
+(function ($) {
     const DEFAULT_MAX_FRAMES = 120;
     const DEFAULT_SAMPLE_INTERVAL_MS = 500;
     const SHARED_CONTEXT_KEY = "profiling-shared-context";
@@ -14,26 +14,29 @@
         skipped: "#9ca3af",
         budget: "#6b7280",
         axis: "#d1d5db",
-        text: "#374151"
+        text: "#374151",
     };
 
     const SCENARIOS = {
         "many-sources": {
             label: "Single viewer: many sources",
-            description: "Profiles one FlexRenderer viewer drawing many raster/image sources during redraw, pan, and zoom. Use this scenario to identify broad pipeline bottlenecks without GeoJSON tile-source work."
+            description:
+                "Profiles one FlexRenderer viewer drawing many raster/image sources during redraw, pan, and zoom. Use this scenario to identify broad pipeline bottlenecks without GeoJSON tile-source work.",
         },
         "large-geojson": {
             label: "Single viewer: large GeoJSON",
-            description: "Profiles one large GeoJSON source. Toggle aggregation, spatial indexing, and native lines, then capture rows to compare the resulting timings."
+            description:
+                "Profiles one large GeoJSON source. Toggle aggregation, spatial indexing, and native lines, then capture rows to compare the resulting timings.",
         },
         "two-private": {
             label: "Two viewers: private contexts",
-            description: "Profiles two independent FlexRenderer viewers, each with its own private WebGL context."
+            description: "Profiles two independent FlexRenderer viewers, each with its own private WebGL context.",
         },
         "two-shared": {
             label: "Two viewers: shared context",
-            description: "Profiles two FlexRenderer viewers using the same sharedContextKey so private/shared context behavior can be compared."
-        }
+            description:
+                "Profiles two FlexRenderer viewers using the same sharedContextKey so private/shared context behavior can be compared.",
+        },
     };
 
     let activeViewers = [];
@@ -54,7 +57,7 @@
         manySourceCount: 10,
         geojsonAggregation: true,
         geojsonSpatialIndex: true,
-        geojsonNativeLines: true
+        geojsonNativeLines: true,
     };
 
     window.flexRendererProfilingDemo = {
@@ -69,7 +72,7 @@
         startSampling,
         stopSampling,
         startMotion,
-        stopMotion
+        stopMotion,
     };
 
     if (document.readyState === "loading") {
@@ -148,7 +151,7 @@
             dom.geojsonAggregation,
             dom.geojsonSpatialIndex,
             dom.geojsonNativeLines,
-            dom.manySourceCount
+            dom.manySourceCount,
         ];
 
         for (const input of optionInputs) {
@@ -215,10 +218,12 @@
     }
 
     function requiresScenarioReload(input) {
-        return input === dom.geojsonAggregation ||
+        return (
+            input === dom.geojsonAggregation ||
             input === dom.geojsonSpatialIndex ||
             input === dom.geojsonNativeLines ||
-            input === dom.manySourceCount;
+            input === dom.manySourceCount
+        );
     }
 
     function syncStateFromControls() {
@@ -226,8 +231,14 @@
         state.profilingEnabled = !dom.enabled || dom.enabled.checked;
         state.includeTileSources = !dom.includeTileSources || dom.includeTileSources.checked;
         state.maxFrames = Math.max(1, parseInt(dom.maxFrames && dom.maxFrames.value, 10) || DEFAULT_MAX_FRAMES);
-        state.sampleInterval = Math.max(100, parseInt(dom.sampleInterval && dom.sampleInterval.value, 10) || DEFAULT_SAMPLE_INTERVAL_MS);
-        state.manySourceCount = Math.max(2, Math.min(16, parseInt(dom.manySourceCount && dom.manySourceCount.value, 10) || 10));
+        state.sampleInterval = Math.max(
+            100,
+            parseInt(dom.sampleInterval && dom.sampleInterval.value, 10) || DEFAULT_SAMPLE_INTERVAL_MS,
+        );
+        state.manySourceCount = Math.max(
+            2,
+            Math.min(16, parseInt(dom.manySourceCount && dom.manySourceCount.value, 10) || 10),
+        );
         state.geojsonAggregation = !!(dom.geojsonAggregation && dom.geojsonAggregation.checked);
         state.geojsonSpatialIndex = !dom.geojsonSpatialIndex || dom.geojsonSpatialIndex.checked;
         state.geojsonNativeLines = !dom.geojsonNativeLines || dom.geojsonNativeLines.checked;
@@ -270,7 +281,10 @@
 
         if (dom.viewers) {
             dom.viewers.innerHTML = "";
-            dom.viewers.classList.toggle("viewer-grid--single", state.scenario !== "two-private" && state.scenario !== "two-shared");
+            dom.viewers.classList.toggle(
+                "viewer-grid--single",
+                state.scenario !== "two-private" && state.scenario !== "two-shared",
+            );
         }
 
         setStatus(`Loading scenario: ${SCENARIOS[state.scenario].label}`, "info");
@@ -305,14 +319,14 @@
         const slot = createViewerSlot("many", "Many-source viewer");
         const viewer = createViewer(slot.id, {
             showNavigator: true,
-            sharedContextKey: null
+            sharedContextKey: null,
         });
 
         activeViewers.push({
             id: "many",
             label: "Many-source viewer",
             viewer,
-            slot
+            slot,
         });
 
         const sourceSpecs = getManySourceSpecs(state.manySourceCount);
@@ -335,12 +349,12 @@
                     setStatus(`Many-source scenario loaded ${loadedSources}/${sourceSpecs.length} sources.`, "ok");
                     forceRedraw();
                 },
-                error: event => {
+                error: (event) => {
                     const message = `Failed to load source '${spec.label}': ${getEventMessage(event)}`;
 
                     setViewerStatus(slot, message, "error");
                     setStatus(message, "error");
-                }
+                },
             });
         });
     }
@@ -349,14 +363,14 @@
         const slot = createViewerSlot("geojson", "Large GeoJSON viewer");
         const viewer = createViewer(slot.id, {
             showNavigator: true,
-            sharedContextKey: null
+            sharedContextKey: null,
         });
 
         activeViewers.push({
             id: "geojson",
             label: "Large GeoJSON viewer",
             viewer,
-            slot
+            slot,
         });
 
         setViewerStatus(slot, "Loading large GeoJSON source...", "info");
@@ -372,12 +386,12 @@
                 setStatus(message, "ok");
                 forceRedraw();
             },
-            error: event => {
+            error: (event) => {
                 const message = `Large GeoJSON failed: ${getEventMessage(event)}`;
 
                 setViewerStatus(slot, message, "error");
                 setStatus(message, "error");
-            }
+            },
         });
     }
 
@@ -388,11 +402,11 @@
 
         const osdA = createViewer(viewerA.id, {
             showNavigator: false,
-            sharedContextKey
+            sharedContextKey,
         });
         const osdB = createViewer(viewerB.id, {
             showNavigator: false,
-            sharedContextKey
+            sharedContextKey,
         });
 
         activeViewers.push({ id: "context-a", label: viewerA.label, viewer: osdA, slot: viewerA });
@@ -407,12 +421,12 @@
                 setViewerStatus(viewerA, "Loaded test pattern source.", "ok");
                 forceRedraw();
             },
-            error: event => {
+            error: (event) => {
                 const message = `Context viewer A failed: ${getEventMessage(event)}`;
 
                 setViewerStatus(viewerA, message, "error");
                 setStatus(message, "error");
-            }
+            },
         });
 
         osdB.addTiledImage({
@@ -421,17 +435,20 @@
                 setViewerStatus(viewerB, "Loaded IIIF source.", "ok");
                 forceRedraw();
             },
-            error: event => {
+            error: (event) => {
                 const message = `Context viewer B failed: ${getEventMessage(event)}`;
 
                 setViewerStatus(viewerB, message, "error");
                 setStatus(message, "error");
-            }
+            },
         });
 
-        setStatus(shared ?
-            `Created two viewers with sharedContextKey '${SHARED_CONTEXT_KEY}'.` :
-            "Created two viewers with private contexts.", "ok");
+        setStatus(
+            shared
+                ? `Created two viewers with sharedContextKey '${SHARED_CONTEXT_KEY}'.`
+                : "Created two viewers with private contexts.",
+            "ok",
+        );
     }
 
     function createViewerSlot(id, label) {
@@ -451,7 +468,7 @@
             key: id,
             label,
             card,
-            status: card.querySelector("[data-viewer-status]")
+            status: card.querySelector("[data-viewer-status]"),
         };
     }
 
@@ -472,11 +489,11 @@
                     webGLPreferredVersion: "2.0",
                     sharedContextKey: options.sharedContextKey || null,
                     profiling: getProfilingOptions(),
-                    backgroundColor: "#00000000"
-                }
+                    backgroundColor: "#00000000",
+                },
             },
             blendTime: 0,
-            showNavigator: options.showNavigator === true
+            showNavigator: options.showNavigator === true,
         });
     }
 
@@ -485,7 +502,7 @@
             { label: "Rainbow grid", tileSource: "../data/testpattern.dzi" },
             { label: "Leaves", tileSource: "../data/iiif_2_0_sizes/info.json" },
             { label: "A", tileSource: { type: "image", url: "../data/A.png" } },
-            { label: "Blue B", tileSource: { type: "image", url: "../data/BBlue.png" } }
+            { label: "Blue B", tileSource: { type: "image", url: "../data/BBlue.png" } },
         ];
         const specs = [];
 
@@ -501,7 +518,7 @@
                 y: row * 0.16,
                 width,
                 degrees: 0,
-                opacity: 0.64
+                opacity: 0.64,
             });
         }
 
@@ -521,7 +538,7 @@
                 pointColor: [1, 0.2, 0.2, 1],
                 lineWidth: 2,
                 lineColor: [0.1, 0.85, 0.2, 1],
-                fillColor: [0.1, 0.35, 1, 0.45]
+                fillColor: [0.1, 0.35, 1, 0.45],
             },
             aggregation: {
                 enabled: state.geojsonAggregation,
@@ -532,25 +549,27 @@
                 labelSize: 26,
                 labelStrokeWidth: 3,
                 maxLabelValue: 999,
-                useSpatialIndex: state.geojsonSpatialIndex
-            }
+                useSpatialIndex: state.geojsonSpatialIndex,
+            },
         };
     }
-
 
     function patchGeoJSONSpatialIndexOption() {
         if (!$.GeoJSONTileSource || $.GeoJSONTileSource.prototype.__profilingSpatialIndexPatch) {
             return;
         }
 
-        if (typeof $.__GEOJSON_WORKER_SOURCE__ === "string" && !$.__GEOJSON_WORKER_SOURCE__.includes("message.useSpatialIndex === false ? null")) {
+        if (
+            typeof $.__GEOJSON_WORKER_SOURCE__ === "string" &&
+            !$.__GEOJSON_WORKER_SOURCE__.includes("message.useSpatialIndex === false ? null")
+        ) {
             $.__GEOJSON_WORKER_SOURCE__ = $.__GEOJSON_WORKER_SOURCE__.replace(
                 "STATE.spatialIndex = createSpatialIndex(STATE.geometries);",
-                "STATE.spatialIndex = message.useSpatialIndex === false ? null : createSpatialIndex(STATE.geometries);"
+                "STATE.spatialIndex = message.useSpatialIndex === false ? null : createSpatialIndex(STATE.geometries);",
             );
         }
 
-        $.GeoJSONTileSource.prototype._configureWorker = function() {
+        $.GeoJSONTileSource.prototype._configureWorker = function () {
             this._worker.onmessage = (event) => {
                 this._handleWorkerMessage(event.data || {});
             };
@@ -577,7 +596,7 @@
                 style: this.style,
                 useNativeLines: this.useNativeLines,
                 useSpatialIndex: !(this.aggregation && this.aggregation.useSpatialIndex === false),
-                aggregation: this.aggregation
+                aggregation: this.aggregation,
             });
         };
 
@@ -612,7 +631,7 @@
         return {
             enabled: state.profilingEnabled,
             maxFrames: state.maxFrames,
-            includeTileSources: state.includeTileSources
+            includeTileSources: state.includeTileSources,
         };
     }
 
@@ -643,26 +662,29 @@
     function startMotion() {
         stopMotion();
         motionStep = 0;
-        motionTimer = window.setInterval(() => {
-            motionStep++;
-            for (const entry of activeViewers) {
-                const viewport = entry.viewer && entry.viewer.viewport;
-                if (!viewport) {
-                    continue;
+        motionTimer = window.setInterval(
+            () => {
+                motionStep++;
+                for (const entry of activeViewers) {
+                    const viewport = entry.viewer && entry.viewer.viewport;
+                    if (!viewport) {
+                        continue;
+                    }
+
+                    const phase = motionStep * 0.35;
+                    const x = 0.5 + Math.sin(phase) * 0.16;
+                    const y = 0.5 + Math.cos(phase * 0.8) * 0.12;
+                    const zoom = 1.15 + Math.sin(phase * 0.55) * 0.55;
+
+                    viewport.panTo(new OpenSeadragon.Point(x, y));
+                    viewport.zoomTo(Math.max(0.2, zoom));
+                    entry.viewer.forceRedraw();
                 }
 
-                const phase = motionStep * 0.35;
-                const x = 0.5 + Math.sin(phase) * 0.16;
-                const y = 0.5 + Math.cos(phase * 0.8) * 0.12;
-                const zoom = 1.15 + Math.sin(phase * 0.55) * 0.55;
-
-                viewport.panTo(new OpenSeadragon.Point(x, y));
-                viewport.zoomTo(Math.max(0.2, zoom));
-                entry.viewer.forceRedraw();
-            }
-
-            updateDashboard();
-        }, Math.max(120, state.sampleInterval));
+                updateDashboard();
+            },
+            Math.max(120, state.sampleInterval),
+        );
     }
 
     function stopMotion() {
@@ -708,10 +730,10 @@
     }
 
     function getAllSnapshots() {
-        return activeViewers.map(entry => ({
+        return activeViewers.map((entry) => ({
             id: entry.id,
             label: entry.label,
-            snapshot: getSnapshotForViewer(entry.viewer)
+            snapshot: getSnapshotForViewer(entry.viewer),
         }));
     }
 
@@ -735,8 +757,8 @@
         }
 
         const bottleneck = inferBottleneck(snapshot);
-        const latest = snapshot && snapshot.latestFrame || {};
-        const avg = snapshot && snapshot.averages && snapshot.averages.renderedFramesOnly || {};
+        const latest = (snapshot && snapshot.latestFrame) || {};
+        const avg = (snapshot && snapshot.averages && snapshot.averages.renderedFramesOnly) || {};
         const sharedCount = getSharedContextEntryCount();
 
         dom.kpis.innerHTML = [
@@ -747,7 +769,7 @@
             renderKpi("Likely bottleneck", bottleneck),
             renderKpi("Avg tile spans", formatMs(avg.tileSourceMs)),
             renderKpi("Skipped", snapshot ? String(snapshot.skippedFrameCount || 0) : "0"),
-            renderKpi("Shared entries", String(sharedCount))
+            renderKpi("Shared entries", String(sharedCount)),
         ].join("");
     }
 
@@ -771,9 +793,12 @@
             ["first pass", avg.firstPassMs],
             ["second pass", avg.secondPassMs],
             ["gl.finish", avg.finishMs],
-            ["tile source", avg.tileSourceMs]
+            ["tile source", avg.tileSourceMs],
         ];
-        const best = entries.reduce((winner, entry) => Number(entry[1]) > Number(winner[1]) ? entry : winner, entries[0]);
+        const best = entries.reduce(
+            (winner, entry) => (Number(entry[1]) > Number(winner[1]) ? entry : winner),
+            entries[0],
+        );
 
         return `${best[0]} (${formatMs(best[1])})`;
     }
@@ -790,18 +815,14 @@
             return;
         }
 
-        const frameSegments = frames.map(frame => ({
+        const frameSegments = frames.map((frame) => ({
             frame,
-            segments: getFramePipelineSegments(frame)
+            segments: getFramePipelineSegments(frame),
         }));
 
-        const frameTotals = frameSegments.map(item => sumSegments(item.segments));
+        const frameTotals = frameSegments.map((item) => sumSegments(item.segments));
         const dataMaxMs = Math.max(0, ...frameTotals);
 
-        /*
-         * Scale to the observed data instead of forcing a 33.33 ms upper bound.
-         * This makes normal sub-16 ms frames visible while still leaving headroom.
-         */
         const maxMs = Math.max(1, dataMaxMs * 1.2);
         const width = 920;
         const height = 154;
@@ -846,7 +867,10 @@
 
         svg += `</svg>`;
         dom.frameTimeline.innerHTML = svg;
-        renderLegend(dom.frameTimelineLegend, getPipelineLegend().concat([{ label: "skipped", color: COLORS.skipped }]));
+        renderLegend(
+            dom.frameTimelineLegend,
+            getPipelineLegend().concat([{ label: "skipped", color: COLORS.skipped }]),
+        );
     }
 
     function renderLatestBreakdown(snapshot) {
@@ -871,7 +895,7 @@
         renderStackedBar(chart, segments, {
             width: 580,
             height: 58,
-            label: frame.skipped ? `Skipped: ${frame.skipReason || "unknown"}` : `Total ${formatMs(frame.totalMs)}`
+            label: frame.skipped ? `Skipped: ${frame.skipReason || "unknown"}` : `Total ${formatMs(frame.totalMs)}`,
         });
 
         wrapper.appendChild(chart);
@@ -884,7 +908,7 @@
             renderCompactMetric("Second", renderer.secondPassMs),
             renderCompactMetric("Finish", renderer.finishMs),
             renderCompactMetric("Tiles", drawer.tileCount),
-            renderCompactMetric("Sources", drawer.sourceCount)
+            renderCompactMetric("Sources", drawer.sourceCount),
         ].join("");
 
         wrapper.appendChild(detail);
@@ -896,9 +920,12 @@
     }
 
     function renderCompactMetric(label, value) {
-        const renderedValue = Number.isFinite(Number(value)) && String(label).toLowerCase() !== "tiles" && String(label).toLowerCase() !== "sources" ?
-            formatMs(value) :
-            valueOrZero(value);
+        const renderedValue =
+            Number.isFinite(Number(value)) &&
+            String(label).toLowerCase() !== "tiles" &&
+            String(label).toLowerCase() !== "sources"
+                ? formatMs(value)
+                : valueOrZero(value);
 
         return `
         <div class="compact-metric">
@@ -913,10 +940,10 @@
             return;
         }
 
-        const viewerRows = activeViewers.map(entry => renderViewerSnapshotDetails(entry)).join("");
+        const viewerRows = activeViewers.map((entry) => renderViewerSnapshotDetails(entry)).join("");
         const frame = snapshot && snapshot.latestFrame;
-        const renderer = frame && frame.renderer || {};
-        const drawer = frame && frame.drawer || {};
+        const renderer = (frame && frame.renderer) || {};
+        const drawer = (frame && frame.drawer) || {};
         const shared = renderer.sharedContext || {};
         const tileSources = frame && Array.isArray(frame.tileSources) ? frame.tileSources : [];
         const latestRows = [
@@ -929,7 +956,7 @@
             renderDetail("Tile count", valueOrZero(drawer.tileCount)),
             renderDetail("Source count", valueOrZero(drawer.sourceCount)),
             renderDetail("Tile spans", String(tileSources.length)),
-            renderDetail("Shared", shared.enabled ? (shared.key || "true") : "private")
+            renderDetail("Shared", shared.enabled ? shared.key || "true" : "private"),
         ].join("");
 
         dom.latestDetails.innerHTML = latestRows + viewerRows + renderTileSourceDetails(tileSources);
@@ -937,12 +964,15 @@
 
     function renderViewerSnapshotDetails(entry) {
         const snapshot = getSnapshotForViewer(entry.viewer);
-        const avg = snapshot && snapshot.averages && snapshot.averages.renderedFramesOnly || {};
+        const avg = (snapshot && snapshot.averages && snapshot.averages.renderedFramesOnly) || {};
         const renderer = getViewerRenderer(entry.viewer);
         return [
             renderDetail(`${entry.label} frames`, snapshot ? valueOrZero(snapshot.frameCount) : "0"),
             renderDetail(`${entry.label} avg`, formatMs(avg.totalMs)),
-            renderDetail(`${entry.label} mode`, renderer && renderer.isSharedContext && renderer.isSharedContext() ? "shared" : "private")
+            renderDetail(
+                `${entry.label} mode`,
+                renderer && renderer.isSharedContext && renderer.isSharedContext() ? "shared" : "private",
+            ),
         ].join("");
     }
 
@@ -951,11 +981,18 @@
             return renderDetail("GeoJSON spans", "none in latest frame");
         }
 
-        const sorted = tileSources.slice().sort((a, b) => (Number(b.totalMs) || 0) - (Number(a.totalMs) || 0)).slice(0, 4);
-        return sorted.map((span, index) => renderDetail(
-            `Tile span ${index + 1}`,
-            `${formatMs(span.totalMs)} f=${valueOrZero(span.featureCount)} v=${valueOrZero(span.vertexCount)} i=${valueOrZero(span.indexCount)}`
-        )).join("");
+        const sorted = tileSources
+            .slice()
+            .sort((a, b) => (Number(b.totalMs) || 0) - (Number(a.totalMs) || 0))
+            .slice(0, 4);
+        return sorted
+            .map((span, index) =>
+                renderDetail(
+                    `Tile span ${index + 1}`,
+                    `${formatMs(span.totalMs)} f=${valueOrZero(span.featureCount)} v=${valueOrZero(span.vertexCount)} i=${valueOrZero(span.indexCount)}`,
+                ),
+            )
+            .join("");
     }
 
     function renderSparklines(snapshot) {
@@ -973,12 +1010,32 @@
         }
 
         const series = [
-            { label: "total frame", values: frames.map(frame => frame.totalMs || 0), color: "#2563eb" },
-            { label: "drawer setup", values: frames.map(frame => frame.drawer && frame.drawer.totalMs || 0), color: COLORS.drawer },
-            { label: "first pass", values: frames.map(frame => frame.renderer && frame.renderer.firstPassMs || 0), color: COLORS.firstPass },
-            { label: "second pass", values: frames.map(frame => frame.renderer && frame.renderer.secondPassMs || 0), color: COLORS.secondPass },
-            { label: "gl.finish wait", values: frames.map(frame => frame.renderer && frame.renderer.finishMs || 0), color: COLORS.finish },
-            { label: "tile-source work", values: frames.map(frame => getTileSourceTotal(frame)), color: COLORS.tileSource }
+            { label: "total frame", values: frames.map((frame) => frame.totalMs || 0), color: "#2563eb" },
+            {
+                label: "drawer setup",
+                values: frames.map((frame) => (frame.drawer && frame.drawer.totalMs) || 0),
+                color: COLORS.drawer,
+            },
+            {
+                label: "first pass",
+                values: frames.map((frame) => (frame.renderer && frame.renderer.firstPassMs) || 0),
+                color: COLORS.firstPass,
+            },
+            {
+                label: "second pass",
+                values: frames.map((frame) => (frame.renderer && frame.renderer.secondPassMs) || 0),
+                color: COLORS.secondPass,
+            },
+            {
+                label: "gl.finish wait",
+                values: frames.map((frame) => (frame.renderer && frame.renderer.finishMs) || 0),
+                color: COLORS.finish,
+            },
+            {
+                label: "tile-source work",
+                values: frames.map((frame) => getTileSourceTotal(frame)),
+                color: COLORS.tileSource,
+            },
         ];
 
         dom.sparklines.innerHTML = series.map(renderSparkline).join("");
@@ -988,8 +1045,8 @@
     function captureCurrentResult() {
         const snapshots = getAllSnapshots();
         const primary = snapshots[0] && snapshots[0].snapshot;
-        const avg = primary && primary.averages && primary.averages.renderedFramesOnly || {};
-        const latest = primary && primary.latestFrame || {};
+        const avg = (primary && primary.averages && primary.averages.renderedFramesOnly) || {};
+        const latest = (primary && primary.latestFrame) || {};
 
         captureRows.push({
             capturedAt: new Date().toISOString(),
@@ -1004,7 +1061,7 @@
             avgFinishMs: avg.finishMs || 0,
             avgTileSourceMs: avg.tileSourceMs || 0,
             latestTileSpans: latest && Array.isArray(latest.tileSources) ? latest.tileSources.length : 0,
-            snapshots
+            snapshots,
         });
 
         renderComparisonResults();
@@ -1046,7 +1103,9 @@
             return;
         }
 
-        const rows = captureRows.map((row, index) => `
+        const rows = captureRows
+            .map(
+                (row, index) => `
             <tr>
                 <td>${index + 1}</td>
                 <td>${escapeHtml(SCENARIOS[row.scenario].label)}</td>
@@ -1061,7 +1120,9 @@
                 <td>${escapeHtml(formatMs(row.avgTileSourceMs))}</td>
                 <td>${escapeHtml(valueOrZero(row.latestTileSpans))}</td>
             </tr>
-        `).join("");
+        `,
+            )
+            .join("");
 
         dom.comparisonResults.innerHTML = `
             <table class="comparison-table">
@@ -1114,11 +1175,13 @@
         const height = 52;
         const values = series.values || [];
         const maxValue = Math.max(1, ...values);
-        const points = values.map((value, index) => {
-            const x = values.length <= 1 ? 0 : index / (values.length - 1) * (width - 8) + 4;
-            const y = 8 + (height - 16) - ((Number(value) || 0) / maxValue) * (height - 16);
-            return `${x.toFixed(2)},${y.toFixed(2)}`;
-        }).join(" ");
+        const points = values
+            .map((value, index) => {
+                const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * (width - 8) + 4;
+                const y = 8 + (height - 16) - ((Number(value) || 0) / maxValue) * (height - 16);
+                return `${x.toFixed(2)},${y.toFixed(2)}`;
+            })
+            .join(" ");
         const latest = values.length ? values[values.length - 1] : 0;
 
         return `
@@ -1150,12 +1213,16 @@
             return;
         }
 
-        container.innerHTML = items.map(item => `
+        container.innerHTML = items
+            .map(
+                (item) => `
             <span class="legend-item">
                 <span class="legend-swatch" style="background:${escapeHtml(item.color)}"></span>
                 ${escapeHtml(item.label)}
             </span>
-        `).join("");
+        `,
+            )
+            .join("");
     }
 
     function renderDetail(label, value) {
@@ -1168,18 +1235,20 @@
     }
 
     function getFramePipelineSegments(frame) {
-        const renderer = frame && frame.renderer || {};
-        const drawer = frame && frame.drawer || {};
+        const renderer = (frame && frame.renderer) || {};
+        const drawer = (frame && frame.drawer) || {};
 
         if (frame && frame.skipped) {
-            return [{ label: "skipped", value: Math.max(0.001, Number(frame.totalMs) || 0.001), color: COLORS.skipped }];
+            return [
+                { label: "skipped", value: Math.max(0.001, Number(frame.totalMs) || 0.001), color: COLORS.skipped },
+            ];
         }
 
         return [
             { label: "drawer", value: Number(drawer.totalMs) || 0, color: COLORS.drawer },
             { label: "first pass", value: Number(renderer.firstPassMs) || 0, color: COLORS.firstPass },
             { label: "second pass", value: Number(renderer.secondPassMs) || 0, color: COLORS.secondPass },
-            { label: "gl.finish", value: Number(renderer.finishMs) || 0, color: COLORS.finish }
+            { label: "gl.finish", value: Number(renderer.finishMs) || 0, color: COLORS.finish },
         ];
     }
 
@@ -1188,7 +1257,7 @@
             { label: "drawer", color: COLORS.drawer },
             { label: "first pass", color: COLORS.firstPass },
             { label: "second pass", color: COLORS.secondPass },
-            { label: "gl.finish", color: COLORS.finish }
+            { label: "gl.finish", color: COLORS.finish },
         ];
     }
 
@@ -1233,7 +1302,9 @@
     }
 
     function downloadSnapshotJson() {
-        const blob = new Blob([JSON.stringify({ snapshots: getAllSnapshots(), captures: captureRows }, null, 2)], { type: "application/json" });
+        const blob = new Blob([JSON.stringify({ snapshots: getAllSnapshots(), captures: captureRows }, null, 2)], {
+            type: "application/json",
+        });
         const link = document.createElement("a");
 
         link.href = URL.createObjectURL(blob);

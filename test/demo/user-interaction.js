@@ -61,7 +61,7 @@ const viewportMargins = {
     bottom: 0,
 };
 
-const viewer = window.viewer = OpenSeadragon({
+const viewer = (window.viewer = OpenSeadragon({
     id: "drawer-canvas",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
@@ -71,11 +71,11 @@ const viewer = window.viewer = OpenSeadragon({
     crossOriginPolicy: "Anonymous",
     ajaxWithCredentials: false,
     drawer: "flex-renderer",
-    drawerOptions: drawerOptions,
+    drawerOptions,
     blendTime: 0,
     showNavigator: true,
-    viewportMargins: viewportMargins
-});
+    viewportMargins,
+}));
 
 IMAGE_SOURCES.forEach((source) => {
     viewer.addTiledImage({
@@ -85,7 +85,7 @@ IMAGE_SOURCES.forEach((source) => {
 
 const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
     index,
-    label: source.label
+    label: source.label,
 }));
 
 let shaderLayerConfig = {
@@ -138,12 +138,7 @@ let shaderLayerConfig = {
     },
 };
 
-let shaderLayerOrder = [
-    "base_rainbow",
-    "below_leaves",
-    "interaction_debug",
-    "above_bblue",
-];
+let shaderLayerOrder = ["base_rainbow", "below_leaves", "interaction_debug", "above_bblue"];
 
 function sourceIndex(sourceKey) {
     return IMAGE_SOURCE_INDEX_BY_KEY[sourceKey];
@@ -158,10 +153,9 @@ function renderShaderLayerControls(shaderLayer, shaderConfig) {
 
     const isInteractionLayer = shaderConfig.type === "interaction-debug";
     const wrapper = document.createElement("div");
-    wrapper.className = [
-        "shader-control-card",
-        isInteractionLayer ? "shader-control-card--interaction" : "",
-    ].filter(Boolean).join(" ");
+    wrapper.className = ["shader-control-card", isInteractionLayer ? "shader-control-card--interaction" : ""]
+        .filter(Boolean)
+        .join(" ");
 
     const header = document.createElement("div");
     header.className = "shader-control-card__header";
@@ -219,7 +213,9 @@ function renderShaderConfigPanel() {
         .map((shaderId) => renderShaderConfigItem(shaderId, shaderLayerConfig[shaderId]))
         .join("");
 
-    setPanelHtml("shader-config-panel", `
+    setPanelHtml(
+        "shader-config-panel",
+        `
         <h3>Shader layer configuration</h3>
         <div class="shader-config-scroll">
             <ul class="shader-config-list">
@@ -231,7 +227,8 @@ function renderShaderConfigPanel() {
             to test composition. Toggle visibility, mode, blend, type, and image source to validate
             that the interaction layer behaves as a regular ShaderLayer.
         </p>
-    `);
+    `,
+    );
 
     bindShaderConfigPanelEvents();
 }
@@ -282,8 +279,7 @@ function renderShaderConfigItem(shaderId, shaderConfig) {
 }
 
 function renderShaderTypeControl(shaderConfig, shaderId) {
-    const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry
-        .availableLayers()
+    const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.availableLayers()
         .filter((Shader) => Shader.type() !== "group")
         .map((Shader) => {
             const type = Shader.type();
@@ -318,19 +314,22 @@ function renderImageIndexControl(shaderConfig, shaderId) {
         `;
     }
 
-    const selectedIndex = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
-        Number(shaderConfig.tiledImages[0]) :
-        0;
+    const selectedIndex =
+        Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length
+            ? Number(shaderConfig.tiledImages[0])
+            : 0;
 
-    const options = indexedImageSources.map((source) => {
-        const selected = source.index === selectedIndex ? "selected" : "";
+    const options = indexedImageSources
+        .map((source) => {
+            const selected = source.index === selectedIndex ? "selected" : "";
 
-        return `
+            return `
             <option value="${source.index}" ${selected}>
                 ${escapeHtml(source.label)} (${source.index})
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 
     return `
         <label class="shader-config-field-label">
@@ -366,21 +365,24 @@ function renderBlendControls(shaderConfig, shaderId) {
                     data-shader-id="${escapeHtml(shaderId)}"
                     ${blendDisabled}
                 >
-                    ${renderOptions([
-        "mask",
-        "add",
-        "multiply",
-        "screen",
-        "overlay",
-        "darken",
-        "lighten",
-        "difference",
-        "exclusion",
-        "source-over",
-        "source-in",
-        "source-out",
-        "source-atop"
-    ], selectedBlend)}
+                    ${renderOptions(
+                        [
+                            "mask",
+                            "add",
+                            "multiply",
+                            "screen",
+                            "overlay",
+                            "darken",
+                            "lighten",
+                            "difference",
+                            "exclusion",
+                            "source-over",
+                            "source-in",
+                            "source-out",
+                            "source-atop",
+                        ],
+                        selectedBlend,
+                    )}
                 </select>
             </label>
         </div>
@@ -388,22 +390,24 @@ function renderBlendControls(shaderConfig, shaderId) {
 }
 
 function renderOptions(values, selectedValue) {
-    return values.map((value) => {
-        const selected = value === selectedValue ? "selected" : "";
+    return values
+        .map((value) => {
+            const selected = value === selectedValue ? "selected" : "";
 
-        return `
+            return `
             <option value="${escapeHtml(value)}" ${selected}>
                 ${escapeHtml(value)}
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 }
 
 function bindShaderConfigPanelEvents() {
     $(".shader-config-list").sortable({
         handle: ".shader-config-drag-handle",
         items: "> .shader-config-item",
-        update: function() {
+        update: function () {
             shaderLayerOrder = $(this)
                 .children(".shader-config-item")
                 .map((_, item) => $(item).attr("data-shader-id"))
@@ -411,49 +415,49 @@ function bindShaderConfigPanelEvents() {
 
             applyShaderLayerGuiConfig();
             renderShaderConfigPanel();
-        }
+        },
     });
 
-    $(".shader-config-visible-toggle").on("change", function() {
+    $(".shader-config-visible-toggle").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.visible = this.checked ? 1 : 0;
         });
     });
 
-    $(".shader-config-name-input").on("change", function() {
+    $(".shader-config-name-input").on("change", function () {
         updateShaderConfig(this, (shaderConfig, shaderId) => {
             shaderConfig.name = this.value.trim() || shaderId;
         });
     });
 
-    $(".shader-config-image-index-select").on("change", function() {
+    $(".shader-config-image-index-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.tiledImages = [Number(this.value)];
         });
     });
 
-    $(".shader-config-use-mode-select").on("change", function() {
+    $(".shader-config-use-mode-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.params = shaderConfig.params || {};
             shaderConfig.params.use_mode = this.value;
         });
     });
 
-    $(".shader-config-use-blend-select").on("change", function() {
+    $(".shader-config-use-blend-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.params = shaderConfig.params || {};
             shaderConfig.params.use_blend = this.value;
         });
     });
 
-    $(".shader-config-type-select").on("change", function() {
+    $(".shader-config-type-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             const previousParams = shaderConfig.params || {};
 
             shaderConfig.type = this.value;
             shaderConfig.params = {
                 use_mode: previousParams.use_mode || "show",
-                use_blend: previousParams.use_blend || "mask"
+                use_blend: previousParams.use_blend || "mask",
             };
             shaderConfig.cache = {};
 
@@ -501,9 +505,7 @@ function setupInteractionPanel() {
     const clearButton = document.getElementById("interaction-clear-button");
 
     const syncControls = () => {
-        const options = viewer.drawer.getInteractionOptions ?
-            viewer.drawer.getInteractionOptions() :
-            {};
+        const options = viewer.drawer.getInteractionOptions ? viewer.drawer.getInteractionOptions() : {};
 
         if (enabledToggle) {
             enabledToggle.checked = !!options.enabled;
@@ -527,9 +529,11 @@ function setupInteractionPanel() {
             viewer.drawer.setInteractionOptions({
                 enabled: enabledToggle.checked,
             });
-            setViewerStatus(enabledToggle.checked ?
-                "Interaction forwarding enabled." :
-                "Interaction forwarding disabled; shader-visible state should clear.");
+            setViewerStatus(
+                enabledToggle.checked
+                    ? "Interaction forwarding enabled."
+                    : "Interaction forwarding disabled; shader-visible state should clear.",
+            );
             syncControls();
         });
     }
@@ -539,9 +543,11 @@ function setupInteractionPanel() {
             viewer.drawer.setInteractionOptions({
                 preventContextMenu: preventContextMenuToggle.checked,
             });
-            setViewerStatus(preventContextMenuToggle.checked ?
-                "Context menu prevention enabled." :
-                "Context menu prevention disabled.");
+            setViewerStatus(
+                preventContextMenuToggle.checked
+                    ? "Context menu prevention enabled."
+                    : "Context menu prevention disabled.",
+            );
             syncControls();
         });
     }
@@ -551,9 +557,11 @@ function setupInteractionPanel() {
             viewer.drawer.setInteractionOptions({
                 notifyOnMove: notifyOnMoveToggle.checked,
             });
-            setViewerStatus(notifyOnMoveToggle.checked ?
-                "Pointer-move notifications enabled for event-driven readout." :
-                "Pointer-move notifications disabled; use the polled readout for continuous state.");
+            setViewerStatus(
+                notifyOnMoveToggle.checked
+                    ? "Pointer-move notifications enabled for event-driven readout."
+                    : "Pointer-move notifications disabled; use the polled readout for continuous state.",
+            );
             syncControls();
         });
     }

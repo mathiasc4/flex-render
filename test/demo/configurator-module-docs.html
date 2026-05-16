@@ -1,592 +1,592 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Module Documentation Demo</title>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Module Documentation Demo</title>
 
-    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/ajv/8.17.1/ajv7.min.js"></script>
-    <script type="text/javascript">
-        (function() {
-            function loadScript(src) {
-                return new Promise((resolve, reject) => {
-                    const script = document.createElement("script");
-                    script.src = src;
-                    script.async = false;
-                    script.onload = () => resolve(src);
-                    script.onerror = () => reject(new Error(`Failed to load ${src}`));
-                    document.head.appendChild(script);
-                });
-            }
-
-            async function loadFirst(candidates) {
-                for (const src of candidates) {
-                    try {
-                        await loadScript(src);
-                        return src;
-                    } catch (_) {
-                        // Try next candidate.
-                    }
+        <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/ajv/8.17.1/ajv7.min.js"></script>
+        <script type="text/javascript">
+            (function () {
+                function loadScript(src) {
+                    return new Promise((resolve, reject) => {
+                        const script = document.createElement("script");
+                        script.src = src;
+                        script.async = false;
+                        script.onload = () => resolve(src);
+                        script.onerror = () => reject(new Error(`Failed to load ${src}`));
+                        document.head.appendChild(script);
+                    });
                 }
-                throw new Error(`Unable to load any candidate: ${candidates.join(", ")}`);
+
+                async function loadFirst(candidates) {
+                    for (const src of candidates) {
+                        try {
+                            await loadScript(src);
+                            return src;
+                        } catch (_) {}
+                    }
+                    throw new Error(`Unable to load any candidate: ${candidates.join(", ")}`);
+                }
+
+                window.__configuratorDocsBoot = (async () => {
+                    await loadFirst([
+                        "../../openseadragon/openseadragon.js",
+                        "/openseadragon/openseadragon.js",
+                        "../openseadragon/openseadragon.js",
+                    ]);
+
+                    await loadFirst([
+                        "../../build/openseadragon/flex-renderer.js",
+                        "../../build/openseadragon/flex-renderer.min.js",
+                        "/build/openseadragon/flex-renderer.js",
+                        "/build/openseadragon/flex-renderer.min.js",
+                    ]);
+
+                    await loadFirst([
+                        "./configurator-module-docs.js",
+                        "/test/demo/configurator-module-docs.js",
+                        "/demo/configurator-module-docs.js",
+                    ]);
+                })().catch((error) => {
+                    window.__configuratorDocsBootError = error;
+                    console.error(error);
+
+                    window.addEventListener("DOMContentLoaded", () => {
+                        const host = document.getElementById("module-details");
+                        if (host) {
+                            host.textContent = String(error && error.message ? error.message : error);
+                        }
+                    });
+                });
+            })();
+        </script>
+
+        <style type="text/css">
+            :root {
+                color-scheme: light;
+                --bg: #eef1f5;
+                --panel: #ffffff;
+                --line: #d1d5db;
+                --soft-line: #e5e7eb;
+                --soft-bg: #f9fafb;
+                --text: #111827;
+                --muted: #4b5563;
+                --accent: #2563eb;
+                --accent-dark: #1d4ed8;
+                --accent-soft: #eff6ff;
+                --accent-line: #bfdbfe;
             }
 
-            window.__configuratorDocsBoot = (async() => {
-                await loadFirst([
-                    "../../openseadragon/openseadragon.js",
-                    "/openseadragon/openseadragon.js",
-                    "../openseadragon/openseadragon.js"
-                ]);
+            * {
+                box-sizing: border-box;
+            }
 
-                await loadFirst([
-                    "../../build/openseadragon/flex-renderer.js",
-                    "../../build/openseadragon/flex-renderer.min.js",
-                    "/build/openseadragon/flex-renderer.js",
-                    "/build/openseadragon/flex-renderer.min.js"
-                ]);
-
-                await loadFirst([
-                    "./configurator-module-docs.js",
-                    "/test/demo/configurator-module-docs.js",
-                    "/demo/configurator-module-docs.js"
-                ]);
-            })().catch(error => {
-                window.__configuratorDocsBootError = error;
-                console.error(error);
-
-                window.addEventListener("DOMContentLoaded", () => {
-                    const host = document.getElementById("module-details");
-                    if (host) {
-                        host.textContent = String(error && error.message ? error.message : error);
-                    }
-                });
-            });
-        })();
-    </script>
-
-    <style type="text/css">
-        :root {
-            color-scheme: light;
-            --bg: #eef1f5;
-            --panel: #ffffff;
-            --line: #d1d5db;
-            --soft-line: #e5e7eb;
-            --soft-bg: #f9fafb;
-            --text: #111827;
-            --muted: #4b5563;
-            --accent: #2563eb;
-            --accent-dark: #1d4ed8;
-            --accent-soft: #eff6ff;
-            --accent-line: #bfdbfe;
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
-        html,
-        body {
-            min-height: 100%;
-        }
-
-        body {
-            min-height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-            color: var(--text);
-            background: var(--bg);
-            overflow: hidden;
-        }
-
-        .page {
-            height: 100vh;
-            width: 100vw;
-            padding: 10px;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 8px;
-            overflow: hidden;
-        }
-
-        .hero {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 16px;
-            min-width: 0;
-        }
-
-        .hero .eyebrow {
-            display: none;
-        }
-
-        .hero h1 {
-            margin: 0;
-            font-size: 18px;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-
-        .hero p:last-child {
-            margin: 0;
-            color: var(--muted);
-            font-size: 12px;
-            line-height: 1.3;
-            text-align: right;
-            min-width: 0;
-        }
-
-        h1,
-        h2,
-        h3 {
-            margin: 0;
-        }
-
-        h2,
-        h3 {
-            font-size: 12px;
-            line-height: 1.25;
-        }
-
-        #module-details > .section:first-child h3 {
-            margin-top: 6px;
-            margin-bottom: 4px;
-            font-size: 22px;
-            line-height: 1.15;
-            font-weight: 800;
-            color: #111827;
-            letter-spacing: -0.01em;
-        }
-
-        #module-details > .section:first-child {
-            padding: 10px;
-            border-left: 4px solid #2563eb;
-            background: #f9fafb;
-        }
-
-        p {
-            margin: 4px 0 6px 0;
-            color: var(--muted);
-            font-size: 11px;
-            line-height: 1.3;
-        }
-
-        code {
-            padding: 1px 4px;
-            border-radius: 0;
-            background: var(--accent-soft);
-            border: 1px solid var(--accent-line);
-            color: #1e3a8a;
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 11px;
-        }
-
-        .layout {
-            min-height: 0;
-            width: 100%;
-            display: grid;
-            grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.45fr) minmax(360px, 0.83fr);
-            grid-template-rows: minmax(0, 1fr);
-            gap: 8px;
-            align-items: stretch;
-        }
-
-        .stack {
-            min-height: 0;
-            display: grid;
-            gap: 8px;
-        }
-
-        .layout > .stack:first-child {
-            grid-template-rows: auto minmax(0, 1fr);
-        }
-
-        .layout > .stack:last-child {
-            grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-        }
-
-        .panel {
-            min-height: 0;
-            min-width: 0;
-            border: 1px solid var(--line);
-            background: var(--panel);
-            box-sizing: border-box;
-            overflow: hidden;
-        }
-
-        .panel-body {
-            min-height: 0;
-            height: 100%;
-            padding: 8px;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 6px;
-            overflow: hidden;
-        }
-
-        .layout > .stack:first-child .panel:first-child .panel-body {
-            grid-template-rows: auto auto auto;
-        }
-
-        .layout > .stack:first-child .panel:last-child .panel-body {
-            grid-template-rows: auto auto minmax(0, 1fr);
-        }
-
-        .layout > .panel .panel-body {
-            grid-template-rows: auto minmax(0, 1fr);
-        }
-
-        .layout > .stack:last-child .panel .panel-body {
-            grid-template-rows: auto auto minmax(0, 1fr);
-        }
-
-        .layout > .panel .panel-body > .stack,
-        #module-details {
-            min-height: 0;
-            overflow: auto;
-            padding-right: 2px;
-            align-content: start;
-        }
-
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 6px;
-            margin-top: 0;
-        }
-
-        .stat {
-            min-width: 0;
-            padding: 7px;
-            border: 1px solid var(--soft-line);
-            background: var(--soft-bg);
-        }
-
-        .stat-label {
-            display: block;
-            margin: 0 0 3px 0;
-            color: var(--muted);
-            font-size: 10px;
-            line-height: 1.2;
-        }
-
-        .stat-value {
-            display: block;
-            color: var(--text);
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 15px;
-            font-weight: 700;
-            line-height: 1.15;
-            word-break: break-word;
-        }
-
-        .toolbar {
-            display: grid;
-            gap: 6px;
-            margin-top: 0;
-        }
-
-        input,
-        select,
-        button {
-            min-width: 0;
-            width: 100%;
-            min-height: 26px;
-            padding: 4px 6px;
-            border: 1px solid var(--line);
-            border-radius: 0;
-            font: inherit;
-            font-size: 12px;
-            background: #ffffff;
-            color: var(--text);
-        }
-
-        button {
-            cursor: pointer;
-        }
-
-        #refresh-btn,
-        .module-button.active {
-            border-color: var(--accent-dark);
-            font-weight: 700;
-        }
-
-        button:hover {
-            border-color: var(--accent-dark);
-        }
-
-        .module-list {
-            min-height: 0;
-            display: grid;
-            align-content: start;
-            gap: 5px;
-            margin-top: 0;
-            overflow: auto;
-            padding-right: 2px;
-        }
-
-        .module-button {
-            width: 100%;
-            display: grid;
-            gap: 5px;
-            min-height: 52px;
-            padding: 11px 12px;
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            color: #111827;
-            text-align: left;
-            cursor: pointer;
-            box-sizing: border-box;
-            align-content: center;
-        }
-
-        .module-button:hover {
-            border-color: var(--accent-line);
-            background: var(--accent-soft);
-        }
-
-        .module-name {
-            font-size: 12px;
-            font-weight: 700;
-            line-height: 1.2;
-            overflow-wrap: anywhere;
-        }
-
-        .module-type,
-        .muted {
-            color: #4b5563;
-            font-size: 12px;
-            line-height: 1.25;
-        }
-
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            width: fit-content;
-            padding: 2px 6px;
-            border: 1px solid var(--accent-line);
-            background: var(--accent-soft);
-            color: #1e3a8a;
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 11px;
-            line-height: 1.25;
-        }
-
-        .section {
-            min-width: 0;
-            display: grid;
-            gap: 6px;
-            align-content: start;
-        }
-
-        .section + .section {
-            margin-top: 8px;
-        }
-
-        table {
-            width: 100%;
-            min-width: 0;
-            border-collapse: collapse;
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 11px;
-            line-height: 1.3;
-        }
-
-        th,
-        td {
-            border: 1px solid var(--line);
-            padding: 5px 6px;
-            vertical-align: top;
-            text-align: left;
-            overflow-wrap: anywhere;
-        }
-
-        th {
-            background: var(--soft-bg);
-            color: var(--text);
-            font-weight: 700;
-            white-space: nowrap;
-        }
-
-        td {
-            background: #ffffff;
-        }
-
-        pre {
-            min-height: 0;
-            height: 100%;
-            margin: 0 !important;
-            overflow: auto;
-            padding: 6px;
-            border: 1px solid var(--line);
-            border-radius: 0;
-            background: var(--soft-bg);
-            color: var(--text);
-            font: 10.5px/1.35 Consolas, "Courier New", monospace;
-            white-space: pre-wrap;
-            word-break: break-word;
-            box-sizing: border-box;
-        }
-
-        details {
-            min-width: 0;
-            border: 1px solid var(--line);
-            background: #ffffff;
-            overflow: hidden;
-        }
-
-        summary {
-            padding: 6px;
-            cursor: pointer;
-            font-size: 11px;
-            font-weight: 700;
-            color: var(--text);
-            background: var(--soft-bg);
-        }
-
-        .details-content {
-            padding: 6px;
-        }
-
-        .details-content pre,
-        td pre {
-            height: auto;
-            max-height: 180px !important;
-        }
-
-        #module-schema-output,
-        #graph-example-output {
-            min-height: 0;
-        }
-
-        @media (max-width: 1180px) {
+            html,
             body {
-                overflow: auto;
+                min-height: 100%;
+            }
+
+            body {
+                min-height: 100vh;
+                margin: 0;
+                font-family: Arial, sans-serif;
+                color: var(--text);
+                background: var(--bg);
+                overflow: hidden;
             }
 
             .page {
-                min-height: 100vh;
-                height: auto;
-                overflow: visible;
+                height: 100vh;
+                width: 100vw;
+                padding: 10px;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 8px;
+                overflow: hidden;
             }
 
             .hero {
-                display: block;
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 16px;
+                min-width: 0;
+            }
+
+            .hero .eyebrow {
+                display: none;
             }
 
             .hero h1 {
-                white-space: normal;
+                margin: 0;
+                font-size: 18px;
+                line-height: 1.2;
+                white-space: nowrap;
             }
 
             .hero p:last-child {
-                margin-top: 4px;
-                text-align: left;
+                margin: 0;
+                color: var(--muted);
+                font-size: 12px;
+                line-height: 1.3;
+                text-align: right;
+                min-width: 0;
+            }
+
+            h1,
+            h2,
+            h3 {
+                margin: 0;
+            }
+
+            h2,
+            h3 {
+                font-size: 12px;
+                line-height: 1.25;
+            }
+
+            #module-details > .section:first-child h3 {
+                margin-top: 6px;
+                margin-bottom: 4px;
+                font-size: 22px;
+                line-height: 1.15;
+                font-weight: 800;
+                color: #111827;
+                letter-spacing: -0.01em;
+            }
+
+            #module-details > .section:first-child {
+                padding: 10px;
+                border-left: 4px solid #2563eb;
+                background: #f9fafb;
+            }
+
+            p {
+                margin: 4px 0 6px 0;
+                color: var(--muted);
+                font-size: 11px;
+                line-height: 1.3;
+            }
+
+            code {
+                padding: 1px 4px;
+                border-radius: 0;
+                background: var(--accent-soft);
+                border: 1px solid var(--accent-line);
+                color: #1e3a8a;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 11px;
             }
 
             .layout {
-                grid-template-columns: 1fr;
-                grid-template-rows: none;
-                align-items: start;
-            }
-
-            .panel,
-            .panel-body,
-            #module-details,
-            .module-list,
-            pre {
                 min-height: 0;
-                height: auto;
-                overflow: visible;
+                width: 100%;
+                display: grid;
+                grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.45fr) minmax(360px, 0.83fr);
+                grid-template-rows: minmax(0, 1fr);
+                gap: 8px;
+                align-items: stretch;
             }
 
-            .layout > .stack:first-child,
+            .stack {
+                min-height: 0;
+                display: grid;
+                gap: 8px;
+            }
+
+            .layout > .stack:first-child {
+                grid-template-rows: auto minmax(0, 1fr);
+            }
+
             .layout > .stack:last-child {
-                grid-template-rows: none;
+                grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+            }
+
+            .panel {
+                min-height: 0;
+                min-width: 0;
+                border: 1px solid var(--line);
+                background: var(--panel);
+                box-sizing: border-box;
+                overflow: hidden;
+            }
+
+            .panel-body {
+                min-height: 0;
+                height: 100%;
+                padding: 8px;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 6px;
+                overflow: hidden;
+            }
+
+            .layout > .stack:first-child .panel:first-child .panel-body {
+                grid-template-rows: auto auto auto;
+            }
+
+            .layout > .stack:first-child .panel:last-child .panel-body {
+                grid-template-rows: auto auto minmax(0, 1fr);
+            }
+
+            .layout > .panel .panel-body {
+                grid-template-rows: auto minmax(0, 1fr);
+            }
+
+            .layout > .stack:last-child .panel .panel-body {
+                grid-template-rows: auto auto minmax(0, 1fr);
+            }
+
+            .layout > .panel .panel-body > .stack,
+            #module-details {
+                min-height: 0;
+                overflow: auto;
+                padding-right: 2px;
+                align-content: start;
             }
 
             .stats {
-                grid-template-columns: 1fr;
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 6px;
+                margin-top: 0;
             }
-        }
-    </style>
-</head>
-<body>
-<main class="page">
-    <section class="hero">
-        <p class="eyebrow">Shader Configurator Demo</p>
-        <h1>Generated module documentation</h1>
-        <p>
-            Browse the generated ShaderModule reference: module descriptions, typed inputs
-            and outputs, module-local controls, schema entries, and the example graph used
-            by the modular ShaderLayer.
-        </p>
-    </section>
 
-    <section class="layout">
-        <aside class="stack">
-            <section class="panel">
-                <div class="panel-body">
-                    <h2>Summary</h2>
+            .stat {
+                min-width: 0;
+                padding: 7px;
+                border: 1px solid var(--soft-line);
+                background: var(--soft-bg);
+            }
 
-                    <div class="stats">
-                        <div class="stat">
-                            <span class="stat-label">Docs version</span>
-                            <span class="stat-value" id="docs-version">-</span>
+            .stat-label {
+                display: block;
+                margin: 0 0 3px 0;
+                color: var(--muted);
+                font-size: 10px;
+                line-height: 1.2;
+            }
+
+            .stat-value {
+                display: block;
+                color: var(--text);
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 15px;
+                font-weight: 700;
+                line-height: 1.15;
+                word-break: break-word;
+            }
+
+            .toolbar {
+                display: grid;
+                gap: 6px;
+                margin-top: 0;
+            }
+
+            input,
+            select,
+            button {
+                min-width: 0;
+                width: 100%;
+                min-height: 26px;
+                padding: 4px 6px;
+                border: 1px solid var(--line);
+                border-radius: 0;
+                font: inherit;
+                font-size: 12px;
+                background: #ffffff;
+                color: var(--text);
+            }
+
+            button {
+                cursor: pointer;
+            }
+
+            #refresh-btn,
+            .module-button.active {
+                border-color: var(--accent-dark);
+                font-weight: 700;
+            }
+
+            button:hover {
+                border-color: var(--accent-dark);
+            }
+
+            .module-list {
+                min-height: 0;
+                display: grid;
+                align-content: start;
+                gap: 5px;
+                margin-top: 0;
+                overflow: auto;
+                padding-right: 2px;
+            }
+
+            .module-button {
+                width: 100%;
+                display: grid;
+                gap: 5px;
+                min-height: 52px;
+                padding: 11px 12px;
+                border: 1px solid #d1d5db;
+                background: #ffffff;
+                color: #111827;
+                text-align: left;
+                cursor: pointer;
+                box-sizing: border-box;
+                align-content: center;
+            }
+
+            .module-button:hover {
+                border-color: var(--accent-line);
+                background: var(--accent-soft);
+            }
+
+            .module-name {
+                font-size: 12px;
+                font-weight: 700;
+                line-height: 1.2;
+                overflow-wrap: anywhere;
+            }
+
+            .module-type,
+            .muted {
+                color: #4b5563;
+                font-size: 12px;
+                line-height: 1.25;
+            }
+
+            .badge {
+                display: inline-flex;
+                align-items: center;
+                width: fit-content;
+                padding: 2px 6px;
+                border: 1px solid var(--accent-line);
+                background: var(--accent-soft);
+                color: #1e3a8a;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 11px;
+                line-height: 1.25;
+            }
+
+            .section {
+                min-width: 0;
+                display: grid;
+                gap: 6px;
+                align-content: start;
+            }
+
+            .section + .section {
+                margin-top: 8px;
+            }
+
+            table {
+                width: 100%;
+                min-width: 0;
+                border-collapse: collapse;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 11px;
+                line-height: 1.3;
+            }
+
+            th,
+            td {
+                border: 1px solid var(--line);
+                padding: 5px 6px;
+                vertical-align: top;
+                text-align: left;
+                overflow-wrap: anywhere;
+            }
+
+            th {
+                background: var(--soft-bg);
+                color: var(--text);
+                font-weight: 700;
+                white-space: nowrap;
+            }
+
+            td {
+                background: #ffffff;
+            }
+
+            pre {
+                min-height: 0;
+                height: 100%;
+                margin: 0 !important;
+                overflow: auto;
+                padding: 6px;
+                border: 1px solid var(--line);
+                border-radius: 0;
+                background: var(--soft-bg);
+                color: var(--text);
+                font:
+                    10.5px/1.35 Consolas,
+                    "Courier New",
+                    monospace;
+                white-space: pre-wrap;
+                word-break: break-word;
+                box-sizing: border-box;
+            }
+
+            details {
+                min-width: 0;
+                border: 1px solid var(--line);
+                background: #ffffff;
+                overflow: hidden;
+            }
+
+            summary {
+                padding: 6px;
+                cursor: pointer;
+                font-size: 11px;
+                font-weight: 700;
+                color: var(--text);
+                background: var(--soft-bg);
+            }
+
+            .details-content {
+                padding: 6px;
+            }
+
+            .details-content pre,
+            td pre {
+                height: auto;
+                max-height: 180px !important;
+            }
+
+            #module-schema-output,
+            #graph-example-output {
+                min-height: 0;
+            }
+
+            @media (max-width: 1180px) {
+                body {
+                    overflow: auto;
+                }
+
+                .page {
+                    min-height: 100vh;
+                    height: auto;
+                    overflow: visible;
+                }
+
+                .hero {
+                    display: block;
+                }
+
+                .hero h1 {
+                    white-space: normal;
+                }
+
+                .hero p:last-child {
+                    margin-top: 4px;
+                    text-align: left;
+                }
+
+                .layout {
+                    grid-template-columns: 1fr;
+                    grid-template-rows: none;
+                    align-items: start;
+                }
+
+                .panel,
+                .panel-body,
+                #module-details,
+                .module-list,
+                pre {
+                    min-height: 0;
+                    height: auto;
+                    overflow: visible;
+                }
+
+                .layout > .stack:first-child,
+                .layout > .stack:last-child {
+                    grid-template-rows: none;
+                }
+
+                .stats {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="page">
+            <section class="hero">
+                <p class="eyebrow">Shader Configurator Demo</p>
+                <h1>Generated module documentation</h1>
+                <p>
+                    Browse the generated ShaderModule reference: module descriptions, typed inputs and outputs,
+                    module-local controls, schema entries, and the example graph used by the modular ShaderLayer.
+                </p>
+            </section>
+
+            <section class="layout">
+                <aside class="stack">
+                    <section class="panel">
+                        <div class="panel-body">
+                            <h2>Summary</h2>
+
+                            <div class="stats">
+                                <div class="stat">
+                                    <span class="stat-label">Docs version</span>
+                                    <span class="stat-value" id="docs-version">-</span>
+                                </div>
+                                <div class="stat">
+                                    <span class="stat-label">Shader modules</span>
+                                    <span class="stat-value" id="module-count">-</span>
+                                </div>
+                                <div class="stat">
+                                    <span class="stat-label">Graph schema</span>
+                                    <span class="stat-value" id="graph-schema-status">-</span>
+                                </div>
+                            </div>
+
+                            <div class="toolbar">
+                                <button id="refresh-btn" type="button">Rebuild docs</button>
+                            </div>
                         </div>
-                        <div class="stat">
-                            <span class="stat-label">Shader modules</span>
-                            <span class="stat-value" id="module-count">-</span>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-body">
+                            <h2>Available modules</h2>
+
+                            <div class="toolbar">
+                                <input id="module-search" type="search" placeholder="Filter modules by name/type" />
+                            </div>
+
+                            <div id="module-list" class="module-list"></div>
                         </div>
-                        <div class="stat">
-                            <span class="stat-label">Graph schema</span>
-                            <span class="stat-value" id="graph-schema-status">-</span>
+                    </section>
+                </aside>
+
+                <section class="panel">
+                    <div class="panel-body">
+                        <h2>Selected module</h2>
+                        <div id="module-details" class="stack"></div>
+                    </div>
+                </section>
+
+                <aside class="stack">
+                    <section class="panel">
+                        <div class="panel-body">
+                            <h2>Module schema</h2>
+                            <p>Schema entry from <code>$defs.shaderModules[type]</code>.</p>
+                            <pre id="module-schema-output">Select a module.</pre>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="toolbar">
-                        <button id="refresh-btn" type="button">Rebuild docs</button>
-                    </div>
-                </div>
+                    <section class="panel">
+                        <div class="panel-body">
+                            <h2>Modular graph example</h2>
+                            <p>Graph from the <code>modular</code> ShaderLayer docs.</p>
+                            <pre id="graph-example-output"></pre>
+                        </div>
+                    </section>
+                </aside>
             </section>
-
-            <section class="panel">
-                <div class="panel-body">
-                    <h2>Available modules</h2>
-
-                    <div class="toolbar">
-                        <input id="module-search" type="search" placeholder="Filter modules by name/type">
-                    </div>
-
-                    <div id="module-list" class="module-list"></div>
-                </div>
-            </section>
-        </aside>
-
-        <section class="panel">
-            <div class="panel-body">
-                <h2>Selected module</h2>
-                <div id="module-details" class="stack"></div>
-            </div>
-        </section>
-
-        <aside class="stack">
-            <section class="panel">
-                <div class="panel-body">
-                    <h2>Module schema</h2>
-                    <p>Schema entry from <code>$defs.shaderModules[type]</code>.</p>
-                    <pre id="module-schema-output">Select a module.</pre>
-                </div>
-            </section>
-
-            <section class="panel">
-                <div class="panel-body">
-                    <h2>Modular graph example</h2>
-                    <p>Graph from the <code>modular</code> ShaderLayer docs.</p>
-                    <pre id="graph-example-output"></pre>
-                </div>
-            </section>
-        </aside>
-    </section>
-</main>
-</body>
+        </main>
+    </body>
 </html>

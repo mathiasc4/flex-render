@@ -1,702 +1,707 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <title>FlexRenderer Profiling Demo</title>
+    <head>
+        <title>FlexRenderer Profiling Demo</title>
 
-    <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
-    <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
-    <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
+        <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+        <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
+        <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
 
-    <script type="module" src="profiling.js"></script>
+        <script type="module" src="profiling.js"></script>
 
-    <style>
-        html,
-        body {
-            min-height: 100%;
-        }
-
-        body {
-            min-height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-            color: #111827;
-            background: #eef1f5;
-            overflow: hidden;
-        }
-
-        .content {
-            height: 100vh;
-            padding: 10px;
-            box-sizing: border-box;
-            display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr);
-            gap: 8px;
-        }
-
-        .page-header {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 16px;
-        }
-
-        .page-header h2 {
-            margin: 0;
-            font-size: 18px;
-        }
-
-        .page-header p {
-            margin: 0;
-            color: #4b5563;
-            font-size: 12px;
-            line-height: 1.3;
-        }
-
-        .toolbar,
-        .panel,
-        .viewer-card,
-        .chart-card {
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            box-sizing: border-box;
-        }
-
-        .toolbar {
-            padding: 8px;
-            display: grid;
-            grid-template-columns: minmax(220px, 1fr) minmax(320px, 1.6fr) minmax(260px, 1fr);
-            gap: 10px;
-            align-items: start;
-        }
-
-        .toolbar-group {
-            display: grid;
-            gap: 6px;
-            min-width: 0;
-        }
-
-        .toolbar-group h4,
-        .panel h3,
-        .chart-card h4,
-        .viewer-card h4 {
-            margin: 0;
-            font-size: 12px;
-        }
-
-        .toolbar-row,
-        .checkbox-row {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            min-width: 0;
-            font-size: 12px;
-        }
-
-        .toolbar-row label,
-        .checkbox-row label {
-            color: #374151;
-            white-space: nowrap;
-        }
-
-        select,
-        input[type="number"] {
-            min-width: 0;
-            width: 100%;
-            box-sizing: border-box;
-            font-size: 12px;
-        }
-
-        input[type="number"] {
-            max-width: 90px;
-        }
-
-        button {
-            font-size: 12px;
-            cursor: pointer;
-        }
-
-        .button-row {
-            display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
-
-        .scenario-options {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 6px 10px;
-            align-items: center;
-        }
-
-        .scenario-options .toolbar-row,
-        .scenario-options .checkbox-row {
-            min-width: 0;
-        }
-
-        .workspace {
-            min-height: 0;
-            display: grid;
-            grid-template-columns: minmax(390px, 0.85fr) minmax(0, 1.15fr);
-            grid-template-rows: minmax(0, 1fr);
-            gap: 8px;
-        }
-
-        .left-column,
-        .right-column {
-            min-height: 0;
-            display: grid;
-            gap: 8px;
-        }
-
-        .left-column {
-            grid-template-rows: auto minmax(92px, 0.32fr) minmax(0, 1.68fr);
-        }
-
-        .right-column {
-            grid-template-rows: minmax(380px, 1.25fr) minmax(220px, 0.75fr);
-        }
-
-        .viewer-grid {
-            min-height: 0;
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
-        }
-
-        .viewer-grid--single {
-            grid-template-columns: 1fr;
-        }
-
-        .viewer-output-panel {
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr) auto;
-            gap: 6px;
-        }
-
-        .viewer-output-panel .viewer-grid {
-            min-height: 0;
-            height: 100%;
-        }
-
-        .viewer-output-panel .viewer-card {
-            min-height: 0;
-        }
-
-        .viewer-card {
-            min-height: 0;
-            padding: 8px;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr) auto;
-            gap: 6px;
-        }
-
-        .viewer-container {
-            min-height: 0;
-            width: 100%;
-            height: 100%;
-            border: 1px solid #9ca3af;
-            background: #111827;
-            position: relative;
-        }
-
-        .viewer-status {
-            padding: 4px 6px;
-            border: 1px solid #d1d5db;
-            background: #f9fafb;
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.25;
-            min-height: 22px;
-        }
-
-        .viewer-status--error {
-            border-color: #fecaca;
-            background: #fff1f2;
-            color: #7f1d1d;
-        }
-
-        .viewer-status--ok {
-            border-color: #bbf7d0;
-            background: #f0fdf4;
-            color: #14532d;
-        }
-
-        .panel,
-        .chart-card {
-            min-height: 0;
-            padding: 8px;
-            overflow: hidden;
-        }
-
-        .panel-scroll,
-        .chart-scroll {
-            height: calc(100% - 20px);
-            overflow: auto;
-        }
-
-        .panel-help {
-            margin: 4px 0 6px 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.3;
-        }
-
-        .comparison-panel {
-            display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr);
-            gap: 4px;
-        }
-
-        .empty-comparison {
-            padding: 8px;
-            border: 1px dashed #d1d5db;
-            background: #f9fafb;
-            color: #4b5563;
-            font-size: 11px;
-            line-height: 1.35;
-        }
-
-        .kpi-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 6px;
-        }
-
-        .kpi-card {
-            padding: 7px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            min-width: 0;
-        }
-
-        .kpi-card__label {
-            margin: 0 0 3px 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.2;
-        }
-
-        .kpi-card__value {
-            margin: 0;
-            font-weight: 700;
-            font-size: 15px;
-            line-height: 1.15;
-            word-break: break-word;
-        }
-
-        .charts-grid {
-            min-height: 0;
-            height: 100%;
-            display: grid;
-            grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.1fr);
-            grid-template-rows: minmax(150px, 1fr) minmax(120px, auto);
-            gap: 8px;
-        }
-
-        .visualization-panel {
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 6px;
-        }
-
-        .visualization-panel .charts-grid {
-            min-height: 0;
-            overflow: hidden;
-        }
-
-        .timing-history-card {
-            grid-column: 2;
-            grid-row: 1 / -1;
-            display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr);
-            gap: 4px;
-        }
-
-        .timing-history-card .chart-scroll {
-            height: auto;
-            min-height: 0;
-            overflow: hidden;
-            display: grid;
-            grid-template-rows: repeat(6, minmax(0, 1fr));
-            gap: 5px;
-        }
-
-        .sparkline-card {
-            min-height: 0;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-        }
-
-        .sparkline-label {
-            font-size: 10px;
-            color: #374151;
-            line-height: 1.2;
-        }
-
-        .latest-breakdown-card {
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 4px;
-        }
-
-        .latest-breakdown-scroll {
-            min-height: 0;
-            overflow: auto;
-            padding-right: 4px;
-        }
-
-        .chart-card p {
-            margin: 3px 0 5px 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.25;
-        }
-
-        .chart-card {
-            min-height: 0;
-        }
-
-
-        .svg-chart {
-            display: block;
-            width: 100%;
-            height: auto;
-            overflow: visible;
-        }
-
-        .legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px 10px;
-            margin-top: 4px;
-            font-size: 10px;
-            color: #374151;
-        }
-
-        .legend-item {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-        }
-
-        .legend-swatch {
-            width: 9px;
-            height: 9px;
-            display: inline-block;
-            border: 1px solid rgba(0, 0, 0, 0.2);
-        }
-
-        .detail-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 5px 8px;
-            font-size: 11px;
-        }
-
-        .detail-row {
-            display: grid;
-            grid-template-columns: 116px minmax(0, 1fr);
-            gap: 6px;
-            min-width: 0;
-        }
-
-        .detail-label {
-            color: #4b5563;
-            font-weight: 600;
-        }
-
-        .detail-value {
-            min-width: 0;
-            word-break: break-word;
-            font-family: Consolas, Monaco, monospace;
-        }
-
-        .comparison-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 11px;
-        }
-
-        .latest-breakdown-details {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 3px;
-            margin-top: 3px;
-        }
-
-        .compact-metric {
-            padding: 3px 4px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            min-width: 0;
-        }
-
-        .compact-metric__label {
-            display: block;
-            color: #4b5563;
-            font-size: 9px;
-            line-height: 1.15;
-        }
-
-        .compact-metric__value {
-            display: block;
-            font-family: Consolas, Monaco, monospace;
-            font-size: 10px;
-            line-height: 1.15;
-            word-break: break-word;
-        }
-
-        .comparison-table th,
-        .comparison-table td {
-            border: 1px solid #e5e7eb;
-            padding: 4px 5px;
-            text-align: left;
-            vertical-align: top;
-        }
-
-        .comparison-table th {
-            background: #f3f4f6;
-            position: sticky;
-            top: 0;
-        }
-
-        .tile-source-list {
-            display: grid;
-            gap: 6px;
-            font-size: 11px;
-        }
-
-        .tile-source-card {
-            padding: 6px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-        }
-
-        .tile-source-card h5 {
-            margin: 0 0 4px 0;
-            font-size: 11px;
-        }
-
-        .raw-output {
-            max-height: 100%;
-            overflow: auto;
-            margin: 0;
-            padding: 8px;
-            border: 1px solid #e5e7eb;
-            background: #111827;
-            color: #f9fafb;
-            font-size: 10px;
-            line-height: 1.3;
-        }
-
-        .hidden {
-            display: none !important;
-        }
-
-        @media (max-width: 1180px) {
+        <style>
+            html,
             body {
-                overflow: auto;
+                min-height: 100%;
+            }
+
+            body {
+                min-height: 100vh;
+                margin: 0;
+                font-family: Arial, sans-serif;
+                color: #111827;
+                background: #eef1f5;
+                overflow: hidden;
             }
 
             .content {
-                height: auto;
-                min-height: 100vh;
+                height: 100vh;
+                padding: 10px;
+                box-sizing: border-box;
+                display: grid;
+                grid-template-rows: auto auto minmax(0, 1fr);
+                gap: 8px;
+            }
+
+            .page-header {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 16px;
+            }
+
+            .page-header h2 {
+                margin: 0;
+                font-size: 18px;
+            }
+
+            .page-header p {
+                margin: 0;
+                color: #4b5563;
+                font-size: 12px;
+                line-height: 1.3;
             }
 
             .toolbar,
-            .workspace,
-            .viewer-grid,
-            .charts-grid,
+            .panel,
+            .viewer-card,
+            .chart-card {
+                border: 1px solid #d1d5db;
+                background: #ffffff;
+                box-sizing: border-box;
+            }
+
+            .toolbar {
+                padding: 8px;
+                display: grid;
+                grid-template-columns: minmax(220px, 1fr) minmax(320px, 1.6fr) minmax(260px, 1fr);
+                gap: 10px;
+                align-items: start;
+            }
+
+            .toolbar-group {
+                display: grid;
+                gap: 6px;
+                min-width: 0;
+            }
+
+            .toolbar-group h4,
+            .panel h3,
+            .chart-card h4,
+            .viewer-card h4 {
+                margin: 0;
+                font-size: 12px;
+            }
+
+            .toolbar-row,
+            .checkbox-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                min-width: 0;
+                font-size: 12px;
+            }
+
+            .toolbar-row label,
+            .checkbox-row label {
+                color: #374151;
+                white-space: nowrap;
+            }
+
+            select,
+            input[type="number"] {
+                min-width: 0;
+                width: 100%;
+                box-sizing: border-box;
+                font-size: 12px;
+            }
+
+            input[type="number"] {
+                max-width: 90px;
+            }
+
+            button {
+                font-size: 12px;
+                cursor: pointer;
+            }
+
+            .button-row {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
+
             .scenario-options {
-                grid-template-columns: 1fr;
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 6px 10px;
+                align-items: center;
             }
 
-            .charts-grid {
-                height: auto;
-                grid-template-rows: auto;
+            .scenario-options .toolbar-row,
+            .scenario-options .checkbox-row {
+                min-width: 0;
             }
 
-            .timing-history-card {
-                grid-column: auto;
-                grid-row: auto;
-            }
-
-            .timing-history-card .chart-scroll {
-                overflow: visible;
+            .workspace {
+                min-height: 0;
+                display: grid;
+                grid-template-columns: minmax(390px, 0.85fr) minmax(0, 1.15fr);
+                grid-template-rows: minmax(0, 1fr);
+                gap: 8px;
             }
 
             .left-column,
             .right-column {
-                grid-template-rows: auto;
+                min-height: 0;
+                display: grid;
+                gap: 8px;
+            }
+
+            .left-column {
+                grid-template-rows: auto minmax(92px, 0.32fr) minmax(0, 1.68fr);
+            }
+
+            .right-column {
+                grid-template-rows: minmax(380px, 1.25fr) minmax(220px, 0.75fr);
+            }
+
+            .viewer-grid {
+                min-height: 0;
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px;
+            }
+
+            .viewer-grid--single {
+                grid-template-columns: 1fr;
+            }
+
+            .viewer-output-panel {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                gap: 6px;
+            }
+
+            .viewer-output-panel .viewer-grid {
+                min-height: 0;
+                height: 100%;
+            }
+
+            .viewer-output-panel .viewer-card {
+                min-height: 0;
+            }
+
+            .viewer-card {
+                min-height: 0;
+                padding: 8px;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                gap: 6px;
             }
 
             .viewer-container {
-                height: 360px;
+                min-height: 0;
+                width: 100%;
+                height: 100%;
+                border: 1px solid #9ca3af;
+                background: #111827;
+                position: relative;
             }
-        }
-    </style>
-</head>
-<body>
-<div class="content">
-    <header class="page-header">
-        <h2>FlexRenderer Profiling Demo</h2>
-        <p id="profiling-scenario-description">
-            Select an isolated profiling scenario. Only the viewers needed by that scenario are created.
-        </p>
-    </header>
 
-    <section class="toolbar">
-        <div class="toolbar-group">
-            <h4>Scenario</h4>
-            <div class="toolbar-row">
-                <label for="profiling-scenario">Mode</label>
-                <select id="profiling-scenario">
-                    <option value="many-sources">Single viewer: many sources</option>
-                    <option value="large-geojson">Single viewer: large GeoJSON</option>
-                    <option value="two-private">Two viewers: private contexts</option>
-                    <option value="two-shared">Two viewers: shared context</option>
-                </select>
-            </div>
-            <div class="button-row">
-                <button id="profiling-load-scenario" type="button">Load scenario</button>
-                <button id="profiling-capture-result" type="button">Capture result</button>
-                <button id="profiling-clear-captures" type="button">Clear captures</button>
-            </div>
-        </div>
+            .viewer-status {
+                padding: 4px 6px;
+                border: 1px solid #d1d5db;
+                background: #f9fafb;
+                color: #374151;
+                font-size: 11px;
+                line-height: 1.25;
+                min-height: 22px;
+            }
 
-        <div class="toolbar-group">
-            <h4>Scenario options</h4>
-            <div class="scenario-options">
-                <label class="checkbox-row">
-                    <input id="profiling-geojson-aggregation" type="checkbox" checked>
-                    GeoJSON aggregation
-                </label>
-                <label class="checkbox-row">
-                    <input id="profiling-geojson-spatial-index" type="checkbox" checked>
-                    GeoJSON spatial index
-                </label>
-                <label class="checkbox-row">
-                    <input id="profiling-geojson-native-lines" type="checkbox" checked>
-                    Native lines
-                </label>
-                <div class="toolbar-row">
-                    <label for="profiling-many-source-count">Sources</label>
-                    <input id="profiling-many-source-count" type="number" min="2" max="16" step="1" value="10">
-                </div>
-                <label class="checkbox-row">
-                    <input id="profiling-motion-enabled" type="checkbox">
-                    Pan/zoom loop
-                </label>
-                <div class="toolbar-row">
-                    <label for="profiling-sample-interval">Sample ms</label>
-                    <input id="profiling-sample-interval" type="number" min="100" step="50" value="500">
-                </div>
-                <div class="toolbar-row">
-                    <label for="profiling-max-frames">Frames</label>
-                    <input id="profiling-max-frames" type="number" min="1" step="1" value="120">
-                </div>
-                <label class="checkbox-row">
-                    <input id="profiling-include-tile-sources" type="checkbox" checked>
-                    Tile spans
-                </label>
-            </div>
-        </div>
+            .viewer-status--error {
+                border-color: #fecaca;
+                background: #fff1f2;
+                color: #7f1d1d;
+            }
 
-        <div class="toolbar-group">
-            <h4>Profiling actions</h4>
-            <label class="checkbox-row">
-                <input id="profiling-enabled" type="checkbox" checked>
-                Enable profiling
-            </label>
-            <label class="checkbox-row">
-                <input id="profiling-continuous-sampling" type="checkbox">
-                Continuous redraw sampling
-            </label>
-            <div class="button-row">
-                <button id="profiling-force-redraw" type="button">Force redraw</button>
-                <button id="profiling-clear" type="button">Clear profiling</button>
-                <button id="profiling-copy" type="button">Copy JSON</button>
-                <button id="profiling-download" type="button">Download JSON</button>
-            </div>
-        </div>
-    </section>
+            .viewer-status--ok {
+                border-color: #bbf7d0;
+                background: #f0fdf4;
+                color: #14532d;
+            }
 
-    <main class="workspace">
-        <section class="left-column">
-            <section class="panel">
-                <h3>Summary</h3>
-                <div id="profiling-kpis" class="kpi-grid"></div>
-            </section>
+            .panel,
+            .chart-card {
+                min-height: 0;
+                padding: 8px;
+                overflow: hidden;
+            }
 
-            <section class="panel">
-                <h3>Latest frame / active viewers</h3>
-                <div id="profiling-latest-details" class="detail-grid panel-scroll"></div>
-            </section>
+            .panel-scroll,
+            .chart-scroll {
+                height: calc(100% - 20px);
+                overflow: auto;
+            }
 
-            <section class="panel visualization-panel">
-                <h3>Frame and source visualizations</h3>
-                <div class="charts-grid">
-                    <div class="chart-card">
-                        <h4>Frame history timeline</h4>
-                        <p>
-                            Each vertical bar is one recorded render attempt from the primary viewer.
-                            Bar height is scaled to the current frame history, not to a fixed benchmark.
-                            Colors split the frame into drawer, first-pass, second-pass, and gl.finish timing.
-                        </p>
-                        <div id="profiling-frame-timeline"></div>
-                        <div id="profiling-frame-timeline-legend" class="legend"></div>
-                    </div>
+            .panel-help {
+                margin: 4px 0 6px 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.3;
+            }
 
-                    <div class="chart-card latest-breakdown-card">
-                        <h4>Latest frame breakdown</h4>
-                        <div class="latest-breakdown-scroll">
-                            <p>
-                                Stacked timing for the newest recorded primary-viewer frame. This panel shows
-                                the immediate per-frame phase split; longer per-viewer details are shown in
-                                the left-side Latest frame / active viewers panel.
-                            </p>
-                            <div id="profiling-latest-breakdown"></div>
-                            <div id="profiling-latest-breakdown-legend" class="legend"></div>
-                        </div>
-                    </div>
+            .comparison-panel {
+                display: grid;
+                grid-template-rows: auto auto minmax(0, 1fr);
+                gap: 4px;
+            }
 
-                    <div class="chart-card timing-history-card">
-                        <h4>Timing history</h4>
-                        <p>
-                            Small-multiple sparklines over the retained frame history. Each graph shows
-                            one timing series independently so small values are not hidden by larger
-                            phases in a shared scale.
-                        </p>
-                        <div id="profiling-sparklines" class="chart-scroll"></div>
-                    </div>
-                </div>
-            </section>
-        </section>
+            .empty-comparison {
+                padding: 8px;
+                border: 1px dashed #d1d5db;
+                background: #f9fafb;
+                color: #4b5563;
+                font-size: 11px;
+                line-height: 1.35;
+            }
 
-        <aside class="right-column">
-            <section class="panel viewer-output-panel">
-                <h3>Rendered output</h3>
-                <div id="profiling-viewers" class="viewer-grid viewer-grid--single"></div>
-                <div id="profiling-status" class="viewer-status">Initializing profiling demo...</div>
-            </section>
+            .kpi-grid {
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 6px;
+            }
 
-            <section class="panel comparison-panel">
-                <h3>Captured comparisons</h3>
-                <p class="panel-help">
-                    Click <strong>Capture result</strong> after a scenario has collected frames.
-                    Each row stores the current rendered-frame averages so configurations can
-                    be compared side by side.
+            .kpi-card {
+                padding: 7px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                min-width: 0;
+            }
+
+            .kpi-card__label {
+                margin: 0 0 3px 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.2;
+            }
+
+            .kpi-card__value {
+                margin: 0;
+                font-weight: 700;
+                font-size: 15px;
+                line-height: 1.15;
+                word-break: break-word;
+            }
+
+            .charts-grid {
+                min-height: 0;
+                height: 100%;
+                display: grid;
+                grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.1fr);
+                grid-template-rows: minmax(150px, 1fr) minmax(120px, auto);
+                gap: 8px;
+            }
+
+            .visualization-panel {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 6px;
+            }
+
+            .visualization-panel .charts-grid {
+                min-height: 0;
+                overflow: hidden;
+            }
+
+            .timing-history-card {
+                grid-column: 2;
+                grid-row: 1 / -1;
+                display: grid;
+                grid-template-rows: auto auto minmax(0, 1fr);
+                gap: 4px;
+            }
+
+            .timing-history-card .chart-scroll {
+                height: auto;
+                min-height: 0;
+                overflow: hidden;
+                display: grid;
+                grid-template-rows: repeat(6, minmax(0, 1fr));
+                gap: 5px;
+            }
+
+            .sparkline-card {
+                min-height: 0;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+            }
+
+            .sparkline-label {
+                font-size: 10px;
+                color: #374151;
+                line-height: 1.2;
+            }
+
+            .latest-breakdown-card {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 4px;
+            }
+
+            .latest-breakdown-scroll {
+                min-height: 0;
+                overflow: auto;
+                padding-right: 4px;
+            }
+
+            .chart-card p {
+                margin: 3px 0 5px 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.25;
+            }
+
+            .chart-card {
+                min-height: 0;
+            }
+
+            .svg-chart {
+                display: block;
+                width: 100%;
+                height: auto;
+                overflow: visible;
+            }
+
+            .legend {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 4px 10px;
+                margin-top: 4px;
+                font-size: 10px;
+                color: #374151;
+            }
+
+            .legend-item {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+            }
+
+            .legend-swatch {
+                width: 9px;
+                height: 9px;
+                display: inline-block;
+                border: 1px solid rgba(0, 0, 0, 0.2);
+            }
+
+            .detail-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 5px 8px;
+                font-size: 11px;
+            }
+
+            .detail-row {
+                display: grid;
+                grid-template-columns: 116px minmax(0, 1fr);
+                gap: 6px;
+                min-width: 0;
+            }
+
+            .detail-label {
+                color: #4b5563;
+                font-weight: 600;
+            }
+
+            .detail-value {
+                min-width: 0;
+                word-break: break-word;
+                font-family: Consolas, Monaco, monospace;
+            }
+
+            .comparison-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 11px;
+            }
+
+            .latest-breakdown-details {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 3px;
+                margin-top: 3px;
+            }
+
+            .compact-metric {
+                padding: 3px 4px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                min-width: 0;
+            }
+
+            .compact-metric__label {
+                display: block;
+                color: #4b5563;
+                font-size: 9px;
+                line-height: 1.15;
+            }
+
+            .compact-metric__value {
+                display: block;
+                font-family: Consolas, Monaco, monospace;
+                font-size: 10px;
+                line-height: 1.15;
+                word-break: break-word;
+            }
+
+            .comparison-table th,
+            .comparison-table td {
+                border: 1px solid #e5e7eb;
+                padding: 4px 5px;
+                text-align: left;
+                vertical-align: top;
+            }
+
+            .comparison-table th {
+                background: #f3f4f6;
+                position: sticky;
+                top: 0;
+            }
+
+            .tile-source-list {
+                display: grid;
+                gap: 6px;
+                font-size: 11px;
+            }
+
+            .tile-source-card {
+                padding: 6px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+            }
+
+            .tile-source-card h5 {
+                margin: 0 0 4px 0;
+                font-size: 11px;
+            }
+
+            .raw-output {
+                max-height: 100%;
+                overflow: auto;
+                margin: 0;
+                padding: 8px;
+                border: 1px solid #e5e7eb;
+                background: #111827;
+                color: #f9fafb;
+                font-size: 10px;
+                line-height: 1.3;
+            }
+
+            .hidden {
+                display: none !important;
+            }
+
+            @media (max-width: 1180px) {
+                body {
+                    overflow: auto;
+                }
+
+                .content {
+                    height: auto;
+                    min-height: 100vh;
+                }
+
+                .toolbar,
+                .workspace,
+                .viewer-grid,
+                .charts-grid,
+                .scenario-options {
+                    grid-template-columns: 1fr;
+                }
+
+                .charts-grid {
+                    height: auto;
+                    grid-template-rows: auto;
+                }
+
+                .timing-history-card {
+                    grid-column: auto;
+                    grid-row: auto;
+                }
+
+                .timing-history-card .chart-scroll {
+                    overflow: visible;
+                }
+
+                .left-column,
+                .right-column {
+                    grid-template-rows: auto;
+                }
+
+                .viewer-container {
+                    height: 360px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="content">
+            <header class="page-header">
+                <h2>FlexRenderer Profiling Demo</h2>
+                <p id="profiling-scenario-description">
+                    Select an isolated profiling scenario. Only the viewers needed by that scenario are created.
                 </p>
-                <div id="profiling-comparison-results" class="panel-scroll"></div>
-            </section>
-        </aside>
-    </main>
+            </header>
 
-    <div class="hidden">
-        <div id="profiling-tile-source-chart"></div>
-        <div id="profiling-tile-source-list"></div>
-        <div id="profiling-raw"></div>
-    </div>
-</div>
-</body>
+            <section class="toolbar">
+                <div class="toolbar-group">
+                    <h4>Scenario</h4>
+                    <div class="toolbar-row">
+                        <label for="profiling-scenario">Mode</label>
+                        <select id="profiling-scenario">
+                            <option value="many-sources">Single viewer: many sources</option>
+                            <option value="large-geojson">Single viewer: large GeoJSON</option>
+                            <option value="two-private">Two viewers: private contexts</option>
+                            <option value="two-shared">Two viewers: shared context</option>
+                        </select>
+                    </div>
+                    <div class="button-row">
+                        <button id="profiling-load-scenario" type="button">Load scenario</button>
+                        <button id="profiling-capture-result" type="button">Capture result</button>
+                        <button id="profiling-clear-captures" type="button">Clear captures</button>
+                    </div>
+                </div>
+
+                <div class="toolbar-group">
+                    <h4>Scenario options</h4>
+                    <div class="scenario-options">
+                        <label class="checkbox-row">
+                            <input id="profiling-geojson-aggregation" type="checkbox" checked />
+                            GeoJSON aggregation
+                        </label>
+                        <label class="checkbox-row">
+                            <input id="profiling-geojson-spatial-index" type="checkbox" checked />
+                            GeoJSON spatial index
+                        </label>
+                        <label class="checkbox-row">
+                            <input id="profiling-geojson-native-lines" type="checkbox" checked />
+                            Native lines
+                        </label>
+                        <div class="toolbar-row">
+                            <label for="profiling-many-source-count">Sources</label>
+                            <input
+                                id="profiling-many-source-count"
+                                type="number"
+                                min="2"
+                                max="16"
+                                step="1"
+                                value="10"
+                            />
+                        </div>
+                        <label class="checkbox-row">
+                            <input id="profiling-motion-enabled" type="checkbox" />
+                            Pan/zoom loop
+                        </label>
+                        <div class="toolbar-row">
+                            <label for="profiling-sample-interval">Sample ms</label>
+                            <input id="profiling-sample-interval" type="number" min="100" step="50" value="500" />
+                        </div>
+                        <div class="toolbar-row">
+                            <label for="profiling-max-frames">Frames</label>
+                            <input id="profiling-max-frames" type="number" min="1" step="1" value="120" />
+                        </div>
+                        <label class="checkbox-row">
+                            <input id="profiling-include-tile-sources" type="checkbox" checked />
+                            Tile spans
+                        </label>
+                    </div>
+                </div>
+
+                <div class="toolbar-group">
+                    <h4>Profiling actions</h4>
+                    <label class="checkbox-row">
+                        <input id="profiling-enabled" type="checkbox" checked />
+                        Enable profiling
+                    </label>
+                    <label class="checkbox-row">
+                        <input id="profiling-continuous-sampling" type="checkbox" />
+                        Continuous redraw sampling
+                    </label>
+                    <div class="button-row">
+                        <button id="profiling-force-redraw" type="button">Force redraw</button>
+                        <button id="profiling-clear" type="button">Clear profiling</button>
+                        <button id="profiling-copy" type="button">Copy JSON</button>
+                        <button id="profiling-download" type="button">Download JSON</button>
+                    </div>
+                </div>
+            </section>
+
+            <main class="workspace">
+                <section class="left-column">
+                    <section class="panel">
+                        <h3>Summary</h3>
+                        <div id="profiling-kpis" class="kpi-grid"></div>
+                    </section>
+
+                    <section class="panel">
+                        <h3>Latest frame / active viewers</h3>
+                        <div id="profiling-latest-details" class="detail-grid panel-scroll"></div>
+                    </section>
+
+                    <section class="panel visualization-panel">
+                        <h3>Frame and source visualizations</h3>
+                        <div class="charts-grid">
+                            <div class="chart-card">
+                                <h4>Frame history timeline</h4>
+                                <p>
+                                    Each vertical bar is one recorded render attempt from the primary viewer. Bar height
+                                    is scaled to the current frame history, not to a fixed benchmark. Colors split the
+                                    frame into drawer, first-pass, second-pass, and gl.finish timing.
+                                </p>
+                                <div id="profiling-frame-timeline"></div>
+                                <div id="profiling-frame-timeline-legend" class="legend"></div>
+                            </div>
+
+                            <div class="chart-card latest-breakdown-card">
+                                <h4>Latest frame breakdown</h4>
+                                <div class="latest-breakdown-scroll">
+                                    <p>
+                                        Stacked timing for the newest recorded primary-viewer frame. This panel shows
+                                        the immediate per-frame phase split; longer per-viewer details are shown in the
+                                        left-side Latest frame / active viewers panel.
+                                    </p>
+                                    <div id="profiling-latest-breakdown"></div>
+                                    <div id="profiling-latest-breakdown-legend" class="legend"></div>
+                                </div>
+                            </div>
+
+                            <div class="chart-card timing-history-card">
+                                <h4>Timing history</h4>
+                                <p>
+                                    Small-multiple sparklines over the retained frame history. Each graph shows one
+                                    timing series independently so small values are not hidden by larger phases in a
+                                    shared scale.
+                                </p>
+                                <div id="profiling-sparklines" class="chart-scroll"></div>
+                            </div>
+                        </div>
+                    </section>
+                </section>
+
+                <aside class="right-column">
+                    <section class="panel viewer-output-panel">
+                        <h3>Rendered output</h3>
+                        <div id="profiling-viewers" class="viewer-grid viewer-grid--single"></div>
+                        <div id="profiling-status" class="viewer-status">Initializing profiling demo...</div>
+                    </section>
+
+                    <section class="panel comparison-panel">
+                        <h3>Captured comparisons</h3>
+                        <p class="panel-help">
+                            Click <strong>Capture result</strong> after a scenario has collected frames. Each row stores
+                            the current rendered-frame averages so configurations can be compared side by side.
+                        </p>
+                        <div id="profiling-comparison-results" class="panel-scroll"></div>
+                    </section>
+                </aside>
+            </main>
+
+            <div class="hidden">
+                <div id="profiling-tile-source-chart"></div>
+                <div id="profiling-tile-source-list"></div>
+                <div id="profiling-raw"></div>
+            </div>
+        </div>
+    </body>
 </html>

@@ -55,7 +55,7 @@ const viewportMargins = {
 
 $("#title-w").html("OpenSeadragon viewer using FlexRenderer shader layer groups");
 
-const viewer = window.viewer = OpenSeadragon({
+const viewer = (window.viewer = OpenSeadragon({
     id: "drawer-canvas",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
@@ -65,11 +65,11 @@ const viewer = window.viewer = OpenSeadragon({
     crossOriginPolicy: "Anonymous",
     ajaxWithCredentials: false,
     drawer: "flex-renderer",
-    drawerOptions: drawerOptions,
+    drawerOptions,
     blendTime: 0,
     showNavigator: true,
-    viewportMargins: viewportMargins,
-});
+    viewportMargins,
+}));
 
 IMAGE_SOURCES.forEach((source) => {
     viewer.addTiledImage({
@@ -95,10 +95,7 @@ let shaderLayerConfig = {
             use_mode: "blend",
             use_blend: "source-over",
         },
-        order: [
-            "leaves_overlay",
-            "nested_marks",
-        ],
+        order: ["leaves_overlay", "nested_marks"],
         shaders: {
             leaves_overlay: {
                 name: "Leaves overlay",
@@ -118,10 +115,7 @@ let shaderLayerConfig = {
                     use_mode: "blend",
                     use_blend: "source-over",
                 },
-                order: [
-                    "blue_b",
-                    "letter_a",
-                ],
+                order: ["blue_b", "letter_a"],
                 shaders: {
                     blue_b: {
                         name: "Blue B",
@@ -159,11 +153,7 @@ let shaderLayerConfig = {
     },
 };
 
-let shaderLayerOrder = [
-    "base_rainbow",
-    "group_photo_overlay",
-    "optional_duomo",
-];
+let shaderLayerOrder = ["base_rainbow", "group_photo_overlay", "optional_duomo"];
 
 function sourceIndex(sourceKey) {
     return IMAGE_SOURCE_INDEX_BY_KEY[sourceKey];
@@ -179,9 +169,9 @@ function renderShaderLayerControls(shaderLayer, shaderConfig, htmlContext = {}) 
     const depth = Number.isFinite(htmlContext.depth) ? htmlContext.depth : 0;
     const isGroupChild = !!htmlContext.isGroupChild;
     const isGroup = shaderConfig.type === "group";
-    const parentName = htmlContext.parentConfig ?
-        (htmlContext.parentConfig.name || htmlContext.parentConfig.type || htmlContext.parentShaderId) :
-        null;
+    const parentName = htmlContext.parentConfig
+        ? htmlContext.parentConfig.name || htmlContext.parentConfig.type || htmlContext.parentShaderId
+        : null;
 
     const wrapper = document.createElement("div");
     wrapper.className = [
@@ -189,7 +179,9 @@ function renderShaderLayerControls(shaderLayer, shaderConfig, htmlContext = {}) 
         `shader-control-card--depth-${Math.min(depth, 3)}`,
         isGroupChild ? "shader-control-card--group-child" : "shader-control-card--top",
         isGroup ? "shader-control-card--group" : "",
-    ].filter(Boolean).join(" ");
+    ]
+        .filter(Boolean)
+        .join(" ");
 
     const header = document.createElement("div");
     header.className = "shader-control-card__header";
@@ -267,7 +259,9 @@ function createBadge(text, className = "") {
 function renderShaderConfigPanel() {
     ensureGroupOrders(shaderLayerConfig);
 
-    setPanelHtml("shader-config-panel", `
+    setPanelHtml(
+        "shader-config-panel",
+        `
         <h3>Shader layer configuration</h3>
         <div class="shader-config-scroll">
             ${renderShaderConfigList(shaderLayerConfig, shaderLayerOrder)}
@@ -277,7 +271,8 @@ function renderShaderConfigPanel() {
             mode dropdown, and blend dropdown to test group handling. Group cards keep their type fixed and do not
             bind directly to an image source.
         </p>
-    `);
+    `,
+    );
 
     bindShaderConfigPanelEvents();
 }
@@ -304,11 +299,13 @@ function renderShaderConfigItem(shaderId, shaderConfig, path) {
     const isGroup = shaderConfig.type === "group";
     const visible = shaderConfig.visible !== 0;
     const name = shaderConfig.name || shaderId;
-    const children = isGroup ? renderShaderConfigList(
-        shaderConfig.shaders || {},
-        shaderConfig.order || Object.keys(shaderConfig.shaders || {}),
-        currentPath
-    ) : "";
+    const children = isGroup
+        ? renderShaderConfigList(
+              shaderConfig.shaders || {},
+              shaderConfig.order || Object.keys(shaderConfig.shaders || {}),
+              currentPath,
+          )
+        : "";
 
     return `
         <li class="shader-config-item" data-shader-id="${escapeHtml(shaderId)}">
@@ -375,15 +372,17 @@ function renderShaderTypeControl(shaderConfig, pathString) {
 }
 
 function renderShaderTypeOptions(selectedType) {
-    return getAvailableNonGroupShaderTypes().map((shaderType) => {
-        const selected = shaderType.type === selectedType ? "selected" : "";
+    return getAvailableNonGroupShaderTypes()
+        .map((shaderType) => {
+            const selected = shaderType.type === selectedType ? "selected" : "";
 
-        return `
+            return `
             <option value="${escapeHtml(shaderType.type)}" ${selected}>
                 ${escapeHtml(shaderType.name)} (${escapeHtml(shaderType.type)})
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 }
 
 function renderImageSourceOptions(selectedIndex) {
@@ -399,15 +398,17 @@ function renderImageSourceOptions(selectedIndex) {
 }
 
 function renderUseModeOptions(selectedMode) {
-    return ["show", "blend", "clip"].map((mode) => {
-        const selected = mode === selectedMode ? "selected" : "";
+    return ["show", "blend", "clip"]
+        .map((mode) => {
+            const selected = mode === selectedMode ? "selected" : "";
 
-        return `
+            return `
             <option value="${escapeHtml(mode)}" ${selected}>
                 ${escapeHtml(mode)}
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 }
 
 function renderUseBlendOptions(selectedBlend) {
@@ -425,15 +426,17 @@ function renderUseBlendOptions(selectedBlend) {
         "source-in",
         "source-out",
         "source-atop",
-    ].map((blend) => {
-        const selected = blend === selectedBlend ? "selected" : "";
+    ]
+        .map((blend) => {
+            const selected = blend === selectedBlend ? "selected" : "";
 
-        return `
+            return `
             <option value="${escapeHtml(blend)}" ${selected}>
                 ${escapeHtml(blend)}
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 }
 
 function renderShaderImageSourceControl(shaderConfig, pathString) {
@@ -446,9 +449,10 @@ function renderShaderImageSourceControl(shaderConfig, pathString) {
         `;
     }
 
-    const selectedIndex = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
-        Number(shaderConfig.tiledImages[0]) :
-        0;
+    const selectedIndex =
+        Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length
+            ? Number(shaderConfig.tiledImages[0])
+            : 0;
 
     return `
         <label class="shader-config-field-label">
@@ -495,7 +499,7 @@ function bindShaderConfigPanelEvents() {
     $(".shader-config-list").sortable({
         handle: ".shader-config-drag-handle",
         items: "> .shader-config-item",
-        update: function() {
+        update: function () {
             const orderPath = decodePath($(this).attr("data-order-path"));
             const orderOwner = getOrderOwnerFromPath(orderPath);
 
@@ -503,29 +507,31 @@ function bindShaderConfigPanelEvents() {
                 return;
             }
 
-            orderOwner.setOrder($(this)
-                .children(".shader-config-item")
-                .map((_, item) => $(item).attr("data-shader-id"))
-                .get());
+            orderOwner.setOrder(
+                $(this)
+                    .children(".shader-config-item")
+                    .map((_, item) => $(item).attr("data-shader-id"))
+                    .get(),
+            );
 
             applyShaderLayerGuiConfig();
             renderShaderConfigPanel();
         },
     });
 
-    $(".shader-config-visible-toggle").on("change", function() {
+    $(".shader-config-visible-toggle").on("change", function () {
         updateShaderConfigFromPath(this, (shaderConfig) => {
             shaderConfig.visible = this.checked ? 1 : 0;
         });
     });
 
-    $(".shader-config-name-input").on("change", function() {
+    $(".shader-config-name-input").on("change", function () {
         updateShaderConfigFromPath(this, (shaderConfig, shaderPath) => {
             shaderConfig.name = this.value.trim() || shaderPath[shaderPath.length - 1];
         });
     });
 
-    $(".shader-config-image-index-select").on("change", function() {
+    $(".shader-config-image-index-select").on("change", function () {
         updateShaderConfigFromPath(this, (shaderConfig) => {
             if (shaderConfig.type === "group") {
                 return;
@@ -535,21 +541,21 @@ function bindShaderConfigPanelEvents() {
         });
     });
 
-    $(".shader-config-use-mode-select").on("change", function() {
+    $(".shader-config-use-mode-select").on("change", function () {
         updateShaderConfigFromPath(this, (shaderConfig) => {
             shaderConfig.params = shaderConfig.params || {};
             shaderConfig.params.use_mode = this.value;
         });
     });
 
-    $(".shader-config-use-blend-select").on("change", function() {
+    $(".shader-config-use-blend-select").on("change", function () {
         updateShaderConfigFromPath(this, (shaderConfig) => {
             shaderConfig.params = shaderConfig.params || {};
             shaderConfig.params.use_blend = this.value;
         });
     });
 
-    $(".shader-config-type-select").on("change", function() {
+    $(".shader-config-type-select").on("change", function () {
         updateShaderConfigFromPath(this, (shaderConfig) => {
             if (shaderConfig.type === "group") {
                 return;
@@ -564,7 +570,7 @@ function bindShaderConfigPanelEvents() {
 
             shaderConfig.type = this.value;
             shaderConfig.params = Object.fromEntries(
-                Object.entries(preservedGlobalParams).filter(([, value]) => value !== undefined)
+                Object.entries(preservedGlobalParams).filter(([, value]) => value !== undefined),
             );
             shaderConfig.cache = {};
         });
@@ -585,8 +591,7 @@ function updateShaderConfigFromPath(element, update) {
 }
 
 function getAvailableNonGroupShaderTypes() {
-    return OpenSeadragon.FlexRenderer.ShaderLayerRegistry
-        .availableLayers()
+    return OpenSeadragon.FlexRenderer.ShaderLayerRegistry.availableLayers()
         .filter((Shader) => Shader.type() !== "group")
         .map((Shader) => ({
             type: Shader.type(),

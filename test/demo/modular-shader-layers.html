@@ -1,524 +1,532 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <title>Modular Shader Layer Demo</title>
+    <head>
+        <title>Modular Shader Layer Demo</title>
 
-    <script type="text/javascript" src='../../openseadragon/openseadragon.js'></script>
-    <script type="text/javascript" src='/build/openseadragon/flex-renderer.js'></script>
-    <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
-    <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
-    <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
-    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.css">
+        <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+        <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
+        <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
+        <script type="text/javascript" src="../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js"></script>
+        <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css" />
+        <script
+            type="text/javascript"
+            src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.min.js"
+        ></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.css" />
 
-    <script type="module" src="modular-shader-layers.js"></script>
+        <script type="module" src="modular-shader-layers.js"></script>
 
-    <style>
-        html,
-        body {
-            min-height: 100%;
-        }
-
-        body {
-            min-height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-            color: #111827;
-            background: #eef1f5;
-            overflow: auto;
-        }
-
-        .content {
-            min-height: 100vh;
-            padding: 10px;
-            box-sizing: border-box;
-            display: grid;
-            grid-template-rows: auto minmax(0, auto);
-            gap: 8px;
-        }
-
-        .page-header {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 16px;
-            min-width: 0;
-        }
-
-        .page-header h2 {
-            margin: 0;
-            font-size: 18px;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-
-        .page-header p {
-            margin: 0;
-            color: #4b5563;
-            font-size: 12px;
-            line-height: 1.3;
-            text-align: right;
-            min-width: 0;
-        }
-
-        .workspace {
-            min-width: 0;
-            display: grid;
-            grid-template-rows: auto auto;
-            gap: 8px;
-        }
-
-        .viewer-comparison-grid {
-            min-width: 0;
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
-            align-items: stretch;
-        }
-
-        .viewer-column {
-            min-width: 0;
-            display: grid;
-            grid-template-rows: auto auto;
-            gap: 8px;
-        }
-
-        .viewer-column--legacy {
-            grid-template-rows: auto minmax(0, 1fr);
-        }
-
-        .shader-panels-row {
-            min-width: 0;
-            min-height: 0;
-            display: grid;
-            grid-template-columns: minmax(0, 1.15fr) minmax(240px, 0.85fr);
-            gap: 8px;
-            align-items: stretch;
-        }
-
-        .panel,
-        .viewer-card {
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            box-sizing: border-box;
-        }
-
-        .panel {
-            min-height: 0;
-            padding: 8px;
-            overflow: auto;
-        }
-
-        .panel h3,
-        .viewer-card h4 {
-            margin: 0;
-            font-size: 12px;
-        }
-
-        .viewer-card {
-            min-width: 0;
-            min-height: 320px;
-            height: min(44vh, 480px);
-            padding: 8px;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr) auto;
-            gap: 6px;
-        }
-
-        .viewer-container {
-            min-height: 0;
-            width: 100%;
-            height: 100%;
-            border: 1px solid #9ca3af;
-            background: #111827;
-            position: relative;
-        }
-
-        .viewer-status,
-        .shader-config-help,
-        .module-graph-editor-panel__description {
-            padding: 4px 6px;
-            border: 1px solid #d1d5db;
-            background: #f9fafb;
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.25;
-        }
-
-        .viewer-status {
-            min-height: 22px;
-            box-sizing: border-box;
-        }
-
-        .viewer-status--error {
-            border-color: #fecaca;
-            background: #fff1f2;
-            color: #7f1d1d;
-        }
-
-        .viewer-status--ok {
-            border-color: #bbf7d0;
-            background: #f0fdf4;
-            color: #14532d;
-        }
-
-        .shader-config-panel,
-        .shader-controls-panel {
-            max-height: none;
-        }
-
-        #modular-shader-config-panel {
-            overflow: visible;
-        }
-
-        .shader-controls-list {
-            display: grid;
-            align-content: start;
-            gap: 6px;
-            min-width: 0;
-        }
-
-        .shader-control-card {
-            display: grid;
-            gap: 6px;
-            min-width: 0;
-            padding: 6px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            box-sizing: border-box;
-        }
-
-        .shader-control-card__header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 8px;
-            min-width: 0;
-        }
-
-        .shader-control-card__title {
-            min-width: 0;
-            font-weight: 700;
-            font-size: 12px;
-            line-height: 1.2;
-            word-break: break-word;
-        }
-
-        .shader-control-card__error {
-            color: #b91c1c;
-            font-size: 11px;
-            line-height: 1.25;
-            white-space: pre-wrap;
-        }
-
-        .shader-control-card__controls {
-            min-width: 0;
-            font-size: 12px;
-        }
-
-        .shader-badge {
-            flex: 0 0 auto;
-            padding: 2px 6px;
-            border: 1px solid #9ca3af;
-            border-radius: 999px;
-            background: #ffffff;
-            color: #374151;
-            font-size: 10px;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-
-        .shader-badge--modular {
-            border-color: #93c5fd;
-            color: #1e3a8a;
-        }
-
-        .shader-badge--legacy {
-            border-color: #d1d5db;
-            color: #374151;
-        }
-
-        .shader-config-list {
-            list-style: none;
-            margin: 0;
-            padding: 0;
-        }
-
-        .shader-config-item {
-            margin: 0;
-            padding: 0;
-        }
-
-        .shader-config-row {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr);
-            align-items: start;
-            gap: 6px 8px;
-            margin-bottom: 6px;
-            padding: 6px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-        }
-
-        .shader-config-row__selectors {
-            display: grid;
-            grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
-            gap: 8px;
-            min-width: 0;
-        }
-
-        .shader-config-field-label {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            min-width: 0;
-            color: #4b5563;
-            font-size: 11px;
-            line-height: 1.25;
-        }
-
-        .shader-config-field-label input,
-        .shader-config-field-label select,
-        .shader-config-field-label textarea {
-            min-width: 0;
-            max-width: 100%;
-            width: 100%;
-            box-sizing: border-box;
-            color: #111827;
-            font-size: 12px;
-        }
-
-        .shader-config-name-input,
-        .shader-config-preset-select,
-        .shader-config-image-index-select {
-            width: 100%;
-            box-sizing: border-box;
-        }
-
-        .shader-config-type-locked {
-            color: #6b7280;
-            font-family: monospace;
-            font-size: 12px;
-            line-height: 1.6;
-        }
-
-        .shader-config-help {
-            margin: 6px 0 0 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.3;
-        }
-
-        .shader-config-preset-panel {
-            margin: 0 0 8px 0;
-            padding: 6px;
-            border: 1px solid #e5e7eb;
-            background: #ffffff;
-        }
-
-        .shader-config-preset-description {
-            margin: 5px 0 0 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.3;
-        }
-
-        .shader-config-module-textarea {
-            width: 100%;
-            min-height: 230px;
-            box-sizing: border-box;
-            font-family: monospace;
-            line-height: 1.35;
-            resize: vertical;
-        }
-
-        .shader-config-diagnostics {
-            margin-top: 6px;
-            padding: 6px 8px;
-            border: 1px solid #fecaca;
-            background: #fff1f2;
-            color: #7f1d1d;
-            font-size: 11px;
-            line-height: 1.25;
-        }
-
-        .shader-config-diagnostics__title {
-            margin: 0 0 4px 0;
-            font-weight: 700;
-        }
-
-        .shader-config-diagnostics__list {
-            margin: 0;
-            padding-left: 18px;
-        }
-
-        .shader-config-diagnostics__item {
-            margin: 3px 0;
-        }
-
-        .shader-config-diagnostics__code,
-        .shader-config-diagnostics__path {
-            font-family: monospace;
-        }
-
-        .module-graph-editor-panel {
-            min-width: 0;
-            padding: 8px;
-            display: grid;
-            grid-template-rows: auto auto auto minmax(420px, auto);
-            gap: 6px;
-        }
-
-        .module-graph-editor-panel__header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-        }
-
-        .module-graph-editor-panel__header h3 {
-            margin: 0;
-            font-size: 12px;
-        }
-
-        .module-graph-editor-panel__actions {
-            display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
-
-        button {
-            font-size: 12px;
-            cursor: pointer;
-        }
-
-        .module-graph-editor-panel__description {
-            margin: 0;
-        }
-
-        .module-graph-editor-status {
-            padding: 4px 6px;
-            border: 1px solid #d1d5db;
-            background: #f9fafb;
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.25;
-        }
-
-        .module-graph-editor-status--error {
-            border-color: #fecaca;
-            background: #fff1f2;
-            color: #7f1d1d;
-        }
-
-        .module-graph-editor-status--ok {
-            border-color: #bbf7d0;
-            background: #f0fdf4;
-            color: #14532d;
-        }
-
-        .module-graph-editor-container {
-            height: 680px;
-            min-height: 420px;
-        }
-
-        @media (max-width: 1180px) {
-            .viewer-comparison-grid {
-                grid-template-columns: 1fr;
+        <style>
+            html,
+            body {
+                min-height: 100%;
             }
 
-            .viewer-card {
-                height: min(46vh, 480px);
+            body {
+                min-height: 100vh;
+                margin: 0;
+                font-family: Arial, sans-serif;
+                color: #111827;
+                background: #eef1f5;
+                overflow: auto;
             }
-        }
 
-        @media (max-width: 720px) {
-            .page-header {
+            .content {
+                min-height: 100vh;
+                padding: 10px;
+                box-sizing: border-box;
                 display: grid;
-                gap: 4px;
+                grid-template-rows: auto minmax(0, auto);
+                gap: 8px;
+            }
+
+            .page-header {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 16px;
+                min-width: 0;
+            }
+
+            .page-header h2 {
+                margin: 0;
+                font-size: 18px;
+                line-height: 1.2;
+                white-space: nowrap;
             }
 
             .page-header p {
-                text-align: left;
+                margin: 0;
+                color: #4b5563;
+                font-size: 12px;
+                line-height: 1.3;
+                text-align: right;
+                min-width: 0;
             }
 
-            .shader-panels-row,
-            .shader-config-row__selectors {
-                grid-template-columns: 1fr;
+            .workspace {
+                min-width: 0;
+                display: grid;
+                grid-template-rows: auto auto;
+                gap: 8px;
+            }
+
+            .viewer-comparison-grid {
+                min-width: 0;
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px;
+                align-items: stretch;
+            }
+
+            .viewer-column {
+                min-width: 0;
+                display: grid;
+                grid-template-rows: auto auto;
+                gap: 8px;
+            }
+
+            .viewer-column--legacy {
+                grid-template-rows: auto minmax(0, 1fr);
+            }
+
+            .shader-panels-row {
+                min-width: 0;
+                min-height: 0;
+                display: grid;
+                grid-template-columns: minmax(0, 1.15fr) minmax(240px, 0.85fr);
+                gap: 8px;
+                align-items: stretch;
+            }
+
+            .panel,
+            .viewer-card {
+                border: 1px solid #d1d5db;
+                background: #ffffff;
+                box-sizing: border-box;
+            }
+
+            .panel {
+                min-height: 0;
+                padding: 8px;
+                overflow: auto;
+            }
+
+            .panel h3,
+            .viewer-card h4 {
+                margin: 0;
+                font-size: 12px;
+            }
+
+            .viewer-card {
+                min-width: 0;
+                min-height: 320px;
+                height: min(44vh, 480px);
+                padding: 8px;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                gap: 6px;
+            }
+
+            .viewer-container {
+                min-height: 0;
+                width: 100%;
+                height: 100%;
+                border: 1px solid #9ca3af;
+                background: #111827;
+                position: relative;
+            }
+
+            .viewer-status,
+            .shader-config-help,
+            .module-graph-editor-panel__description {
+                padding: 4px 6px;
+                border: 1px solid #d1d5db;
+                background: #f9fafb;
+                color: #374151;
+                font-size: 11px;
+                line-height: 1.25;
+            }
+
+            .viewer-status {
+                min-height: 22px;
+                box-sizing: border-box;
+            }
+
+            .viewer-status--error {
+                border-color: #fecaca;
+                background: #fff1f2;
+                color: #7f1d1d;
+            }
+
+            .viewer-status--ok {
+                border-color: #bbf7d0;
+                background: #f0fdf4;
+                color: #14532d;
             }
 
             .shader-config-panel,
             .shader-controls-panel {
                 max-height: none;
             }
-        }
-    </style>
-</head>
-<body>
-<div class="content">
-    <header class="page-header">
-        <h2 id="title-w">Modular Shader Layer Demo</h2>
-        <p>Existing ShaderLayers on the left, ModularShaderLayer equivalents on the right.</p>
-    </header>
 
-    <main class="workspace">
-        <section class="viewer-comparison-grid">
-            <section class="viewer-column viewer-column--legacy">
-                <div class="viewer-card viewer-output-panel">
-                    <h4>Existing ShaderLayer viewer</h4>
-                    <div id="regular-drawer-canvas" class="viewer-container"></div>
-                    <div id="regular-viewer-status" class="viewer-status">Loading existing ShaderLayer viewer...</div>
-                </div>
+            #modular-shader-config-panel {
+                overflow: visible;
+            }
 
-                <div class="shader-panels-row">
-                    <section id="regular-shader-config-panel" class="panel shader-config-panel">
-                        Loading existing ShaderLayer configuration...
+            .shader-controls-list {
+                display: grid;
+                align-content: start;
+                gap: 6px;
+                min-width: 0;
+            }
+
+            .shader-control-card {
+                display: grid;
+                gap: 6px;
+                min-width: 0;
+                padding: 6px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                box-sizing: border-box;
+            }
+
+            .shader-control-card__header {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 8px;
+                min-width: 0;
+            }
+
+            .shader-control-card__title {
+                min-width: 0;
+                font-weight: 700;
+                font-size: 12px;
+                line-height: 1.2;
+                word-break: break-word;
+            }
+
+            .shader-control-card__error {
+                color: #b91c1c;
+                font-size: 11px;
+                line-height: 1.25;
+                white-space: pre-wrap;
+            }
+
+            .shader-control-card__controls {
+                min-width: 0;
+                font-size: 12px;
+            }
+
+            .shader-badge {
+                flex: 0 0 auto;
+                padding: 2px 6px;
+                border: 1px solid #9ca3af;
+                border-radius: 999px;
+                background: #ffffff;
+                color: #374151;
+                font-size: 10px;
+                line-height: 1.2;
+                white-space: nowrap;
+            }
+
+            .shader-badge--modular {
+                border-color: #93c5fd;
+                color: #1e3a8a;
+            }
+
+            .shader-badge--legacy {
+                border-color: #d1d5db;
+                color: #374151;
+            }
+
+            .shader-config-list {
+                list-style: none;
+                margin: 0;
+                padding: 0;
+            }
+
+            .shader-config-item {
+                margin: 0;
+                padding: 0;
+            }
+
+            .shader-config-row {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr);
+                align-items: start;
+                gap: 6px 8px;
+                margin-bottom: 6px;
+                padding: 6px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+            }
+
+            .shader-config-row__selectors {
+                display: grid;
+                grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+                gap: 8px;
+                min-width: 0;
+            }
+
+            .shader-config-field-label {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                min-width: 0;
+                color: #4b5563;
+                font-size: 11px;
+                line-height: 1.25;
+            }
+
+            .shader-config-field-label input,
+            .shader-config-field-label select,
+            .shader-config-field-label textarea {
+                min-width: 0;
+                max-width: 100%;
+                width: 100%;
+                box-sizing: border-box;
+                color: #111827;
+                font-size: 12px;
+            }
+
+            .shader-config-name-input,
+            .shader-config-preset-select,
+            .shader-config-image-index-select {
+                width: 100%;
+                box-sizing: border-box;
+            }
+
+            .shader-config-type-locked {
+                color: #6b7280;
+                font-family: monospace;
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .shader-config-help {
+                margin: 6px 0 0 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.3;
+            }
+
+            .shader-config-preset-panel {
+                margin: 0 0 8px 0;
+                padding: 6px;
+                border: 1px solid #e5e7eb;
+                background: #ffffff;
+            }
+
+            .shader-config-preset-description {
+                margin: 5px 0 0 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.3;
+            }
+
+            .shader-config-module-textarea {
+                width: 100%;
+                min-height: 230px;
+                box-sizing: border-box;
+                font-family: monospace;
+                line-height: 1.35;
+                resize: vertical;
+            }
+
+            .shader-config-diagnostics {
+                margin-top: 6px;
+                padding: 6px 8px;
+                border: 1px solid #fecaca;
+                background: #fff1f2;
+                color: #7f1d1d;
+                font-size: 11px;
+                line-height: 1.25;
+            }
+
+            .shader-config-diagnostics__title {
+                margin: 0 0 4px 0;
+                font-weight: 700;
+            }
+
+            .shader-config-diagnostics__list {
+                margin: 0;
+                padding-left: 18px;
+            }
+
+            .shader-config-diagnostics__item {
+                margin: 3px 0;
+            }
+
+            .shader-config-diagnostics__code,
+            .shader-config-diagnostics__path {
+                font-family: monospace;
+            }
+
+            .module-graph-editor-panel {
+                min-width: 0;
+                padding: 8px;
+                display: grid;
+                grid-template-rows: auto auto auto minmax(420px, auto);
+                gap: 6px;
+            }
+
+            .module-graph-editor-panel__header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+            }
+
+            .module-graph-editor-panel__header h3 {
+                margin: 0;
+                font-size: 12px;
+            }
+
+            .module-graph-editor-panel__actions {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
+
+            button {
+                font-size: 12px;
+                cursor: pointer;
+            }
+
+            .module-graph-editor-panel__description {
+                margin: 0;
+            }
+
+            .module-graph-editor-status {
+                padding: 4px 6px;
+                border: 1px solid #d1d5db;
+                background: #f9fafb;
+                color: #374151;
+                font-size: 11px;
+                line-height: 1.25;
+            }
+
+            .module-graph-editor-status--error {
+                border-color: #fecaca;
+                background: #fff1f2;
+                color: #7f1d1d;
+            }
+
+            .module-graph-editor-status--ok {
+                border-color: #bbf7d0;
+                background: #f0fdf4;
+                color: #14532d;
+            }
+
+            .module-graph-editor-container {
+                height: 680px;
+                min-height: 420px;
+            }
+
+            @media (max-width: 1180px) {
+                .viewer-comparison-grid {
+                    grid-template-columns: 1fr;
+                }
+
+                .viewer-card {
+                    height: min(46vh, 480px);
+                }
+            }
+
+            @media (max-width: 720px) {
+                .page-header {
+                    display: grid;
+                    gap: 4px;
+                }
+
+                .page-header p {
+                    text-align: left;
+                }
+
+                .shader-panels-row,
+                .shader-config-row__selectors {
+                    grid-template-columns: 1fr;
+                }
+
+                .shader-config-panel,
+                .shader-controls-panel {
+                    max-height: none;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="content">
+            <header class="page-header">
+                <h2 id="title-w">Modular Shader Layer Demo</h2>
+                <p>Existing ShaderLayers on the left, ModularShaderLayer equivalents on the right.</p>
+            </header>
+
+            <main class="workspace">
+                <section class="viewer-comparison-grid">
+                    <section class="viewer-column viewer-column--legacy">
+                        <div class="viewer-card viewer-output-panel">
+                            <h4>Existing ShaderLayer viewer</h4>
+                            <div id="regular-drawer-canvas" class="viewer-container"></div>
+                            <div id="regular-viewer-status" class="viewer-status">
+                                Loading existing ShaderLayer viewer...
+                            </div>
+                        </div>
+
+                        <div class="shader-panels-row">
+                            <section id="regular-shader-config-panel" class="panel shader-config-panel">
+                                Loading existing ShaderLayer configuration...
+                            </section>
+
+                            <aside class="panel shader-controls-panel">
+                                <h3>Shader layer controls</h3>
+                                <div id="regular-shader-ui-container" class="shader-controls-list"></div>
+                            </aside>
+                        </div>
                     </section>
 
-                    <aside class="panel shader-controls-panel">
-                        <h3>Shader layer controls</h3>
-                        <div id="regular-shader-ui-container" class="shader-controls-list"></div>
-                    </aside>
-                </div>
-            </section>
+                    <section class="viewer-column viewer-column--modular">
+                        <div class="viewer-card viewer-output-panel">
+                            <h4>ModularShaderLayer viewer</h4>
+                            <div id="modular-drawer-canvas" class="viewer-container"></div>
+                            <div id="modular-viewer-status" class="viewer-status">
+                                Loading ModularShaderLayer viewer...
+                            </div>
+                        </div>
 
-            <section class="viewer-column viewer-column--modular">
-                <div class="viewer-card viewer-output-panel">
-                    <h4>ModularShaderLayer viewer</h4>
-                    <div id="modular-drawer-canvas" class="viewer-container"></div>
-                    <div id="modular-viewer-status" class="viewer-status">Loading ModularShaderLayer viewer...</div>
-                </div>
+                        <div class="shader-panels-row">
+                            <section id="modular-shader-config-panel" class="panel shader-config-panel">
+                                Loading modular ShaderLayer configuration...
+                            </section>
 
-                <div class="shader-panels-row">
-                    <section id="modular-shader-config-panel" class="panel shader-config-panel">
-                        Loading modular ShaderLayer configuration...
+                            <aside class="panel shader-controls-panel">
+                                <h3>Shader layer controls</h3>
+                                <div id="modular-shader-ui-container" class="shader-controls-list"></div>
+                            </aside>
+                        </div>
                     </section>
+                </section>
 
-                    <aside class="panel shader-controls-panel">
-                        <h3>Shader layer controls</h3>
-                        <div id="modular-shader-ui-container" class="shader-controls-list"></div>
-                    </aside>
-                </div>
-            </section>
-        </section>
-
-        <section class="panel module-graph-editor-panel">
-            <div class="module-graph-editor-panel__header">
-                <h3>Module graph editor</h3>
-                <div class="module-graph-editor-panel__actions">
-                    <button type="button" id="module-graph-editor-apply">Apply graph editor changes</button>
-                    <button type="button" id="module-graph-editor-reset">Reset editor draft</button>
-                </div>
-            </div>
-            <p class="module-graph-editor-panel__description">
-                Visual editor for the right-side ModularShaderLayer graph. Edit the draft graph here, then apply it to update the live modular viewer. The JSON editor above remains the exact config view.
-            </p>
-            <div id="module-graph-editor-status" class="module-graph-editor-status">
-                Loading module graph editor...
-            </div>
-            <div id="module-graph-editor-container" class="module-graph-editor-container"></div>
-        </section>
-    </main>
-</div>
-</body>
+                <section class="panel module-graph-editor-panel">
+                    <div class="module-graph-editor-panel__header">
+                        <h3>Module graph editor</h3>
+                        <div class="module-graph-editor-panel__actions">
+                            <button type="button" id="module-graph-editor-apply">Apply graph editor changes</button>
+                            <button type="button" id="module-graph-editor-reset">Reset editor draft</button>
+                        </div>
+                    </div>
+                    <p class="module-graph-editor-panel__description">
+                        Visual editor for the right-side ModularShaderLayer graph. Edit the draft graph here, then apply
+                        it to update the live modular viewer. The JSON editor above remains the exact config view.
+                    </p>
+                    <div id="module-graph-editor-status" class="module-graph-editor-status">
+                        Loading module graph editor...
+                    </div>
+                    <div id="module-graph-editor-container" class="module-graph-editor-container"></div>
+                </section>
+            </main>
+        </div>
+    </body>
 </html>

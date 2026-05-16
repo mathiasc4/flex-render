@@ -1,470 +1,475 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <title>Shader Layer Groups Demo</title>
+    <head>
+        <title>Shader Layer Groups Demo</title>
 
-    <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
-    <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
-    <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
-    <script type="text/javascript" src="../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js"></script>
-    <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+        <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+        <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
+        <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
+        <script type="text/javascript" src="../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js"></script>
+        <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css" />
 
-    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.css">
+        <script
+            type="text/javascript"
+            src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.min.js"
+        ></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.8.1/nouislider.css" />
 
-    <script type="module" src="shader-layer-groups.js"></script>
+        <script type="module" src="shader-layer-groups.js"></script>
 
-    <style>
-        html,
-        body {
-            min-height: 100%;
-        }
-
-        body {
-            min-height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-            color: #111827;
-            background: #eef1f5;
-            overflow: hidden;
-        }
-
-        .content {
-            height: 100vh;
-            padding: 10px;
-            box-sizing: border-box;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 8px;
-        }
-
-        .page-header {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 16px;
-            min-width: 0;
-        }
-
-        .page-header h2 {
-            margin: 0;
-            font-size: 18px;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-
-        .page-header p {
-            margin: 0;
-            color: #4b5563;
-            font-size: 12px;
-            line-height: 1.3;
-            text-align: right;
-            min-width: 0;
-        }
-
-        .workspace {
-            min-height: 0;
-            display: grid;
-            grid-template-columns: minmax(0, 1.25fr) minmax(430px, 0.75fr);
-            grid-template-rows: minmax(0, 1fr);
-            gap: 8px;
-        }
-
-        .side-column {
-            min-height: 0;
-            display: grid;
-            grid-template-rows: minmax(0, 1fr) minmax(240px, 0.7fr);
-            gap: 8px;
-        }
-
-        .panel,
-        .viewer-card {
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            box-sizing: border-box;
-        }
-
-        .panel {
-            min-height: 0;
-            padding: 8px;
-            overflow: hidden;
-        }
-
-        .panel h3,
-        .viewer-card h4 {
-            margin: 0;
-            font-size: 12px;
-        }
-
-        .viewer-output-panel {
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr) auto;
-            gap: 6px;
-        }
-
-        .viewer-card {
-            min-height: 0;
-            padding: 8px;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 6px;
-        }
-
-        .viewer-container {
-            min-height: 0;
-            width: 100%;
-            height: 100%;
-            border: 1px solid #9ca3af;
-            background: #111827;
-            position: relative;
-        }
-
-        .viewer-status,
-        .shader-config-help {
-            padding: 4px 6px;
-            border: 1px solid #d1d5db;
-            background: #f9fafb;
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.25;
-        }
-
-        .shader-config-help {
-            margin: 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.3;
-        }
-
-        .shader-config-panel,
-        .shader-controls-panel {
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr) auto;
-            gap: 6px;
-        }
-
-        .shader-config-scroll,
-        .shader-controls-list {
-            min-height: 0;
-            overflow: auto;
-            display: grid;
-            align-content: start;
-            gap: 6px;
-            padding-right: 2px;
-        }
-
-        .shader-config-list {
-            list-style: none;
-            margin: 0;
-            padding: 0;
-            display: grid;
-            align-content: start;
-            gap: 6px;
-        }
-
-        .shader-config-list--children {
-            margin-top: 6px;
-            margin-left: 16px;
-            padding-left: 8px;
-            border-left: 3px solid #e5e7eb;
-        }
-
-        .shader-config-item {
-            margin: 0;
-            padding: 0;
-            min-width: 0;
-        }
-
-        .shader-config-row {
-            display: grid;
-            grid-template-columns: 20px 20px minmax(0, 1fr);
-            align-items: start;
-            gap: 6px;
-            padding: 6px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            box-sizing: border-box;
-            min-width: 0;
-        }
-
-        .shader-config-row--group {
-            border-color: #d1d5db;
-            background: #f3f4f6;
-        }
-
-        .shader-config-drag-handle {
-            cursor: move;
-            color: #6b7280;
-            text-align: center;
-            margin-top: 1px;
-        }
-
-        .shader-config-visible-label {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-top: 2px;
-            white-space: nowrap;
-        }
-
-        .shader-config-visible-label input {
-            margin: 0;
-        }
-
-        .shader-config-row__name {
-            min-width: 0;
-        }
-
-        .shader-config-row__selectors,
-        .shader-config-row__blend {
-            grid-column: 3 / 4;
-            display: grid;
-            gap: 4px 6px;
-            min-width: 0;
-        }
-
-        .shader-config-row__selectors,
-        .shader-config-row__blend {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .shader-config-row__image,
-        .shader-config-row__type,
-        .shader-config-row__use-mode,
-        .shader-config-row__use-blend {
-            min-width: 0;
-        }
-
-        .shader-config-field-label {
-            display: grid;
-            grid-template-columns: minmax(74px, 0.46fr) minmax(0, 1fr);
-            align-items: center;
-            gap: 4px;
-            min-width: 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.15;
-        }
-
-        .shader-config-field-label input,
-        .shader-config-field-label select {
-            min-width: 0;
-            width: 100%;
-            max-width: 100%;
-            box-sizing: border-box;
-            color: #111827;
-            font-size: 11px;
-        }
-
-        .shader-config-name-input {
-            font-weight: 700;
-        }
-
-        .shader-config-type-locked {
-            min-width: 0;
-            color: #374151;
-            font-family: monospace;
-            font-size: 11px;
-            line-height: 1.3;
-        }
-
-        .shader-config-use-blend-select:disabled {
-            opacity: 0.55;
-            cursor: not-allowed;
-        }
-
-        .shader-control-card {
-            padding: 6px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            box-sizing: border-box;
-            min-width: 0;
-        }
-
-        .shader-control-card--group {
-            border-color: #d1d5db;
-            background: #f3f4f6;
-        }
-
-        .shader-control-card--group-child {
-            border-left: 3px solid #d1d5db;
-        }
-
-        .shader-control-card--depth-1 {
-            margin-left: 16px;
-        }
-
-        .shader-control-card--depth-2 {
-            margin-left: 32px;
-        }
-
-        .shader-control-card--depth-3 {
-            margin-left: 48px;
-        }
-
-        .shader-control-card__header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 10px;
-            margin-bottom: 6px;
-            min-width: 0;
-        }
-
-        .shader-control-card__title-wrap {
-            min-width: 0;
-        }
-
-        .shader-control-card__title {
-            margin: 0;
-            color: #111827;
-            font-size: 12px;
-            font-weight: 700;
-            line-height: 1.2;
-            word-break: break-word;
-        }
-
-        .shader-control-card__parent {
-            margin-top: 2px;
-            color: #6b7280;
-            font-size: 10px;
-            line-height: 1.2;
-        }
-
-        .shader-control-card__badges {
-            display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-        }
-
-        .shader-control-card__error {
-            margin-bottom: 6px;
-            color: #7f1d1d;
-            font-size: 10px;
-            line-height: 1.25;
-        }
-
-        .shader-control-card__controls {
-            min-width: 0;
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.3;
-        }
-
-        .shader-control-card__controls input,
-        .shader-control-card__controls select {
-            max-width: 100%;
-            box-sizing: border-box;
-            font-size: 11px;
-        }
-
-        .shader-badge {
-            display: inline-flex;
-            align-items: center;
-            padding: 2px 6px;
-            border: 1px solid transparent;
-            border-radius: 999px;
-            color: #374151;
-            background: #e5e7eb;
-            font-size: 10px;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-
-        .shader-badge--group {
-            border-color: #9ca3af;
-            background: #ffffff;
-        }
-
-        @media (max-width: 1180px) {
+        <style>
+            html,
             body {
-                overflow: auto;
+                min-height: 100%;
+            }
+
+            body {
+                min-height: 100vh;
+                margin: 0;
+                font-family: Arial, sans-serif;
+                color: #111827;
+                background: #eef1f5;
+                overflow: hidden;
             }
 
             .content {
-                height: auto;
-                min-height: 100vh;
+                height: 100vh;
+                padding: 10px;
+                box-sizing: border-box;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 8px;
+            }
+
+            .page-header {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 16px;
+                min-width: 0;
+            }
+
+            .page-header h2 {
+                margin: 0;
+                font-size: 18px;
+                line-height: 1.2;
+                white-space: nowrap;
+            }
+
+            .page-header p {
+                margin: 0;
+                color: #4b5563;
+                font-size: 12px;
+                line-height: 1.3;
+                text-align: right;
+                min-width: 0;
             }
 
             .workspace {
-                grid-template-columns: 1fr;
-                grid-template-rows: auto auto;
+                min-height: 0;
+                display: grid;
+                grid-template-columns: minmax(0, 1.25fr) minmax(430px, 0.75fr);
+                grid-template-rows: minmax(0, 1fr);
+                gap: 8px;
             }
 
             .side-column {
-                grid-template-rows: auto auto;
+                min-height: 0;
+                display: grid;
+                grid-template-rows: minmax(0, 1fr) minmax(240px, 0.7fr);
+                gap: 8px;
+            }
+
+            .panel,
+            .viewer-card {
+                border: 1px solid #d1d5db;
+                background: #ffffff;
+                box-sizing: border-box;
+            }
+
+            .panel {
+                min-height: 0;
+                padding: 8px;
+                overflow: hidden;
+            }
+
+            .panel h3,
+            .viewer-card h4 {
+                margin: 0;
+                font-size: 12px;
+            }
+
+            .viewer-output-panel {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                gap: 6px;
+            }
+
+            .viewer-card {
+                min-height: 0;
+                padding: 8px;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 6px;
             }
 
             .viewer-container {
-                height: 520px;
+                min-height: 0;
+                width: 100%;
+                height: 100%;
+                border: 1px solid #9ca3af;
+                background: #111827;
+                position: relative;
+            }
+
+            .viewer-status,
+            .shader-config-help {
+                padding: 4px 6px;
+                border: 1px solid #d1d5db;
+                background: #f9fafb;
+                color: #374151;
+                font-size: 11px;
+                line-height: 1.25;
+            }
+
+            .shader-config-help {
+                margin: 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.3;
+            }
+
+            .shader-config-panel,
+            .shader-controls-panel {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                gap: 6px;
             }
 
             .shader-config-scroll,
             .shader-controls-list {
-                max-height: none;
-                overflow: visible;
-            }
-        }
-
-        @media (max-width: 700px) {
-            .page-header {
+                min-height: 0;
+                overflow: auto;
                 display: grid;
-                gap: 4px;
+                align-content: start;
+                gap: 6px;
+                padding-right: 2px;
             }
 
-            .page-header h2 {
-                white-space: normal;
+            .shader-config-list {
+                list-style: none;
+                margin: 0;
+                padding: 0;
+                display: grid;
+                align-content: start;
+                gap: 6px;
             }
 
-            .page-header p {
-                text-align: left;
+            .shader-config-list--children {
+                margin-top: 6px;
+                margin-left: 16px;
+                padding-left: 8px;
+                border-left: 3px solid #e5e7eb;
             }
 
-            .viewer-container {
-                height: 360px;
+            .shader-config-item {
+                margin: 0;
+                padding: 0;
+                min-width: 0;
+            }
+
+            .shader-config-row {
+                display: grid;
+                grid-template-columns: 20px 20px minmax(0, 1fr);
+                align-items: start;
+                gap: 6px;
+                padding: 6px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                box-sizing: border-box;
+                min-width: 0;
+            }
+
+            .shader-config-row--group {
+                border-color: #d1d5db;
+                background: #f3f4f6;
+            }
+
+            .shader-config-drag-handle {
+                cursor: move;
+                color: #6b7280;
+                text-align: center;
+                margin-top: 1px;
+            }
+
+            .shader-config-visible-label {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin-top: 2px;
+                white-space: nowrap;
+            }
+
+            .shader-config-visible-label input {
+                margin: 0;
+            }
+
+            .shader-config-row__name {
+                min-width: 0;
             }
 
             .shader-config-row__selectors,
             .shader-config-row__blend {
-                grid-template-columns: 1fr;
+                grid-column: 3 / 4;
+                display: grid;
+                gap: 4px 6px;
+                min-width: 0;
             }
-        }
-    </style>
-</head>
-<body>
-<div class="content">
-    <header class="page-header">
-        <h2>Shader Layer Groups Demo</h2>
-        <p id="title-w">OpenSeadragon viewer using FlexRenderer shader layer groups</p>
-    </header>
 
-    <main class="workspace">
-        <section class="panel viewer-output-panel">
-            <h3>Rendered output</h3>
-            <section class="viewer-card">
-                <h4>FlexRenderer viewer</h4>
-                <div id="drawer-canvas" class="viewer-container"></div>
-            </section>
-            <div class="viewer-status">
-                The default stack includes nested groups, hidden layers, non-default opacity, blend modes, and clip modes.
-            </div>
-        </section>
+            .shader-config-row__selectors,
+            .shader-config-row__blend {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
 
-        <aside class="side-column">
-            <section id="shader-config-panel" class="panel shader-config-panel">
-                Loading shader layer configuration...
-            </section>
+            .shader-config-row__image,
+            .shader-config-row__type,
+            .shader-config-row__use-mode,
+            .shader-config-row__use-blend {
+                min-width: 0;
+            }
 
-            <section class="panel shader-controls-panel">
-                <h3>Shader layer controls</h3>
-                <div id="my-shader-ui-container" class="shader-controls-list"></div>
-                <p class="shader-config-help">
-                    Renderer-native controls are generated for each layer. Use the opacity controls here to verify group and child opacity handling.
-                </p>
-            </section>
-        </aside>
-    </main>
-</div>
-</body>
+            .shader-config-field-label {
+                display: grid;
+                grid-template-columns: minmax(74px, 0.46fr) minmax(0, 1fr);
+                align-items: center;
+                gap: 4px;
+                min-width: 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.15;
+            }
+
+            .shader-config-field-label input,
+            .shader-config-field-label select {
+                min-width: 0;
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+                color: #111827;
+                font-size: 11px;
+            }
+
+            .shader-config-name-input {
+                font-weight: 700;
+            }
+
+            .shader-config-type-locked {
+                min-width: 0;
+                color: #374151;
+                font-family: monospace;
+                font-size: 11px;
+                line-height: 1.3;
+            }
+
+            .shader-config-use-blend-select:disabled {
+                opacity: 0.55;
+                cursor: not-allowed;
+            }
+
+            .shader-control-card {
+                padding: 6px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                box-sizing: border-box;
+                min-width: 0;
+            }
+
+            .shader-control-card--group {
+                border-color: #d1d5db;
+                background: #f3f4f6;
+            }
+
+            .shader-control-card--group-child {
+                border-left: 3px solid #d1d5db;
+            }
+
+            .shader-control-card--depth-1 {
+                margin-left: 16px;
+            }
+
+            .shader-control-card--depth-2 {
+                margin-left: 32px;
+            }
+
+            .shader-control-card--depth-3 {
+                margin-left: 48px;
+            }
+
+            .shader-control-card__header {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 10px;
+                margin-bottom: 6px;
+                min-width: 0;
+            }
+
+            .shader-control-card__title-wrap {
+                min-width: 0;
+            }
+
+            .shader-control-card__title {
+                margin: 0;
+                color: #111827;
+                font-size: 12px;
+                font-weight: 700;
+                line-height: 1.2;
+                word-break: break-word;
+            }
+
+            .shader-control-card__parent {
+                margin-top: 2px;
+                color: #6b7280;
+                font-size: 10px;
+                line-height: 1.2;
+            }
+
+            .shader-control-card__badges {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+
+            .shader-control-card__error {
+                margin-bottom: 6px;
+                color: #7f1d1d;
+                font-size: 10px;
+                line-height: 1.25;
+            }
+
+            .shader-control-card__controls {
+                min-width: 0;
+                color: #374151;
+                font-size: 11px;
+                line-height: 1.3;
+            }
+
+            .shader-control-card__controls input,
+            .shader-control-card__controls select {
+                max-width: 100%;
+                box-sizing: border-box;
+                font-size: 11px;
+            }
+
+            .shader-badge {
+                display: inline-flex;
+                align-items: center;
+                padding: 2px 6px;
+                border: 1px solid transparent;
+                border-radius: 999px;
+                color: #374151;
+                background: #e5e7eb;
+                font-size: 10px;
+                line-height: 1.2;
+                white-space: nowrap;
+            }
+
+            .shader-badge--group {
+                border-color: #9ca3af;
+                background: #ffffff;
+            }
+
+            @media (max-width: 1180px) {
+                body {
+                    overflow: auto;
+                }
+
+                .content {
+                    height: auto;
+                    min-height: 100vh;
+                }
+
+                .workspace {
+                    grid-template-columns: 1fr;
+                    grid-template-rows: auto auto;
+                }
+
+                .side-column {
+                    grid-template-rows: auto auto;
+                }
+
+                .viewer-container {
+                    height: 520px;
+                }
+
+                .shader-config-scroll,
+                .shader-controls-list {
+                    max-height: none;
+                    overflow: visible;
+                }
+            }
+
+            @media (max-width: 700px) {
+                .page-header {
+                    display: grid;
+                    gap: 4px;
+                }
+
+                .page-header h2 {
+                    white-space: normal;
+                }
+
+                .page-header p {
+                    text-align: left;
+                }
+
+                .viewer-container {
+                    height: 360px;
+                }
+
+                .shader-config-row__selectors,
+                .shader-config-row__blend {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="content">
+            <header class="page-header">
+                <h2>Shader Layer Groups Demo</h2>
+                <p id="title-w">OpenSeadragon viewer using FlexRenderer shader layer groups</p>
+            </header>
+
+            <main class="workspace">
+                <section class="panel viewer-output-panel">
+                    <h3>Rendered output</h3>
+                    <section class="viewer-card">
+                        <h4>FlexRenderer viewer</h4>
+                        <div id="drawer-canvas" class="viewer-container"></div>
+                    </section>
+                    <div class="viewer-status">
+                        The default stack includes nested groups, hidden layers, non-default opacity, blend modes, and
+                        clip modes.
+                    </div>
+                </section>
+
+                <aside class="side-column">
+                    <section id="shader-config-panel" class="panel shader-config-panel">
+                        Loading shader layer configuration...
+                    </section>
+
+                    <section class="panel shader-controls-panel">
+                        <h3>Shader layer controls</h3>
+                        <div id="my-shader-ui-container" class="shader-controls-list"></div>
+                        <p class="shader-config-help">
+                            Renderer-native controls are generated for each layer. Use the opacity controls here to
+                            verify group and child opacity handling.
+                        </p>
+                    </section>
+                </aside>
+            </main>
+        </div>
+    </body>
 </html>

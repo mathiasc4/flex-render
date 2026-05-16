@@ -1,19 +1,19 @@
 const MVT_DEFAULT_STYLE = {
     layers: {
-        water: { type: "fill", color: [0.10, 0.80, 0.80, 0.80] },
-        landcover: { type: "fill", color: [0.10, 0.80, 0.10, 0.80] },
-        landuse: { type: "fill", color: [0.80, 0.80, 0.10, 0.80] },
-        park: { type: "fill", color: [0.10, 0.80, 0.10, 0.80] },
-        boundary: { type: "line", color: [0.60, 0.20, 0.60, 1.00], widthPx: 2.0, join: "round", cap: "round" },
-        waterway: { type: "line", color: [0.10, 0.10, 0.80, 1.00], widthPx: 1.2, join: "round", cap: "round" },
-        transportation: { type: "line", color: [0.80, 0.60, 0.10, 1.00], widthPx: 1.6, join: "round", cap: "round" },
-        road: { type: "line", color: [0.60, 0.60, 0.60, 1.00], widthPx: 1.6, join: "round", cap: "round" },
-        building: { type: "fill", color: [0.10, 0.10, 0.10, 0.80] },
-        aeroway: { type: "fill", color: [0.10, 0.80, 0.60, 0.80] },
-        poi: { type: "point", color: [0.00, 0.00, 0.00, 1.00], size: 10.0 },
-        housenumber: { type: "point", color: [0.50, 0.00, 0.50, 1.00], size: 8.0 }
+        water: { type: "fill", color: [0.1, 0.8, 0.8, 0.8] },
+        landcover: { type: "fill", color: [0.1, 0.8, 0.1, 0.8] },
+        landuse: { type: "fill", color: [0.8, 0.8, 0.1, 0.8] },
+        park: { type: "fill", color: [0.1, 0.8, 0.1, 0.8] },
+        boundary: { type: "line", color: [0.6, 0.2, 0.6, 1.0], widthPx: 2.0, join: "round", cap: "round" },
+        waterway: { type: "line", color: [0.1, 0.1, 0.8, 1.0], widthPx: 1.2, join: "round", cap: "round" },
+        transportation: { type: "line", color: [0.8, 0.6, 0.1, 1.0], widthPx: 1.6, join: "round", cap: "round" },
+        road: { type: "line", color: [0.6, 0.6, 0.6, 1.0], widthPx: 1.6, join: "round", cap: "round" },
+        building: { type: "fill", color: [0.1, 0.1, 0.1, 0.8] },
+        aeroway: { type: "fill", color: [0.1, 0.8, 0.6, 0.8] },
+        poi: { type: "point", color: [0.0, 0.0, 0.0, 1.0], size: 10.0 },
+        housenumber: { type: "point", color: [0.5, 0.0, 0.5, 1.0], size: 8.0 },
     },
-    fallback: { type: "line", color: [0.50, 0.50, 0.50, 1.00], widthPx: 0.8, join: "bevel", cap: "butt" }
+    fallback: { type: "line", color: [0.5, 0.5, 0.5, 1.0], widthPx: 0.8, join: "bevel", cap: "butt" },
 };
 
 const GEOJSON_DEFAULT_STYLE = {
@@ -21,7 +21,7 @@ const GEOJSON_DEFAULT_STYLE = {
     pointColor: [1, 0.2, 0.2, 1],
     lineWidth: 2,
     lineColor: [0.2, 1, 0.2, 1],
-    fillColor: [0.2, 0.2, 1, 0.6]
+    fillColor: [0.2, 0.2, 1, 0.6],
 };
 
 const GEOJSON_10K_DEFAULT_STYLE = {
@@ -29,13 +29,13 @@ const GEOJSON_10K_DEFAULT_STYLE = {
     pointColor: [1, 0.2, 0.2, 1],
     lineWidth: 2,
     lineColor: [0.1, 0.85, 0.2, 1],
-    fillColor: [0.1, 0.35, 1, 0.45]
+    fillColor: [0.1, 0.35, 1, 0.45],
 };
 
 const DEFAULT_STYLE_BY_SOURCE = {
     mvt: MVT_DEFAULT_STYLE,
     geojson: GEOJSON_DEFAULT_STYLE,
-    geojson_10k: GEOJSON_10K_DEFAULT_STYLE
+    geojson_10k: GEOJSON_10K_DEFAULT_STYLE,
 };
 
 const styleState = Object.keys(DEFAULT_STYLE_BY_SOURCE).reduce((acc, key) => {
@@ -46,12 +46,12 @@ const styleState = Object.keys(DEFAULT_STYLE_BY_SOURCE).reduce((acc, key) => {
 const sources = {
     mvt: {
         type: "mvt",
-        tiles: [ "http://localhost:3000/data/v3/{z}/{x}/{y}.pbf" ],
+        tiles: ["http://localhost:3000/data/v3/{z}/{x}/{y}.pbf"],
         tileSize: 512,
         minzoom: 0,
         maxzoom: 14,
         scheme: "xyz",
-        extent: 4096
+        extent: 4096,
     },
     fabric: "../data/fabric.geometry.json",
     geojson: "../data/geojson-sample.geojson",
@@ -69,9 +69,9 @@ const sources = {
             labelColor: [0, 0, 0, 1],
             labelSize: 26,
             labelStrokeWidth: 3,
-            maxLabelValue: 999
-        }
-    }
+            maxLabelValue: 999,
+        },
+    },
 };
 
 const labels = {
@@ -100,7 +100,7 @@ const viewportMargins = {
 
 $("#title-w").html("OpenSeadragon viewer using FlexRenderer");
 
-let viewer = window.viewer = OpenSeadragon({
+const viewer = (window.viewer = OpenSeadragon({
     id: "viewer-container",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
@@ -109,24 +109,24 @@ let viewer = window.viewer = OpenSeadragon({
     smoothTileEdgesMinZoom: 1.1,
     crossOriginPolicy: "Anonymous",
     ajaxWithCredentials: false,
-    // maxImageCacheCount: 30,
     drawer: "flex-renderer",
-    drawerOptions: drawerOptions,
+    drawerOptions,
     blendTime: 0,
     showNavigator: true,
     viewportMargins,
-});
-
+}));
 
 function createImageOptionsElement(key, label) {
-    const aggregationControl = key === GEOJSON_10K_SOURCE_KEY
-        ? `<label>Aggregation: <input type="checkbox" data-image="" data-field="aggregation" checked></label>`
-        : "";
+    const aggregationControl =
+        key === GEOJSON_10K_SOURCE_KEY
+            ? `<label>Aggregation: <input type="checkbox" data-image="" data-field="aggregation" checked></label>`
+            : "";
 
     const nativeLinesControl = `<label>Native Lines: <input type="checkbox" data-image="" data-field="useNativeLines" checked></label>`;
     const styleControl = getStyleControlMarkup(key);
 
-    return $(`<div class="image-options" data-image-row="">
+    return $(
+        `<div class="image-options" data-image-row="">
         <span class="image-options-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
 
         <label class="image-options-title">
@@ -154,29 +154,32 @@ function createImageOptionsElement(key, label) {
                 ${styleControl}
             </div>
         </div>
-    </div>`.replaceAll('data-image=""', `data-image="${key}"`).replace('__title__', label));
+    </div>`
+            .replaceAll('data-image=""', `data-image="${key}"`)
+            .replace("__title__", label),
+    );
 }
 
 Object.keys(sources).forEach((key) => {
     const element = createImageOptionsElement(key, labels[key] || key);
 
-    $('#image-options-container').append(element);
+    $("#image-options-container").append(element);
 
     if (DEFAULT_ENABLED_SOURCE_KEYS.includes(key)) {
-        element.find('.toggle').prop('checked', true);
+        element.find(".toggle").prop("checked", true);
     }
 });
 
 initializeStyleControlState();
 
-$('#image-options-container').sortable({
-    handle: '.image-options-drag-handle',
-    items: '> .image-options',
-    update: function(event, ui) {
-        const thisItem = ui.item.find('.toggle').data('item');
-        const items = $('#image-options-container input.toggle:checked')
+$("#image-options-container").sortable({
+    handle: ".image-options-drag-handle",
+    items: "> .image-options",
+    update: function (event, ui) {
+        const thisItem = ui.item.find(".toggle").data("item");
+        const items = $("#image-options-container input.toggle:checked")
             .toArray()
-            .map((item) => $(item).data('item'))
+            .map((item) => $(item).data("item"))
             .filter(Boolean);
 
         const newIndex = items.indexOf(thisItem);
@@ -187,36 +190,38 @@ $('#image-options-container').sortable({
     },
 });
 
-$('#image-options-container').on('click', '.image-options-collapse-toggle', function() {
-    const card = $(this).closest('.image-options');
-    const collapsed = !card.hasClass('is-collapsed');
+$("#image-options-container").on("click", ".image-options-collapse-toggle", function () {
+    const card = $(this).closest(".image-options");
+    const collapsed = !card.hasClass("is-collapsed");
 
-    card.toggleClass('is-collapsed', collapsed);
+    card.toggleClass("is-collapsed", collapsed);
     $(this)
-        .attr('aria-expanded', String(!collapsed))
-        .attr('title', collapsed ? 'Expand source card' : 'Collapse source card')
-        .text(collapsed ? '▸' : '▾');
+        .attr("aria-expanded", String(!collapsed))
+        .attr("title", collapsed ? "Expand source card" : "Collapse source card")
+        .text(collapsed ? "▸" : "▾");
 });
 
-$('#image-options-container input.toggle').on('change', function() {
-    const data = $(this).data();
+$("#image-options-container input.toggle")
+    .on("change", function () {
+        const data = $(this).data();
 
-    if (this.checked) {
-        addTileSource(data.image, this).catch(error => {
-            console.error(`Failed to add tile source '${data.image}'.`, error);
-            $(this).prop("checked", false);
-        });
-    } else {
-        const item = $(this).data('item');
+        if (this.checked) {
+            addTileSource(data.image, this).catch((error) => {
+                console.error(`Failed to add tile source '${data.image}'.`, error);
+                $(this).prop("checked", false);
+            });
+        } else {
+            const item = $(this).data("item");
 
-        if (item) {
-            viewer.world.removeItem(item);
-            $(this).data('item', null);
+            if (item) {
+                viewer.world.removeItem(item);
+                $(this).data("item", null);
+            }
         }
-    }
-}).trigger('change');
+    })
+    .trigger("change");
 
-$('#image-options-container input[data-field]').on('change', function() {
+$("#image-options-container input[data-field]").on("change", function () {
     const data = $(this).data();
     const value = this.type === "checkbox" ? $(this).prop("checked") : $(this).val();
     const tiledImage = getTiledImageForSource(data.image);
@@ -224,7 +229,7 @@ $('#image-options-container input[data-field]').on('change', function() {
     updateTiledImage(tiledImage, data, value, this);
 });
 
-$('#image-options-container [data-style-field]').on('change input', function() {
+$("#image-options-container [data-style-field]").on("change input", function () {
     const image = $(this).data("image");
 
     if ($(this).data("styleField") === "type") {
@@ -234,19 +239,19 @@ $('#image-options-container [data-style-field]').on('change input', function() {
     setStyleStatus(image, "Style edited. Apply to reload this source.", "info");
 });
 
-$('#image-options-container button[data-style-action="apply"]').on('click', function() {
+$('#image-options-container button[data-style-action="apply"]').on("click", function () {
     const image = $(this).data("image");
 
-    applyStyleFromControls(image).catch(error => {
+    applyStyleFromControls(image).catch((error) => {
         console.error(`Failed to apply style for '${image}'.`, error);
         setStyleStatus(image, error.message || String(error), "error");
     });
 });
 
-$('#image-options-container button[data-style-action="reset"]').on('click', function() {
+$('#image-options-container button[data-style-action="reset"]').on("click", function () {
     const image = $(this).data("image");
 
-    resetStyleForSource(image).catch(error => {
+    resetStyleForSource(image).catch((error) => {
         console.error(`Failed to reset style for '${image}'.`, error);
         setStyleStatus(image, error.message || String(error), "error");
     });
@@ -256,14 +261,14 @@ function updateTiledImage(tiledImage, data, value, item) {
     let field = data.field;
 
     if (field === "aggregation") {
-        updateGeoJSON10kAggregation(Boolean(value)).catch(error => {
+        updateGeoJSON10kAggregation(Boolean(value)).catch((error) => {
             console.error(`Failed to update aggregation for '${data.image}'.`, error);
         });
         return;
     }
 
     if (field === "useNativeLines") {
-        reloadTileSource(data.image).catch(error => {
+        reloadTileSource(data.image).catch((error) => {
             console.error(`Failed to reload tile source '${data.image}'.`, error);
         });
         return;
@@ -273,40 +278,46 @@ function updateTiledImage(tiledImage, data, value, item) {
         return;
     }
 
-    if (field == 'x') {
+    if (field == "x") {
         let bounds = tiledImage.getBoundsNoRotate();
         let position = new OpenSeadragon.Point(Number(value), bounds.y);
 
         tiledImage.setPosition(position);
-    } else if (field == 'y') {
+    } else if (field == "y") {
         let bounds = tiledImage.getBoundsNoRotate();
         let position = new OpenSeadragon.Point(bounds.x, Number(value));
 
         tiledImage.setPosition(position);
-    } else if (field == 'width') {
+    } else if (field == "width") {
         tiledImage.setWidth(Number(value));
-    } else if (field == 'degrees') {
+    } else if (field == "degrees") {
         tiledImage.setRotation(Number(value));
-    } else if (field == 'opacity') {
+    } else if (field == "opacity") {
         tiledImage.setOpacity(Number(value));
-    } else if (field == 'flipped') {
-        tiledImage.setFlip($(item).prop('checked'));
-    } else if (field == 'smoothing') {
-        const checked = $(item).prop('checked');
+    } else if (field == "flipped") {
+        tiledImage.setFlip($(item).prop("checked"));
+    } else if (field == "smoothing") {
+        const checked = $(item).prop("checked");
         viewer.drawer.setImageSmoothingEnabled(checked);
-    } else if (field == 'cropped') {
-        if ($(item).prop('checked')) {
+    } else if (field == "cropped") {
+        if ($(item).prop("checked")) {
             let scale = tiledImage.source.width;
-            let croppingPolygons = [ [{x:0.2*scale, y:0.2*scale}, {x:0.8*scale, y:0.2*scale}, {x:0.5*scale, y:0.8*scale}] ];
+            let croppingPolygons = [
+                [
+                    { x: 0.2 * scale, y: 0.2 * scale },
+                    { x: 0.8 * scale, y: 0.2 * scale },
+                    { x: 0.5 * scale, y: 0.8 * scale },
+                ],
+            ];
 
             tiledImage.setCroppingPolygons(croppingPolygons);
         } else {
             tiledImage.resetCroppingPolygons();
         }
-    } else if (field == 'clipped') {
-        if ($(item).prop('checked')) {
+    } else if (field == "clipped") {
+        if ($(item).prop("checked")) {
             let scale = tiledImage.source.width;
-            let clipRect = new OpenSeadragon.Rect(0.1*scale, 0.2*scale, 0.6*scale, 0.4*scale);
+            let clipRect = new OpenSeadragon.Rect(0.1 * scale, 0.2 * scale, 0.6 * scale, 0.4 * scale);
 
             tiledImage.setClip(clipRect);
         } else {
@@ -316,14 +327,14 @@ function updateTiledImage(tiledImage, data, value, item) {
 }
 
 function getTiledImageForSource(image) {
-    return $(`#image-options-container input.toggle[data-image="${image}"]`).data('item');
+    return $(`#image-options-container input.toggle[data-image="${image}"]`).data("item");
 }
 
 function getOptionsForSource(image) {
     const options = $(`#image-options-container input[data-image="${image}"][type=number][data-field]`)
         .toArray()
         .reduce((acc, input) => {
-            const field = $(input).data('field');
+            const field = $(input).data("field");
 
             if (field && isTiledImageNumberOption(field)) {
                 acc[field] = Number(input.value);
@@ -332,21 +343,17 @@ function getOptionsForSource(image) {
             return acc;
         }, {});
 
-    options.flipped = $(`#image-options-container input[data-image="${image}"][data-field=flipped]`).prop('checked');
+    options.flipped = $(`#image-options-container input[data-image="${image}"][data-field=flipped]`).prop("checked");
 
     return options;
 }
 
 function isTiledImageNumberOption(field) {
-    return field === "x" ||
-        field === "y" ||
-        field === "width" ||
-        field === "degrees" ||
-        field === "opacity";
+    return field === "x" || field === "y" || field === "width" || field === "degrees" || field === "opacity";
 }
 
 function getInsertionIndex(checkbox) {
-    const items = $('#image-options-container input.toggle:checked').toArray();
+    const items = $("#image-options-container input.toggle:checked").toArray();
 
     return items.indexOf(checkbox);
 }
@@ -374,8 +381,8 @@ async function getTileSourceForImage(image) {
             style,
             aggregation: {
                 ...source.aggregation,
-                enabled: aggregationEnabled
-            }
+                enabled: aggregationEnabled,
+            },
         };
     }
 
@@ -389,30 +396,36 @@ async function getTileSourceForImage(image) {
         const data = await response.json();
 
         if (image === "mvt") {
-            const options = OpenSeadragon.MVTTileSource.prototype.configure({
-                ...data,
-                style,
-                useNativeLines
-            }, source);
+            const options = OpenSeadragon.MVTTileSource.prototype.configure(
+                {
+                    ...data,
+                    style,
+                    useNativeLines,
+                },
+                source,
+            );
 
             return new OpenSeadragon.MVTTileSource({
                 ...options,
                 style,
-                useNativeLines
+                useNativeLines,
             });
         }
 
         if (image === "geojson") {
-            const options = OpenSeadragon.GeoJSONTileSource.prototype.configure({
-                ...data,
-                style,
-                useNativeLines
-            }, source);
+            const options = OpenSeadragon.GeoJSONTileSource.prototype.configure(
+                {
+                    ...data,
+                    style,
+                    useNativeLines,
+                },
+                source,
+            );
 
             return new OpenSeadragon.GeoJSONTileSource({
                 ...options,
                 style,
-                useNativeLines
+                useNativeLines,
             });
         }
 
@@ -422,7 +435,7 @@ async function getTileSourceForImage(image) {
     return {
         ...source,
         useNativeLines,
-        ...(style ? { style } : {})
+        ...(style ? { style } : {}),
     };
 }
 
@@ -464,11 +477,11 @@ async function updateGeoJSON10kAggregation(enabled) {
         opacity,
         flipped,
         index: oldIndex,
-        success: function(event) {
+        success: function (event) {
             const item = event.item;
 
             checkbox.data("item", item);
-        }
+        },
     });
 }
 
@@ -497,7 +510,7 @@ function getStyleControlMarkup(image) {
 function getMVTStyleControlMarkup(image) {
     const style = getStyleForSource(image) || MVT_DEFAULT_STYLE;
     const layerRows = Object.keys(style.layers || {})
-        .map(layerName => renderMVTStyleRow(layerName, style.layers[layerName], false))
+        .map((layerName) => renderMVTStyleRow(layerName, style.layers[layerName], false))
         .join("");
 
     return `
@@ -519,9 +532,7 @@ function renderMVTStyleRow(name, layerStyle, isFallback) {
     const style = layerStyle || {};
     const type = style.type || "line";
     const color = style.color || [0.5, 0.5, 0.5, 1];
-    const rowAttr = isFallback
-        ? `data-style-fallback="true"`
-        : `data-style-layer="${escapeHtml(name)}"`;
+    const rowAttr = isFallback ? `data-style-fallback="true"` : `data-style-layer="${escapeHtml(name)}"`;
 
     return `
         <div class="mvt-style-row" ${rowAttr}>
@@ -606,7 +617,7 @@ function getGeoJSONStyleControlMarkup(image) {
 }
 
 function initializeStyleControlState() {
-    $(".mvt-style-row").each(function() {
+    $(".mvt-style-row").each(function () {
         updateMVTStyleRowControlState($(this));
     });
 }
@@ -616,7 +627,10 @@ function updateMVTStyleRowControlState(row) {
     const isLine = type === "line";
     const isPoint = type === "point";
 
-    row.find('[data-style-field="widthPx"], [data-style-field="join"], [data-style-field="cap"]').prop("disabled", !isLine);
+    row.find('[data-style-field="widthPx"], [data-style-field="join"], [data-style-field="cap"]').prop(
+        "disabled",
+        !isLine,
+    );
     row.find('[data-style-field="size"]').prop("disabled", !isPoint);
 }
 
@@ -669,7 +683,7 @@ function readMVTStyleFromControls(image) {
     const root = $(`#image-options-container .image-options:has([data-image="${image}"])`);
     const layers = {};
 
-    root.find(".mvt-style-row[data-style-layer]").each(function() {
+    root.find(".mvt-style-row[data-style-layer]").each(function () {
         const row = $(this);
         const layerName = row.attr("data-style-layer");
 
@@ -678,7 +692,7 @@ function readMVTStyleFromControls(image) {
 
     return {
         layers,
-        fallback: readMVTStyleRow(root.find('.mvt-style-row[data-style-fallback="true"]').first())
+        fallback: readMVTStyleRow(root.find('.mvt-style-row[data-style-fallback="true"]').first()),
     };
 }
 
@@ -686,12 +700,12 @@ function readMVTStyleRow(row) {
     const type = row.find('[data-style-field="type"]').val() || "line";
     const color = hexAndAlphaToRgba(
         row.find('[data-style-field="color"]').val(),
-        readNumber(row.find('[data-style-field="colorAlpha"]').val(), 1)
+        readNumber(row.find('[data-style-field="colorAlpha"]').val(), 1),
     );
 
     const style = {
         type,
-        color
+        color,
     };
 
     if (type === "line") {
@@ -714,17 +728,17 @@ function readGeoJSONStyleFromControls(image) {
         pointSize: readNumber(root.find('[data-style-field="pointSize"]').val(), 4),
         pointColor: hexAndAlphaToRgba(
             root.find('[data-style-field="pointColor"]').val(),
-            readNumber(root.find('[data-style-field="pointAlpha"]').val(), 1)
+            readNumber(root.find('[data-style-field="pointAlpha"]').val(), 1),
         ),
         lineWidth: readNumber(root.find('[data-style-field="lineWidth"]').val(), 2),
         lineColor: hexAndAlphaToRgba(
             root.find('[data-style-field="lineColor"]').val(),
-            readNumber(root.find('[data-style-field="lineAlpha"]').val(), 1)
+            readNumber(root.find('[data-style-field="lineAlpha"]').val(), 1),
         ),
         fillColor: hexAndAlphaToRgba(
             root.find('[data-style-field="fillColor"]').val(),
-            readNumber(root.find('[data-style-field="fillAlpha"]').val(), 0.6)
-        )
+            readNumber(root.find('[data-style-field="fillAlpha"]').val(), 0.6),
+        ),
     };
 }
 
@@ -742,7 +756,7 @@ function writeStyleToControls(image, style) {
 function writeMVTStyleToControls(image, style) {
     const root = $(`#image-options-container .image-options:has([data-image="${image}"])`);
 
-    Object.keys(style.layers || {}).forEach(layerName => {
+    Object.keys(style.layers || {}).forEach((layerName) => {
         writeMVTStyleRow(root.find(`.mvt-style-row[data-style-layer="${layerName}"]`), style.layers[layerName]);
     });
 
@@ -803,16 +817,17 @@ async function addTileSource(image, checkbox) {
     const options = getOptionsForSource(image);
     const index = getInsertionIndex(checkbox);
 
-    viewer && viewer.addTiledImage({
-        tileSource: tileSource,
-        ...options,
-        index: index,
-        success: function(event) {
-            const item = event.item;
+    viewer &&
+        viewer.addTiledImage({
+            tileSource: tileSource,
+            ...options,
+            index: index,
+            success: function (event) {
+                const item = event.item;
 
-            $(checkbox).data('item', item);
-        },
-    });
+                $(checkbox).data("item", item);
+            },
+        });
 }
 
 async function reloadTileSource(image) {
@@ -847,11 +862,11 @@ async function reloadTileSource(image) {
         opacity,
         flipped,
         index: oldIndex,
-        success: function(event) {
+        success: function (event) {
             const item = event.item;
 
             checkbox.data("item", item);
-        }
+        },
     });
 }
 
@@ -890,14 +905,12 @@ function hexAndAlphaToRgba(hex, alpha) {
         Number.isFinite(r) ? r / 255 : 0,
         Number.isFinite(g) ? g / 255 : 0,
         Number.isFinite(b) ? b / 255 : 0,
-        clamp(readNumber(alpha, 1), 0, 1)
+        clamp(readNumber(alpha, 1), 0, 1),
     ];
 }
 
 function getAlpha(color, fallback) {
-    return Array.isArray(color) && Number.isFinite(Number(color[3]))
-        ? Number(color[3])
-        : fallback;
+    return Array.isArray(color) && Number.isFinite(Number(color[3])) ? Number(color[3]) : fallback;
 }
 
 function readNumber(value, fallback) {

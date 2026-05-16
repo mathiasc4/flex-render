@@ -1,4 +1,4 @@
-(function() {
+(function () {
     const ShaderConfigurator = OpenSeadragon.FlexRenderer.ShaderConfigurator;
 
     let docsModel = null;
@@ -22,7 +22,7 @@
 
         return `
 <span style="display: inline-grid; gap: 4px; justify-items: start;">
-    ${types.map(entry => `<code style="width: fit-content;">${escapeHtml(entry || "unknown")}</code>`).join("")}
+    ${types.map((entry) => `<code style="width: fit-content;">${escapeHtml(entry || "unknown")}</code>`).join("")}
 </span>`;
     }
 
@@ -57,10 +57,10 @@
 
     function getVisibleModules() {
         const search = document.getElementById("module-search");
-        const query = (search && search.value || "").toLowerCase().trim();
+        const query = ((search && search.value) || "").toLowerCase().trim();
 
         return getModules()
-            .filter(moduleDoc => {
+            .filter((moduleDoc) => {
                 if (!query) {
                     return true;
                 }
@@ -73,7 +73,7 @@
     }
 
     function getSelectedModule() {
-        return getModules().find(moduleDoc => moduleDoc.type === selectedModuleType) || getModules()[0] || null;
+        return getModules().find((moduleDoc) => moduleDoc.type === selectedModuleType) || getModules()[0] || null;
     }
 
     function renderPortTable(title, ports) {
@@ -97,12 +97,16 @@
             </tr>
         </thead>
         <tbody>
-            ${ports.map(port => `
+            ${ports
+                .map(
+                    (port) => `
             <tr>
                 <td><code>${escapeHtml(port.name)}</code></td>
                 <td>${renderPortTypes(port.type)}</td>
                 <td>${escapeHtml(port.description || "")}</td>
-            </tr>`).join("")}
+            </tr>`,
+                )
+                .join("")}
         </tbody>
     </table>
 </div>`;
@@ -129,12 +133,16 @@
             </tr>
         </thead>
         <tbody>
-            ${controls.map(control => `
+            ${controls
+                .map(
+                    (control) => `
             <tr>
                 <td><code>${escapeHtml(control.name)}</code></td>
                 <td>${escapeHtml((control.supportedTypes || []).join(", "))}</td>
                 <td>${renderControlMetadata(control)}</td>
-            </tr>`).join("")}
+            </tr>`,
+                )
+                .join("")}
         </tbody>
     </table>
 </div>`;
@@ -165,11 +173,16 @@
             selectedModuleType = modules[0].type;
         }
 
-        list.innerHTML = modules.map(moduleDoc => `
+        list.innerHTML =
+            modules
+                .map(
+                    (moduleDoc) => `
 <button class="module-button ${moduleDoc.type === selectedModuleType ? "active" : ""}" type="button" data-module-type="${escapeHtml(moduleDoc.type)}">
     <span class="module-name">${escapeHtml(moduleDoc.name)}</span>
     <span class="module-type">${escapeHtml(moduleDoc.type)}</span>
-</button>`).join("") || `<p>No modules match the filter.</p>`;
+</button>`,
+                )
+                .join("") || `<p>No modules match the filter.</p>`;
     }
 
     function renderSelectedModule() {
@@ -197,7 +210,8 @@ ${renderControlTable(moduleDoc.controls)}
 ${renderClassDocs(moduleDoc)}
 `;
 
-        const schema = schemaModel &&
+        const schema =
+            schemaModel &&
             schemaModel.$defs &&
             schemaModel.$defs.shaderModules &&
             schemaModel.$defs.shaderModules[moduleDoc.type];
@@ -206,24 +220,19 @@ ${renderClassDocs(moduleDoc)}
     }
 
     function renderGraphExample() {
-        const modularShader = docsModel &&
+        const modularShader =
+            docsModel &&
             Array.isArray(docsModel.shaders) &&
-            docsModel.shaders.find(shader => shader.type === "modular");
+            docsModel.shaders.find((shader) => shader.type === "modular");
 
-        const graph = modularShader &&
-            modularShader.exampleParams &&
-            modularShader.exampleParams.graph;
+        const graph = modularShader && modularShader.exampleParams && modularShader.exampleParams.graph;
 
         updateText("graph-example-output", graph ? stringify(graph) : "No modular graph example found.");
     }
 
     function renderSummary() {
         const moduleCount = getModules().length;
-        const graphSchemaExists = !!(
-            schemaModel &&
-            schemaModel.$defs &&
-            schemaModel.$defs.shaderModuleGraph
-        );
+        const graphSchemaExists = !!(schemaModel && schemaModel.$defs && schemaModel.$defs.shaderModuleGraph);
 
         updateText("docs-version", docsModel && docsModel.version ? docsModel.version : "-");
         updateText("module-count", moduleCount);
@@ -255,7 +264,7 @@ ${renderClassDocs(moduleDoc)}
         document.getElementById("module-search").addEventListener("input", () => {
             renderModuleList();
         });
-        document.getElementById("module-list").addEventListener("click", event => {
+        document.getElementById("module-list").addEventListener("click", (event) => {
             const button = event.target.closest("[data-module-type]");
             if (!button) {
                 return;

@@ -11,34 +11,34 @@ const DEMO_SOURCE_OPTIONS = {
     maxLevel: DEMO_MAX_LEVEL,
     diagnosticScenario: "invalid-center",
     failurePattern: "center",
-    failureReason: "invalid-data"
+    failureReason: "invalid-data",
 };
 
 const DIAGNOSTIC_SCENARIOS = {
     "valid-only": {
         failurePattern: "none",
-        failureReason: "invalid-data"
+        failureReason: "invalid-data",
     },
     "invalid-center": {
         failurePattern: "center",
-        failureReason: "invalid-data"
+        failureReason: "invalid-data",
     },
     "invalid-checker": {
         failurePattern: "checker",
-        failureReason: "invalid-data"
+        failureReason: "invalid-data",
     },
     "tainted-center": {
         failurePattern: "center",
-        failureReason: "tainted-data"
+        failureReason: "tainted-data",
     },
     "unsupported-center": {
         failurePattern: "center",
-        failureReason: "unsupported-data"
+        failureReason: "unsupported-data",
     },
     "mixed-reasons": {
         failurePattern: "mixed",
-        failureReason: "mixed"
-    }
+        failureReason: "mixed",
+    },
 };
 
 const drawerOptions = {
@@ -47,15 +47,15 @@ const drawerOptions = {
         webGLPreferredVersion: "2.0",
         renderDiagnostics: true,
         htmlHandler: renderShaderLayerControls,
-        htmlReset: resetShaderLayerControls
-    }
+        htmlReset: resetShaderLayerControls,
+    },
 };
 
 $("#title-w").html("FlexRenderer missing-data feedback demo");
 
 installDiagnosticDemoTileSource(OpenSeadragon);
 
-const viewer = window.viewer = OpenSeadragon({
+const viewer = (window.viewer = OpenSeadragon({
     id: "drawer-canvas",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
@@ -71,21 +71,21 @@ const viewer = window.viewer = OpenSeadragon({
         left: 100,
         top: 0,
         right: 0,
-        bottom: 50
-    }
-});
+        bottom: 50,
+    },
+}));
 
 const IMAGE_SOURCES = [
     {
         key: "diagnostic-demo",
         label: "Diagnostic Demo Source",
-        tileSource: DEMO_SOURCE_OPTIONS
-    }
+        tileSource: DEMO_SOURCE_OPTIONS,
+    },
 ];
 
 const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
     index,
-    label: source.label
+    label: source.label,
 }));
 
 let shaderLayerConfig = {
@@ -95,13 +95,11 @@ let shaderLayerConfig = {
         visible: 1,
         tiledImages: [0],
         params: {},
-        cache: {}
-    }
+        cache: {},
+    },
 };
 
-let shaderLayerOrder = [
-    "diagnostic_source"
-];
+let shaderLayerOrder = ["diagnostic_source"];
 
 function installDiagnosticDemoTileSource($) {
     if ($.DiagnosticDemoTileSource) {
@@ -110,12 +108,9 @@ function installDiagnosticDemoTileSource($) {
 
     class DiagnosticDemoTileSource extends $.TileSource {
         supports(data, url) {
-            return !!(
-                data && typeof data === "object" &&
-                data.type === "diagnostic-demo"
-            ) || !!(
-                url && typeof url === "object" &&
-                url.type === "diagnostic-demo"
+            return (
+                !!(data && typeof data === "object" && data.type === "diagnostic-demo") ||
+                !!(url && typeof url === "object" && url.type === "diagnostic-demo")
             );
         }
 
@@ -123,7 +118,8 @@ function installDiagnosticDemoTileSource($) {
             const tileSize = Number(options.tileSize) || DEMO_TILE_SIZE;
 
             this.diagnosticScenario = options.diagnosticScenario || DEMO_SOURCE_OPTIONS.diagnosticScenario;
-            this.failurePattern = options.failurePattern || options.invalidPattern || DEMO_SOURCE_OPTIONS.failurePattern;
+            this.failurePattern =
+                options.failurePattern || options.invalidPattern || DEMO_SOURCE_OPTIONS.failurePattern;
             this.failureReason = options.failureReason || DEMO_SOURCE_OPTIONS.failureReason;
             this.tileSize = tileSize;
             this.tileWidth = tileSize;
@@ -137,7 +133,7 @@ function installDiagnosticDemoTileSource($) {
                 tileSize: tileSize,
                 tileOverlap: Number(options.tileOverlap) || 0,
                 minLevel: this.minLevel,
-                maxLevel: this.maxLevel
+                maxLevel: this.maxLevel,
             });
         }
 
@@ -149,7 +145,7 @@ function installDiagnosticDemoTileSource($) {
                 this.failureReason,
                 level,
                 x,
-                y
+                y,
             ].join(":");
         }
 
@@ -167,7 +163,7 @@ function installDiagnosticDemoTileSource($) {
             context.finish(
                 this._createTileCanvas(coords.level, coords.x, coords.y, "valid tile data"),
                 undefined,
-                "image"
+                "image",
             );
         }
 
@@ -179,18 +175,12 @@ function installDiagnosticDemoTileSource($) {
                 tileSize: this.tileSize,
                 diagnosticScenario: this.diagnosticScenario,
                 failurePattern: this.failurePattern,
-                failureReason: this.failureReason
+                failureReason: this.failureReason,
             };
         }
 
         _parseTileCoordinates(context) {
-            const src = String(
-                context.src ||
-                context.url ||
-                context.tileUrl ||
-                context.source ||
-                ""
-            );
+            const src = String(context.src || context.url || context.tileUrl || context.source || "");
 
             const match = /diagnostic-demo:([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+)/.exec(src);
 
@@ -201,7 +191,7 @@ function installDiagnosticDemoTileSource($) {
                     failureReason: match[3],
                     level: Number(match[4]),
                     x: Number(match[5]),
-                    y: Number(match[6])
+                    y: Number(match[6]),
                 };
             }
 
@@ -212,7 +202,7 @@ function installDiagnosticDemoTileSource($) {
                 failureReason: this.failureReason,
                 level: Number(tile.level) || this.maxLevel,
                 x: Number(tile.x) || 0,
-                y: Number(tile.y) || 0
+                y: Number(tile.y) || 0,
             };
         }
 
@@ -272,14 +262,14 @@ function installDiagnosticDemoTileSource($) {
             if (reason === "tainted-data") {
                 return {
                     type: "image",
-                    data: this._createSyntheticTaintedCanvas(coords.level, coords.x, coords.y)
+                    data: this._createSyntheticTaintedCanvas(coords.level, coords.x, coords.y),
                 };
             }
 
             if (reason === "unsupported-data") {
                 return {
                     type: "gpuTextureSet",
-                    data: "unsupported-gpu-texture-set-payload"
+                    data: "unsupported-gpu-texture-set-payload",
                 };
             }
 
@@ -290,8 +280,8 @@ function installDiagnosticDemoTileSource($) {
                     level: coords.level,
                     x: coords.x,
                     y: coords.y,
-                    reason: "demo-invalid-data"
-                }
+                    reason: "demo-invalid-data",
+                },
             };
         }
 
@@ -300,7 +290,7 @@ function installDiagnosticDemoTileSource($) {
             const originalGetContext = canvas.getContext.bind(canvas);
             let taintedContext = null;
 
-            canvas.getContext = function(type, ...args) {
+            canvas.getContext = function (type, ...args) {
                 const context = originalGetContext(type, ...args);
 
                 if (type !== "2d" || !context || typeof context.getImageData !== "function") {
@@ -311,7 +301,7 @@ function installDiagnosticDemoTileSource($) {
                     taintedContext = new Proxy(context, {
                         get(target, property) {
                             if (property === "getImageData") {
-                                return function() {
+                                return function () {
                                     throw createSyntheticSecurityError();
                                 };
                             }
@@ -319,7 +309,7 @@ function installDiagnosticDemoTileSource($) {
                             const value = target[property];
 
                             return typeof value === "function" ? value.bind(target) : value;
-                        }
+                        },
                     });
                 }
 
@@ -381,10 +371,7 @@ function installDiagnosticDemoTileSource($) {
 
 function createSyntheticSecurityError() {
     if (typeof DOMException === "function") {
-        return new DOMException(
-            "The canvas has been tainted by cross-origin data.",
-            "SecurityError"
-        );
+        return new DOMException("The canvas has been tainted by cross-origin data.", "SecurityError");
     }
 
     const error = new Error("The canvas has been tainted by cross-origin data.");
@@ -400,7 +387,7 @@ function createDemoTileSourceOptions() {
         ...DEMO_SOURCE_OPTIONS,
         diagnosticScenario: settings.scenario,
         failurePattern: settings.failurePattern,
-        failureReason: settings.failureReason
+        failureReason: settings.failureReason,
     };
 }
 
@@ -412,7 +399,7 @@ function getDiagnosticSettingsFromControls() {
     return {
         scenario,
         failurePattern: preset.failurePattern,
-        failureReason: preset.failureReason
+        failureReason: preset.failureReason,
     };
 }
 
@@ -425,7 +412,7 @@ function reloadDemoSource() {
             applyShaderLayerGuiConfig();
             writeDiagnosticsState();
             viewer.viewport.goHome(true);
-        }
+        },
     });
 }
 
@@ -483,7 +470,9 @@ function renderShaderConfigPanel() {
         .map((shaderId) => renderShaderConfigItem(shaderId, shaderLayerConfig[shaderId]))
         .join("");
 
-    setPanelHtml("shader-config-panel", `
+    setPanelHtml(
+        "shader-config-panel",
+        `
         <h3>Shader layer configuration</h3>
 
         <div class="shader-config-scroll">
@@ -496,7 +485,8 @@ function renderShaderConfigPanel() {
             Drag layers to reorder them. Toggle visibility, mode, blend, type, and image source
             to verify that first-pass missing-data feedback still composes through normal shader layers.
         </p>
-    `);
+    `,
+    );
 
     bindShaderConfigPanelEvents();
 }
@@ -547,8 +537,7 @@ function renderShaderConfigItem(shaderId, shaderConfig) {
 }
 
 function renderShaderTypeControl(shaderConfig, shaderId) {
-    const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry
-        .availableLayers()
+    const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.availableLayers()
         .filter((Shader) => Shader.type() !== "group")
         .map((Shader) => {
             const type = Shader.type();
@@ -583,19 +572,22 @@ function renderImageIndexControl(shaderConfig, shaderId) {
         `;
     }
 
-    const selectedIndex = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
-        Number(shaderConfig.tiledImages[0]) :
-        0;
+    const selectedIndex =
+        Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length
+            ? Number(shaderConfig.tiledImages[0])
+            : 0;
 
-    const options = indexedImageSources.map((source) => {
-        const selected = source.index === selectedIndex ? "selected" : "";
+    const options = indexedImageSources
+        .map((source) => {
+            const selected = source.index === selectedIndex ? "selected" : "";
 
-        return `
+            return `
             <option value="${source.index}" ${selected}>
                 ${escapeHtml(source.label)} (${source.index})
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 
     return `
         <label class="shader-config-field-label">
@@ -631,21 +623,24 @@ function renderBlendControls(shaderConfig, shaderId) {
                     data-shader-id="${escapeHtml(shaderId)}"
                     ${blendDisabled}
                 >
-                    ${renderOptions([
-        "mask",
-        "add",
-        "multiply",
-        "screen",
-        "overlay",
-        "darken",
-        "lighten",
-        "difference",
-        "exclusion",
-        "source-over",
-        "source-in",
-        "source-out",
-        "source-atop"
-    ], selectedBlend)}
+                    ${renderOptions(
+                        [
+                            "mask",
+                            "add",
+                            "multiply",
+                            "screen",
+                            "overlay",
+                            "darken",
+                            "lighten",
+                            "difference",
+                            "exclusion",
+                            "source-over",
+                            "source-in",
+                            "source-out",
+                            "source-atop",
+                        ],
+                        selectedBlend,
+                    )}
                 </select>
             </label>
         </div>
@@ -653,22 +648,24 @@ function renderBlendControls(shaderConfig, shaderId) {
 }
 
 function renderOptions(values, selectedValue) {
-    return values.map((value) => {
-        const selected = value === selectedValue ? "selected" : "";
+    return values
+        .map((value) => {
+            const selected = value === selectedValue ? "selected" : "";
 
-        return `
+            return `
             <option value="${escapeHtml(value)}" ${selected}>
                 ${escapeHtml(value)}
             </option>
         `;
-    }).join("");
+        })
+        .join("");
 }
 
 function bindShaderConfigPanelEvents() {
     $(".shader-config-list").sortable({
         handle: ".shader-config-drag-handle",
         items: "> .shader-config-item",
-        update: function() {
+        update: function () {
             shaderLayerOrder = $(this)
                 .children(".shader-config-item")
                 .map((_, item) => $(item).attr("data-shader-id"))
@@ -676,49 +673,49 @@ function bindShaderConfigPanelEvents() {
 
             applyShaderLayerGuiConfig();
             renderShaderConfigPanel();
-        }
+        },
     });
 
-    $(".shader-config-visible-toggle").on("change", function() {
+    $(".shader-config-visible-toggle").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.visible = this.checked ? 1 : 0;
         });
     });
 
-    $(".shader-config-name-input").on("change", function() {
+    $(".shader-config-name-input").on("change", function () {
         updateShaderConfig(this, (shaderConfig, shaderId) => {
             shaderConfig.name = this.value.trim() || shaderId;
         });
     });
 
-    $(".shader-config-image-index-select").on("change", function() {
+    $(".shader-config-image-index-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.tiledImages = [Number(this.value)];
         });
     });
 
-    $(".shader-config-use-mode-select").on("change", function() {
+    $(".shader-config-use-mode-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.params = shaderConfig.params || {};
             shaderConfig.params.use_mode = this.value;
         });
     });
 
-    $(".shader-config-use-blend-select").on("change", function() {
+    $(".shader-config-use-blend-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             shaderConfig.params = shaderConfig.params || {};
             shaderConfig.params.use_blend = this.value;
         });
     });
 
-    $(".shader-config-type-select").on("change", function() {
+    $(".shader-config-type-select").on("change", function () {
         updateShaderConfig(this, (shaderConfig) => {
             const previousParams = shaderConfig.params || {};
 
             shaderConfig.type = this.value;
             shaderConfig.params = {
                 use_mode: previousParams.use_mode || "show",
-                use_blend: previousParams.use_blend || "mask"
+                use_blend: previousParams.use_blend || "mask",
             };
             shaderConfig.cache = {};
 
@@ -841,13 +838,13 @@ async function runDiagnosticsChecks() {
             await run();
             checks.push({
                 name,
-                ok: true
+                ok: true,
             });
         } catch (error) {
             checks.push({
                 name,
                 ok: false,
-                error: error && error.message ? error.message : String(error)
+                error: error && error.message ? error.message : String(error),
             });
         }
 
@@ -863,7 +860,7 @@ async function runDiagnosticsChecks() {
 
     await record("gpuTextureSet unsupported payload returns unsupported-data", async () => {
         const result = await renderer.prepareGpuTextureTile({
-            data: "not-a-gpu-texture-set"
+            data: "not-a-gpu-texture-set",
         });
 
         assertPreparationFailure(result, "unsupported-data");
@@ -873,8 +870,8 @@ async function runDiagnosticsChecks() {
         const result = await renderer.prepareBitmapTile({
             data: {
                 invalid: true,
-                reason: "diagnostics-demo-invalid-bitmap"
-            }
+                reason: "diagnostics-demo-invalid-bitmap",
+            },
         });
 
         if (!result || result.ok !== false) {
@@ -944,7 +941,7 @@ async function assertDrawerPreparationFailureReason(drawer, renderer, reason) {
     renderer.prepareBitmapTile = async () => ({
         ok: false,
         reason,
-        error: new Error(`Synthetic ${reason} failure`)
+        error: new Error(`Synthetic ${reason} failure`),
     });
 
     try {
@@ -952,7 +949,7 @@ async function assertDrawerPreparationFailureReason(drawer, renderer, reason) {
             data: canvas,
             type: "image",
             tile: {},
-            tiledImage: {}
+            tiledImage: {},
         });
 
         assertDiagnosticTileInfo(tileInfo, reason);
@@ -977,7 +974,7 @@ async function assertDrawerTaintPreflight(drawer, renderer) {
             height: 1,
             textureDepth: 1,
             packCount: 1,
-            channelCount: 4
+            channelCount: 4,
         };
     };
 
@@ -986,7 +983,7 @@ async function assertDrawerTaintPreflight(drawer, renderer) {
             data: canvas,
             type: "image",
             tile: {},
-            tiledImage: {}
+            tiledImage: {},
         });
 
         assertDiagnosticTileInfo(tileInfo, "tainted-data");
@@ -1002,16 +999,16 @@ async function assertDrawerTaintPreflight(drawer, renderer) {
 function assertDrawerResourceRelease(drawer, renderer) {
     const originalRelease = renderer.releasePreparedTileResource;
     const resource = {
-        kind: "diagnostics-check-resource"
+        kind: "diagnostics-check-resource",
     };
     const tileInfo = {
         resource,
         texture: {
-            kind: "texture-alias"
+            kind: "texture-alias",
         },
         vectors: {
-            kind: "vector-alias"
-        }
+            kind: "vector-alias",
+        },
     };
     let released = null;
 
@@ -1051,7 +1048,7 @@ function createSyntheticTaintedDiagnosticsCheckCanvas() {
     const originalGetContext = canvas.getContext.bind(canvas);
     let taintedContext = null;
 
-    canvas.getContext = function(type, ...args) {
+    canvas.getContext = function (type, ...args) {
         const context = originalGetContext(type, ...args);
 
         if (type !== "2d" || !context || typeof context.getImageData !== "function") {
@@ -1062,7 +1059,7 @@ function createSyntheticTaintedDiagnosticsCheckCanvas() {
             taintedContext = new Proxy(context, {
                 get(target, property) {
                     if (property === "getImageData") {
-                        return function() {
+                        return function () {
                             throw createSyntheticSecurityError();
                         };
                     }
@@ -1070,7 +1067,7 @@ function createSyntheticTaintedDiagnosticsCheckCanvas() {
                     const value = target[property];
 
                     return typeof value === "function" ? value.bind(target) : value;
-                }
+                },
             });
         }
 
@@ -1086,16 +1083,16 @@ function writeDiagnosticsState() {
     const expectedDiagnostics = describeExpectedDiagnostics(settings);
 
     writeJson("diagnostics-state-output", {
-        renderDiagnostics: renderer && typeof renderer.getRenderDiagnostics === "function" ?
-            renderer.getRenderDiagnostics() :
-            null,
+        renderDiagnostics:
+            renderer && typeof renderer.getRenderDiagnostics === "function" ? renderer.getRenderDiagnostics() : null,
         scenario: settings.scenario,
         expectedReasons: Array.from(new Set(expectedDiagnostics.map((item) => item.reason))),
         expectedDiagnosticSource: "renderer preparation failure converted to missing-data feedback sentinel",
         expectedDiagnosticsAtMaxLevel: expectedDiagnostics,
-        note: settings.scenario === "mixed-reasons" ?
-            "Mixed scenario uses fixed tiles for invalid-data, tainted-data, and unsupported-data." :
-            "Scenario presets determine affected tiles and diagnostic reason."
+        note:
+            settings.scenario === "mixed-reasons"
+                ? "Mixed scenario uses fixed tiles for invalid-data, tainted-data, and unsupported-data."
+                : "Scenario presets determine affected tiles and diagnostic reason.",
     });
 }
 
@@ -1131,13 +1128,13 @@ function describeExpectedDiagnostics(settings) {
         return [
             { tile: "L2 / 0,0", reason: "invalid-data" },
             { tile: "L2 / 1,1", reason: "tainted-data" },
-            { tile: "L2 / 2,2", reason: "unsupported-data" }
+            { tile: "L2 / 2,2", reason: "unsupported-data" },
         ];
     }
 
     return describePatternTiles(settings.failurePattern).map((tile) => ({
         tile,
-        reason: settings.failureReason
+        reason: settings.failureReason,
     }));
 }
 
@@ -1155,16 +1152,7 @@ function describePatternTiles(pattern) {
     }
 
     if (pattern === "checker") {
-        return [
-            "L2 / 0,0",
-            "L2 / 2,0",
-            "L2 / 1,1",
-            "L2 / 3,1",
-            "L2 / 0,2",
-            "L2 / 2,2",
-            "L2 / 1,3",
-            "L2 / 3,3"
-        ];
+        return ["L2 / 0,0", "L2 / 2,0", "L2 / 1,1", "L2 / 3,1", "L2 / 0,2", "L2 / 2,2", "L2 / 1,3", "L2 / 3,3"];
     }
 
     return [];
@@ -1203,7 +1191,7 @@ viewer.addHandler("open", () => {
 });
 
 viewer.addTiledImage({
-    tileSource: createDemoTileSourceOptions()
+    tileSource: createDemoTileSourceOptions(),
 });
 
 renderShaderConfigPanel();

@@ -1,426 +1,433 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <title>FlexRenderer Compatibility Test</title>
+    <head>
+        <title>FlexRenderer Compatibility Test</title>
 
-    <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
-    <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
-    <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
+        <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+        <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
+        <script type="text/javascript" src="../lib/jquery-1.9.1.min.js"></script>
 
-    <script type="module" src="compatibility.js"></script>
+        <script type="module" src="compatibility.js"></script>
 
-    <style>
-        html,
-        body {
-            min-height: 100%;
-        }
+        <style>
+            html,
+            body {
+                min-height: 100%;
+            }
 
-        body {
-            min-height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-            color: #111827;
-            background: #eef1f5;
-            overflow: hidden;
-        }
+            body {
+                min-height: 100vh;
+                margin: 0;
+                font-family: Arial, sans-serif;
+                color: #111827;
+                background: #eef1f5;
+                overflow: hidden;
+            }
 
-        .content {
-            height: 100vh;
-            padding: 10px;
-            box-sizing: border-box;
-            display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr);
-            gap: 8px;
-        }
+            .content {
+                height: 100vh;
+                padding: 10px;
+                box-sizing: border-box;
+                display: grid;
+                grid-template-rows: auto auto minmax(0, 1fr);
+                gap: 8px;
+            }
 
-        .page-header {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 16px;
-            min-width: 0;
-        }
+            .page-header {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 16px;
+                min-width: 0;
+            }
 
-        .page-header h2 {
-            margin: 0;
-            font-size: 18px;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
+            .page-header h2 {
+                margin: 0;
+                font-size: 18px;
+                line-height: 1.2;
+                white-space: nowrap;
+            }
 
-        .page-header p {
-            margin: 0;
-            color: #4b5563;
-            font-size: 12px;
-            line-height: 1.3;
-            text-align: right;
-            min-width: 0;
-        }
+            .page-header p {
+                margin: 0;
+                color: #4b5563;
+                font-size: 12px;
+                line-height: 1.3;
+                text-align: right;
+                min-width: 0;
+            }
 
-        .toolbar,
-        .panel,
-        .viewer-card {
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            box-sizing: border-box;
-        }
+            .toolbar,
+            .panel,
+            .viewer-card {
+                border: 1px solid #d1d5db;
+                background: #ffffff;
+                box-sizing: border-box;
+            }
 
-        .toolbar {
-            padding: 8px;
-            display: grid;
-            grid-template-columns: minmax(270px, 0.8fr) minmax(420px, 1.2fr) minmax(240px, 0.7fr);
-            gap: 10px;
-            align-items: stretch;
-        }
+            .toolbar {
+                padding: 8px;
+                display: grid;
+                grid-template-columns: minmax(270px, 0.8fr) minmax(420px, 1.2fr) minmax(240px, 0.7fr);
+                gap: 10px;
+                align-items: stretch;
+            }
 
-        .toolbar-group {
-            display: grid;
-            gap: 6px;
-            align-content: start;
-            min-width: 0;
-        }
+            .toolbar-group {
+                display: grid;
+                gap: 6px;
+                align-content: start;
+                min-width: 0;
+            }
 
-        .toolbar-group h4,
-        .panel h3,
-        .panel h4,
-        .viewer-card h4 {
-            margin: 0;
-            font-size: 12px;
-        }
+            .toolbar-group h4,
+            .panel h3,
+            .panel h4,
+            .viewer-card h4 {
+                margin: 0;
+                font-size: 12px;
+            }
 
-        .toolbar-note,
-        .panel-help,
-        .viewer-status {
-            padding: 4px 6px;
-            border: 1px solid #d1d5db;
-            background: #f9fafb;
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.25;
-        }
+            .toolbar-note,
+            .panel-help,
+            .viewer-status {
+                padding: 4px 6px;
+                border: 1px solid #d1d5db;
+                background: #f9fafb;
+                color: #374151;
+                font-size: 11px;
+                line-height: 1.25;
+            }
 
-        .button-row {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
+            .button-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
 
-        button {
-            font-size: 12px;
-            cursor: pointer;
-        }
+            button {
+                font-size: 12px;
+                cursor: pointer;
+            }
 
-        .run-button {
-            padding: 7px 12px;
-            border: 1px solid #1d4ed8;
-            background: #2563eb;
-            color: #ffffff;
-            font-weight: 700;
-        }
+            .run-button {
+                padding: 7px 12px;
+                border: 1px solid #1d4ed8;
+                background: #2563eb;
+                color: #ffffff;
+                font-weight: 700;
+            }
 
-        .run-button:hover {
-            background: #1d4ed8;
-        }
+            .run-button:hover {
+                background: #1d4ed8;
+            }
 
-        .run-button:disabled {
-            cursor: wait;
-            opacity: 0.72;
-        }
+            .run-button:disabled {
+                cursor: wait;
+                opacity: 0.72;
+            }
 
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 6px;
-        }
+            .summary-grid {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 6px;
+            }
 
-        .summary-card {
-            padding: 7px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            min-width: 0;
-        }
+            .summary-card {
+                padding: 7px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                min-width: 0;
+            }
 
-        .summary-card__label {
-            margin: 0 0 3px 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.2;
-        }
+            .summary-card__label {
+                margin: 0 0 3px 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.2;
+            }
 
-        .summary-card__value {
-            margin: 0;
-            font-weight: 700;
-            font-size: 15px;
-            line-height: 1.15;
-            word-break: break-word;
-        }
+            .summary-card__value {
+                margin: 0;
+                font-weight: 700;
+                font-size: 15px;
+                line-height: 1.15;
+                word-break: break-word;
+            }
 
-        .workspace {
-            min-height: 0;
-            display: grid;
-            grid-template-columns: minmax(0, 1.12fr) minmax(430px, 0.88fr);
-            grid-template-rows: minmax(0, 1fr);
-            gap: 8px;
-        }
+            .workspace {
+                min-height: 0;
+                display: grid;
+                grid-template-columns: minmax(0, 1.12fr) minmax(430px, 0.88fr);
+                grid-template-rows: minmax(0, 1fr);
+                gap: 8px;
+            }
 
-        .left-column,
-        .right-column {
-            min-height: 0;
-            display: grid;
-            gap: 8px;
-        }
+            .left-column,
+            .right-column {
+                min-height: 0;
+                display: grid;
+                gap: 8px;
+            }
 
-        .left-column {
-            grid-template-rows: minmax(0, 1fr) minmax(150px, 0.36fr);
-        }
+            .left-column {
+                grid-template-rows: minmax(0, 1fr) minmax(150px, 0.36fr);
+            }
 
-        .right-column {
-            grid-template-rows: minmax(0, 1fr) minmax(170px, 0.35fr);
-        }
+            .right-column {
+                grid-template-rows: minmax(0, 1fr) minmax(170px, 0.35fr);
+            }
 
-        .viewer-card {
-            min-height: 0;
-            padding: 8px;
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr) auto;
-            gap: 6px;
-        }
+            .viewer-card {
+                min-height: 0;
+                padding: 8px;
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                gap: 6px;
+            }
 
-        .viewer-container {
-            min-height: 0;
-            width: 100%;
-            height: 100%;
-            border: 1px solid #9ca3af;
-            background: #111827;
-            position: relative;
-            box-sizing: border-box;
-        }
+            .viewer-container {
+                min-height: 0;
+                width: 100%;
+                height: 100%;
+                border: 1px solid #9ca3af;
+                background: #111827;
+                position: relative;
+                box-sizing: border-box;
+            }
 
-        .viewer-status--error,
-        .check-card--error {
-            border-color: #fecaca;
-            background: #fff1f2;
-            color: #7f1d1d;
-        }
+            .viewer-status--error,
+            .check-card--error {
+                border-color: #fecaca;
+                background: #fff1f2;
+                color: #7f1d1d;
+            }
 
-        .viewer-status--ok,
-        .check-card--ok {
-            border-color: #bbf7d0;
-            background: #f0fdf4;
-            color: #14532d;
-        }
+            .viewer-status--ok,
+            .check-card--ok {
+                border-color: #bbf7d0;
+                background: #f0fdf4;
+                color: #14532d;
+            }
 
-        .viewer-status--warn,
-        .check-card--warn {
-            border-color: #fde68a;
-            background: #fffbeb;
-            color: #78350f;
-        }
+            .viewer-status--warn,
+            .check-card--warn {
+                border-color: #fde68a;
+                background: #fffbeb;
+                color: #78350f;
+            }
 
-        .viewer-status--info,
-        .check-card--info {
-            border-color: #bfdbfe;
-            background: #eff6ff;
-            color: #1e3a8a;
-        }
+            .viewer-status--info,
+            .check-card--info {
+                border-color: #bfdbfe;
+                background: #eff6ff;
+                color: #1e3a8a;
+            }
 
-        .panel {
-            min-height: 0;
-            padding: 8px;
-            overflow: hidden;
-        }
+            .panel {
+                min-height: 0;
+                padding: 8px;
+                overflow: hidden;
+            }
 
-        .results-panel {
-            display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr);
-            gap: 6px;
-        }
+            .results-panel {
+                display: grid;
+                grid-template-rows: auto auto minmax(0, 1fr);
+                gap: 6px;
+            }
 
-        .guide-panel,
-        .raw-panel {
-            display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 6px;
-        }
+            .guide-panel,
+            .raw-panel {
+                display: grid;
+                grid-template-rows: auto minmax(0, 1fr);
+                gap: 6px;
+            }
 
-        .panel-help {
-            margin: 0;
-            color: #4b5563;
-            font-size: 10px;
-            line-height: 1.3;
-        }
+            .panel-help {
+                margin: 0;
+                color: #4b5563;
+                font-size: 10px;
+                line-height: 1.3;
+            }
 
-        .results-list,
-        .guide-scroll {
-            min-height: 0;
-            overflow: auto;
-            display: grid;
-            align-content: start;
-            gap: 6px;
-            padding-right: 2px;
-        }
+            .results-list,
+            .guide-scroll {
+                min-height: 0;
+                overflow: auto;
+                display: grid;
+                align-content: start;
+                gap: 6px;
+                padding-right: 2px;
+            }
 
-        .check-card {
-            margin: 0;
-            padding: 7px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            box-sizing: border-box;
-            color: #111827;
-        }
+            .check-card {
+                margin: 0;
+                padding: 7px;
+                border: 1px solid #e5e7eb;
+                background: #f9fafb;
+                box-sizing: border-box;
+                color: #111827;
+            }
 
-        .check-card__header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 5px;
-        }
+            .check-card__header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                margin-bottom: 5px;
+            }
 
-        .check-card__title {
-            font-size: 12px;
-            font-weight: 700;
-            line-height: 1.2;
-        }
+            .check-card__title {
+                font-size: 12px;
+                font-weight: 700;
+                line-height: 1.2;
+            }
 
-        .check-card__badge {
-            flex: 0 0 auto;
-            padding: 2px 5px;
-            border: 1px solid currentColor;
-            font-size: 10px;
-            line-height: 1.1;
-            text-transform: uppercase;
-        }
+            .check-card__badge {
+                flex: 0 0 auto;
+                padding: 2px 5px;
+                border: 1px solid currentColor;
+                font-size: 10px;
+                line-height: 1.1;
+                text-transform: uppercase;
+            }
 
-        .check-card__result,
-        .check-card__impact {
-            margin: 4px 0 0 0;
-            color: inherit;
-            font-size: 11px;
-            line-height: 1.32;
-            word-break: break-word;
-        }
+            .check-card__result,
+            .check-card__impact {
+                margin: 4px 0 0 0;
+                color: inherit;
+                font-size: 11px;
+                line-height: 1.32;
+                word-break: break-word;
+            }
 
-        .check-card__impact {
-            color: #4b5563;
-        }
+            .check-card__impact {
+                color: #4b5563;
+            }
 
-        .check-card--error .check-card__impact,
-        .check-card--warn .check-card__impact,
-        .check-card--info .check-card__impact {
-            color: inherit;
-        }
+            .check-card--error .check-card__impact,
+            .check-card--warn .check-card__impact,
+            .check-card--info .check-card__impact {
+                color: inherit;
+            }
 
-        .raw-readout {
-            min-height: 0;
-            width: 100%;
-            height: 100%;
-            margin: 0;
-            padding: 6px;
-            overflow: auto;
-            resize: none;
-            box-sizing: border-box;
-            background: #f9fafb;
-            border: 1px solid #d1d5db;
-            color: #111827;
-            font-size: 10px;
-            line-height: 1.35;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
+            .raw-readout {
+                min-height: 0;
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 6px;
+                overflow: auto;
+                resize: none;
+                box-sizing: border-box;
+                background: #f9fafb;
+                border: 1px solid #d1d5db;
+                color: #111827;
+                font-size: 10px;
+                line-height: 1.35;
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
 
-        .guide-scroll ul {
-            margin: 0 0 8px 18px;
-            padding: 0;
-            color: #374151;
-            font-size: 12px;
-            line-height: 1.35;
-        }
+            .guide-scroll ul {
+                margin: 0 0 8px 18px;
+                padding: 0;
+                color: #374151;
+                font-size: 12px;
+                line-height: 1.35;
+            }
 
-        .guide-scroll li {
-            margin-bottom: 5px;
-        }
-    </style>
-</head>
-<body>
-<div class="content">
-    <div class="page-header">
-        <h2>FlexRenderer Compatibility Test</h2>
-        <p>
-            Runs a compact WebGL/FlexRenderer compatibility report for the current browser,
-            GPU backend, and renderer build.
-        </p>
-    </div>
-
-    <div class="toolbar">
-        <div class="toolbar-group">
-            <h4>Controls</h4>
-            <div class="button-row">
-                <button id="compatibility-run-button" class="run-button" type="button">Run compatibility checks</button>
+            .guide-scroll li {
+                margin-bottom: 5px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="content">
+            <div class="page-header">
+                <h2>FlexRenderer Compatibility Test</h2>
+                <p>
+                    Runs a compact WebGL/FlexRenderer compatibility report for the current browser, GPU backend, and
+                    renderer build.
+                </p>
             </div>
-            <div id="compatibility-status" class="toolbar-note">Checks have not run yet.</div>
-        </div>
 
-        <div class="toolbar-group">
-            <h4>Summary</h4>
-            <div id="compatibility-summary" class="summary-grid">
-                <div class="summary-card">
-                    <p class="summary-card__label">Passed</p>
-                    <p class="summary-card__value">–</p>
+            <div class="toolbar">
+                <div class="toolbar-group">
+                    <h4>Controls</h4>
+                    <div class="button-row">
+                        <button id="compatibility-run-button" class="run-button" type="button">
+                            Run compatibility checks
+                        </button>
+                    </div>
+                    <div id="compatibility-status" class="toolbar-note">Checks have not run yet.</div>
                 </div>
-                <div class="summary-card">
-                    <p class="summary-card__label">Warnings</p>
-                    <p class="summary-card__value">–</p>
+
+                <div class="toolbar-group">
+                    <h4>Summary</h4>
+                    <div id="compatibility-summary" class="summary-grid">
+                        <div class="summary-card">
+                            <p class="summary-card__label">Passed</p>
+                            <p class="summary-card__value">–</p>
+                        </div>
+                        <div class="summary-card">
+                            <p class="summary-card__label">Warnings</p>
+                            <p class="summary-card__value">–</p>
+                        </div>
+                        <div class="summary-card">
+                            <p class="summary-card__label">Errors</p>
+                            <p class="summary-card__value">–</p>
+                        </div>
+                    </div>
                 </div>
-                <div class="summary-card">
-                    <p class="summary-card__label">Errors</p>
-                    <p class="summary-card__value">–</p>
-                </div>
-            </div>
-        </div>
 
-        <div class="toolbar-group">
-            <h4>Run details</h4>
-            <div id="compatibility-run-details" class="toolbar-note">
-                The test creates a small probe WebGL context and runs the renderer self-test separately.
-            </div>
-        </div>
-    </div>
-
-    <div class="workspace">
-        <div class="left-column">
-            <div class="viewer-card">
-                <h4>Reference viewer</h4>
-                <div id="drawer-canvas" class="viewer-container"></div>
-                <div id="viewer-status" class="viewer-status">Loading Rainbow test pattern viewer...</div>
-            </div>
-
-            <div class="panel guide-panel">
-                <h3>Compatibility scope</h3>
-                <div class="guide-scroll">
-                    <ul>
-                        <li>The renderer self-test is the only check that renders and reads pixels.</li>
-                        <li>The remaining checks query WebGL limits, extensions, and precision values.</li>
-                        <li>Warnings indicate possible limitations; they do not necessarily mean the renderer cannot run.</li>
-                    </ul>
+                <div class="toolbar-group">
+                    <h4>Run details</h4>
+                    <div id="compatibility-run-details" class="toolbar-note">
+                        The test creates a small probe WebGL context and runs the renderer self-test separately.
+                    </div>
                 </div>
             </div>
-        </div>
 
-        <div class="right-column">
-            <div class="panel results-panel">
-                <h3>Check readout</h3>
-                <p class="panel-help">Each card reports the measured value and the practical consequence for FlexRenderer.</p>
-                <div id="compatibility-results" class="results-list"></div>
-            </div>
+            <div class="workspace">
+                <div class="left-column">
+                    <div class="viewer-card">
+                        <h4>Reference viewer</h4>
+                        <div id="drawer-canvas" class="viewer-container"></div>
+                        <div id="viewer-status" class="viewer-status">Loading Rainbow test pattern viewer...</div>
+                    </div>
 
-            <div class="panel raw-panel">
-                <h3>Raw result JSON</h3>
-                <textarea id="compatibility-raw" class="raw-readout" readonly></textarea>
+                    <div class="panel guide-panel">
+                        <h3>Compatibility scope</h3>
+                        <div class="guide-scroll">
+                            <ul>
+                                <li>The renderer self-test is the only check that renders and reads pixels.</li>
+                                <li>The remaining checks query WebGL limits, extensions, and precision values.</li>
+                                <li>
+                                    Warnings indicate possible limitations; they do not necessarily mean the renderer
+                                    cannot run.
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="right-column">
+                    <div class="panel results-panel">
+                        <h3>Check readout</h3>
+                        <p class="panel-help">
+                            Each card reports the measured value and the practical consequence for FlexRenderer.
+                        </p>
+                        <div id="compatibility-results" class="results-list"></div>
+                    </div>
+
+                    <div class="panel raw-panel">
+                        <h3>Raw result JSON</h3>
+                        <textarea id="compatibility-raw" class="raw-readout" readonly></textarea>
+                    </div>
+                </div>
             </div>
         </div>
-    </div>
-</div>
-</body>
+    </body>
 </html>
