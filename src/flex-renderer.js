@@ -1068,28 +1068,58 @@
                 tileSourceMs: 0
             };
 
+            const renderedTotals = {
+                totalMs: 0,
+                drawerMs: 0,
+                rendererMs: 0,
+                firstPassMs: 0,
+                secondPassMs: 0,
+                finishMs: 0,
+                tileSourceMs: 0
+            };
+
             let renderedFrames = 0;
             let skippedFrames = 0;
 
             for (const frame of frames) {
-                totals.totalMs += frame.totalMs || 0;
-                totals.drawerMs += (frame.drawer && frame.drawer.totalMs) || 0;
-                totals.rendererMs += (frame.renderer && frame.renderer.totalMs) || 0;
-                totals.firstPassMs += (frame.renderer && frame.renderer.firstPassMs) || 0;
-                totals.secondPassMs += (frame.renderer && frame.renderer.secondPassMs) || 0;
-                totals.finishMs += (frame.renderer && frame.renderer.finishMs) || 0;
+                const frameTotals = {
+                    totalMs: frame.totalMs || 0,
+                    drawerMs: (frame.drawer && frame.drawer.totalMs) || 0,
+                    rendererMs: (frame.renderer && frame.renderer.totalMs) || 0,
+                    firstPassMs: (frame.renderer && frame.renderer.firstPassMs) || 0,
+                    secondPassMs: (frame.renderer && frame.renderer.secondPassMs) || 0,
+                    finishMs: (frame.renderer && frame.renderer.finishMs) || 0,
+                    tileSourceMs: 0
+                };
 
                 if (Array.isArray(frame.tileSources)) {
                     for (const sourceProfile of frame.tileSources) {
-                        totals.tileSourceMs += (sourceProfile && sourceProfile.totalMs) || 0;
+                        frameTotals.tileSourceMs += (sourceProfile && sourceProfile.totalMs) || 0;
                     }
                 }
 
+                totals.totalMs += frameTotals.totalMs;
+                totals.drawerMs += frameTotals.drawerMs;
+                totals.rendererMs += frameTotals.rendererMs;
+                totals.firstPassMs += frameTotals.firstPassMs;
+                totals.secondPassMs += frameTotals.secondPassMs;
+                totals.finishMs += frameTotals.finishMs;
+                totals.tileSourceMs += frameTotals.tileSourceMs;
+
                 if (frame.skipped) {
                     skippedFrames++;
-                } else {
-                    renderedFrames++;
+                    continue;
                 }
+
+                renderedFrames++;
+
+                renderedTotals.totalMs += frameTotals.totalMs;
+                renderedTotals.drawerMs += frameTotals.drawerMs;
+                renderedTotals.rendererMs += frameTotals.rendererMs;
+                renderedTotals.firstPassMs += frameTotals.firstPassMs;
+                renderedTotals.secondPassMs += frameTotals.secondPassMs;
+                renderedTotals.finishMs += frameTotals.finishMs;
+                renderedTotals.tileSourceMs += frameTotals.tileSourceMs;
             }
 
             const renderedDivisor = renderedFrames || 1;
@@ -1106,15 +1136,16 @@
                 skippedFrameCount: skippedFrames,
                 latestFrame: frames.length ? $.extend(true, {}, frames[frames.length - 1]) : null,
                 totals,
+                renderedTotals,
                 averages: {
                     renderedFramesOnly: {
-                        totalMs: totals.totalMs / renderedDivisor,
-                        drawerMs: totals.drawerMs / renderedDivisor,
-                        rendererMs: totals.rendererMs / renderedDivisor,
-                        firstPassMs: totals.firstPassMs / renderedDivisor,
-                        secondPassMs: totals.secondPassMs / renderedDivisor,
-                        finishMs: totals.finishMs / renderedDivisor,
-                        tileSourceMs: totals.tileSourceMs / renderedDivisor
+                        totalMs: renderedTotals.totalMs / renderedDivisor,
+                        drawerMs: renderedTotals.drawerMs / renderedDivisor,
+                        rendererMs: renderedTotals.rendererMs / renderedDivisor,
+                        firstPassMs: renderedTotals.firstPassMs / renderedDivisor,
+                        secondPassMs: renderedTotals.secondPassMs / renderedDivisor,
+                        finishMs: renderedTotals.finishMs / renderedDivisor,
+                        tileSourceMs: renderedTotals.tileSourceMs / renderedDivisor
                     },
                     allAttempts: {
                         totalMs: totals.totalMs / allAttemptDivisor,

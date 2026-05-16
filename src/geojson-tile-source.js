@@ -146,6 +146,17 @@
             this._pending = new Map();
 
             /**
+             * Main-thread tile request start times keyed by tile id.
+             *
+             * This is profiling metadata only. It does not affect tile readiness,
+             * cache identity, rendering, or worker request semantics.
+             *
+             * @private
+             * @type {Map<string, number>}
+             */
+            this._pendingProfilingStarts = new Map();
+
+            /**
              * Worker instance used for GeoJSON normalization and meshing.
              *
              * @private
@@ -368,6 +379,7 @@
             }
 
             this._pending.set(key, [ job ]);
+            this._pendingProfilingStarts.set(key, getProfilingTime());
 
             this._worker.postMessage({
                 type: 'tile',
@@ -404,6 +416,7 @@
 
             if (!jobs.length) {
                 this._pending.delete(key);
+                this._pendingProfilingStarts.delete(key);
 
                 // TODO: implement cooperative cancellation in the worker and add a cancel call here as a possible optimization
             }
@@ -453,6 +466,7 @@
          */
         destroy() {
             this._pending.clear();
+            this._pendingProfilingStarts.clear();
 
             if (this._worker) {
                 this._worker.terminate();
@@ -549,16 +563,35 @@
 
             this._pending.delete(message.key);
 
+            const requestStart = this._pendingProfilingStarts.get(message.key);
+            this._pendingProfilingStarts.delete(message.key);
+
             if (message.ok) {
                 const tile = message.data || {};
+                const workerRoundTripMs = Number.isFinite(requestStart) ? getProfilingTime() - requestStart : 0;
+
+                const tileData = {
+                    fills: (tile.fills || []).map(packMesh),
+                    lines: (tile.lines || []).map(packMesh),
+                    linePrimitives: (tile.linePrimitives || []).map(packMesh),
+                    points: (tile.points || []).map(packMesh)
+                };
+
+                if (message.profiling && typeof message.profiling === 'object') {
+                    tileData.__flexProfiling = {
+                        sourceType: 'geojson',
+                        tileKey: message.key,
+                        ...message.profiling,
+                        workerRoundTripMs,
+                        totalMs: Math.max(
+                            workerRoundTripMs,
+                            Number(message.profiling.totalMs) || Number(message.profiling.workerProcessingMs) || 0
+                        )
+                    };
+                }
 
                 for (const job of jobs) {
-                    job.finish({
-                        fills: (tile.fills || []).map(packMesh),
-                        lines: (tile.lines || []).map(packMesh),
-                        linePrimitives: (tile.linePrimitives || []).map(packMesh),
-                        points: (tile.points || []).map(packMesh)
-                    }, undefined, 'vector-mesh');
+                    job.finish(tileData, undefined, 'vector-mesh');
                 }
             } else {
                 for (const job of jobs) {
@@ -582,6 +615,7 @@
             }
 
             this._pending.clear();
+            this._pendingProfilingStarts.clear();
         }
     };
 
@@ -765,4 +799,22 @@
             lineWidth: Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0 ? mesh.lineWidth : undefined
         };
     }
+
+    /**
+     * Return the current CPU timestamp used by GeoJSON tile-source profiling.
+     *
+     * @returns {number} Timestamp in milliseconds.
+     */
+    function getProfilingTime() {
+        if (
+            typeof performance !== 'undefined' &&
+            performance &&
+            typeof performance.now === 'function'
+        ) {
+            return performance.now();
+        }
+
+        return Date.now();
+    }
+
 })(OpenSeadragon);

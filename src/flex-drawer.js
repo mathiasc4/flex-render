@@ -1954,8 +1954,10 @@
 
             this._ensurePackLayout();
 
+            const tileSourceProfiles = profilingEnabled ? [] : undefined;
+
             const firstPassStart = profilingEnabled ? this._getProfilingTime() : 0;
-            const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
+            const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix, tileSourceProfiles);
 
             if (profilingEnabled) {
                 drawerProfile.collectFirstPassMs = this._getProfilingTime() - firstPassStart;
@@ -1980,7 +1982,8 @@
                 firstPass: firstPass,
                 secondPass: secondPass,
                 profiling: profilingEnabled ? {
-                    drawer: drawerProfile
+                    drawer: drawerProfile,
+                    tileSources: tileSourceProfiles
                 } : undefined
             });
         } // end of function
@@ -2009,7 +2012,7 @@
          *
          * @memberof OpenSeadragon.FlexDrawer#
          */
-        _collectFirstPassPayload(tiledImages, viewport, viewMatrix) {
+        _collectFirstPassPayload(tiledImages, viewport, viewMatrix, tileSourceProfiles = undefined) {
             // FIRST PASS (render things as they are into the corresponding off-screen textures)
             const TI_PAYLOAD = [];
 
@@ -2067,6 +2070,14 @@
                         const tileInfo = this.getDataToDraw(tile);
                         if (!tileInfo) {
                             continue;
+                        }
+
+                        if (
+                            tileSourceProfiles &&
+                            tileInfo.__flexProfiling &&
+                            typeof tileInfo.__flexProfiling === "object"
+                        ) {
+                            tileSourceProfiles.push($.extend(true, {}, tileInfo.__flexProfiling));
                         }
 
                         if (this._isDiagnosticTileInfo(tileInfo)) {
@@ -2621,12 +2632,18 @@
                     return this._createDiagnosticTileInfoFromPreparationFailure(result);
                 }
 
-                return {
+                const tileInfo = {
                     position: null,
                     texture: null,
                     resource: result.resource,
                     vectors: result.vectors
                 };
+
+                if (data && data.__flexProfiling && typeof data.__flexProfiling === "object") {
+                    tileInfo.__flexProfiling = $.extend(true, {}, data.__flexProfiling);
+                }
+
+                return tileInfo;
             }
 
             const isGpuTextureSet = type === "gpuTextureSet" || (data && typeof data.getType === "function" && data.getType() === "gpuTextureSet");

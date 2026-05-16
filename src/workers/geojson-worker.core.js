@@ -79,6 +79,23 @@ self.onmessage = function(event) {
     }
 };
 
+/**
+ * Return the current CPU timestamp used by GeoJSON worker profiling.
+ *
+ * @returns {number} Timestamp in milliseconds.
+ */
+function getProfilingTime() {
+    if (
+        typeof performance !== 'undefined' &&
+        performance &&
+        typeof performance.now === 'function'
+    ) {
+        return performance.now();
+    }
+
+    return Date.now();
+}
+
 
 /**
  * Configure the worker from the tile source.
@@ -1167,6 +1184,8 @@ async function buildTileWhenReady(message) {
  * @returns {void}
  */
 function buildTile(tile) {
+    const profilingStart = getProfilingTime();
+
     const tileBounds = getTileImageBounds(tile.level, tile.x, tile.y);
     const depth = getTileDepth(tile.level, tile.x, tile.y);
 
@@ -1179,7 +1198,11 @@ function buildTile(tile) {
 
     const transfers = [];
 
+    const filterStart = getProfilingTime();
     const visibleGeometries = getVisibleTileGeometries(tileBounds);
+    const filterMs = getProfilingTime() - filterStart;
+
+    const meshStart = getProfilingTime();
 
     if (shouldAggregateTile(tile, visibleGeometries.length)) {
         buildAggregateTile(tile, depth, visibleGeometries.length, output, transfers);
@@ -1187,11 +1210,40 @@ function buildTile(tile) {
         buildGeometryTile(tile, depth, visibleGeometries, output, transfers);
     }
 
+    const meshMs = getProfilingTime() - meshStart;
+
+    let vertexCount = 0;
+    let indexCount = 0;
+
+    for (const groupName of ['fills', 'lines', 'linePrimitives', 'points']) {
+        const meshes = output[groupName] || [];
+
+        for (const mesh of meshes) {
+            vertexCount += mesh.vertices ? mesh.vertices.byteLength / (Float32Array.BYTES_PER_ELEMENT * 4) : 0;
+            indexCount += mesh.indices ? mesh.indices.byteLength / Uint32Array.BYTES_PER_ELEMENT : 0;
+        }
+    }
+
+    const workerProcessingMs = getProfilingTime() - profilingStart;
+
     self.postMessage({
         type: 'tile',
         key: tile.key,
         ok: true,
-        data: output
+        data: output,
+        profiling: {
+            sourceType: 'geojson',
+            tileKey: tile.key,
+            totalMs: workerProcessingMs,
+            workerProcessingMs,
+            parseMs: 0,
+            filterMs,
+            clipMs: 0,
+            meshMs,
+            featureCount: visibleGeometries.length,
+            vertexCount,
+            indexCount
+        }
     }, transfers);
 }
 
