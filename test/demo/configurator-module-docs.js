@@ -27,10 +27,21 @@
     }
 
     function renderControlMetadata(control) {
-        return `<pre style="margin: 0; max-height: 220px;">${escapeHtml(stringify({
-            default: control.default,
-            required: control.required
-        }))}</pre>`;
+        return `
+<div style="display: grid; gap: 8px;">
+    <details>
+        <summary>Default</summary>
+        <div class="details-content">
+            <pre style="margin: 0; max-height: 220px;">${escapeHtml(stringify(control.default))}</pre>
+        </div>
+    </details>
+    <details>
+        <summary>Required</summary>
+        <div class="details-content">
+            <pre style="margin: 0; max-height: 220px;">${escapeHtml(stringify(control.required))}</pre>
+        </div>
+    </details>
+</div>`;
     }
 
     function updateText(id, value) {
@@ -65,7 +76,7 @@
         return getModules().find(moduleDoc => moduleDoc.type === selectedModuleType) || getModules()[0] || null;
     }
 
-    function renderPortTable(title, ports, includeRequired = true) {
+    function renderPortTable(title, ports) {
         if (!Array.isArray(ports) || !ports.length) {
             return `
 <div class="section">
@@ -82,7 +93,6 @@
             <tr>
                 <th>Name</th>
                 <th>Type</th>
-                ${includeRequired ? "<th>Required</th>" : ""}
                 <th>Description</th>
             </tr>
         </thead>
@@ -91,7 +101,6 @@
             <tr>
                 <td><code>${escapeHtml(port.name)}</code></td>
                 <td>${renderPortTypes(port.type)}</td>
-                ${includeRequired ? `<td>${port.required ? "yes" : "no"}</td>` : ""}
                 <td>${escapeHtml(port.description || "")}</td>
             </tr>`).join("")}
         </tbody>
@@ -183,7 +192,7 @@
 </div>
 
 ${renderPortTable("Inputs", moduleDoc.inputs)}
-${renderPortTable("Outputs", moduleDoc.outputs, false)}
+${renderPortTable("Outputs", moduleDoc.outputs)}
 ${renderControlTable(moduleDoc.controls)}
 ${renderClassDocs(moduleDoc)}
 `;
@@ -209,7 +218,6 @@ ${renderClassDocs(moduleDoc)}
     }
 
     function renderSummary() {
-        const shaderCount = Array.isArray(docsModel && docsModel.shaders) ? docsModel.shaders.length : 0;
         const moduleCount = getModules().length;
         const graphSchemaExists = !!(
             schemaModel &&
@@ -218,7 +226,6 @@ ${renderClassDocs(moduleDoc)}
         );
 
         updateText("docs-version", docsModel && docsModel.version ? docsModel.version : "-");
-        updateText("shader-count", shaderCount);
         updateText("module-count", moduleCount);
         updateText("graph-schema-status", graphSchemaExists ? "yes" : "no");
     }
