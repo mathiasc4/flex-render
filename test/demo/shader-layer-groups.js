@@ -30,15 +30,13 @@ const IMAGE_SOURCES = [
             url: "../data/A.png",
         },
     },
-    {
-        key: "book",
-        label: "Book",
-        tileSource: "../data/iiif_1_0_files/info.json",
-    },
 ];
 
+const IMAGE_SOURCE_INDEX_BY_KEY = IMAGE_SOURCES.reduce((result, source, index) => {
+    result[source.key] = index;
+    return result;
+}, {});
 
-const drawer = "flex-renderer";
 const drawerOptions = {
     "flex-renderer": {
         debug: false,
@@ -49,34 +47,29 @@ const drawerOptions = {
 };
 
 const viewportMargins = {
-    left: 100,
+    left: 70,
     top: 0,
-    right: 0,
-    bottom: 50,
+    right: 70,
+    bottom: 0,
 };
 
-$("#title-w").html("OpenSeadragon viewer using FlexRenderer");
+$("#title-w").html("OpenSeadragon viewer using FlexRenderer shader layer groups");
 
 const viewer = window.viewer = OpenSeadragon({
     id: "drawer-canvas",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
     maxZoomPixelRatio: 100,
+    minPixelRatio: 1.2,
     smoothTileEdgesMinZoom: 1.1,
     crossOriginPolicy: "Anonymous",
     ajaxWithCredentials: false,
-    drawer: drawer,
+    drawer: "flex-renderer",
     drawerOptions: drawerOptions,
     blendTime: 0,
     showNavigator: true,
     viewportMargins: viewportMargins,
 });
-
-
-const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
-    index,
-    label: source.label,
-}));
 
 IMAGE_SOURCES.forEach((source) => {
     viewer.addTiledImage({
@@ -84,54 +77,97 @@ IMAGE_SOURCES.forEach((source) => {
     });
 });
 
-
 let shaderLayerConfig = {
-    "rainbow": {
-        "name": "Rainbow",
-        "type": "identity",
-        "tiledImages": [0],
+    base_rainbow: {
+        name: "Base Rainbow Grid",
+        type: "identity",
+        tiledImages: [sourceIndex("rainbow")],
+        params: {
+            opacity: 1,
+            use_mode: "show",
+        },
     },
-    "duomo": {
-        "name": "Duomo",
-        "type": "identity",
-        "tiledImages": [3],
-    },
-    "group": {
-        "name": "Group Layer",
-        "type": "group",
-        "shaders": {
-            "leaves": {
-                "name": "Leaves",
-                "type": "identity",
-                "tiledImages": [1],
+    group_photo_overlay: {
+        name: "Group: photo overlay",
+        type: "group",
+        params: {
+            opacity: 0.72,
+            use_mode: "blend",
+            use_blend: "source-over",
+        },
+        order: [
+            "leaves_overlay",
+            "nested_marks",
+        ],
+        shaders: {
+            leaves_overlay: {
+                name: "Leaves overlay",
+                type: "identity",
+                tiledImages: [sourceIndex("leaves")],
+                params: {
+                    opacity: 0.42,
+                    use_mode: "blend",
+                    use_blend: "source-over",
+                },
             },
-            "bblue": {
-                "name": "Blue B",
-                "type": "identity",
-                "tiledImages": [2],
-            },
-            "nested": {
-                "name": "Nested Group Layer",
-                "type": "group",
-                "shaders": {
-                    "book": {
-                        "name": "Book",
-                        "type": "identity",
-                        "tiledImages": [5],
+            nested_marks: {
+                name: "Nested group: image marks",
+                type: "group",
+                params: {
+                    opacity: 1,
+                    use_mode: "blend",
+                    use_blend: "source-over",
+                },
+                order: [
+                    "blue_b",
+                    "letter_a",
+                ],
+                shaders: {
+                    blue_b: {
+                        name: "Blue B",
+                        type: "identity",
+                        tiledImages: [sourceIndex("bblue")],
+                        params: {
+                            opacity: 0.85,
+                            use_mode: "blend",
+                            use_blend: "source-over",
+                        },
                     },
-                    "a": {
-                        "name": "A",
-                        "type": "identity",
-                        "tiledImages": [4],
-                    }
-                }
-            }
+                    letter_a: {
+                        name: "Letter A",
+                        type: "identity",
+                        tiledImages: [sourceIndex("a")],
+                        params: {
+                            opacity: 0.78,
+                            use_mode: "blend",
+                            use_blend: "source-over",
+                        },
+                    },
+                },
+            },
+        },
+    },
+    optional_duomo: {
+        name: "Optional Duomo image",
+        type: "identity",
+        visible: 0,
+        tiledImages: [sourceIndex("duomo")],
+        params: {
+            opacity: 1,
+            use_mode: "show",
         },
     },
 };
 
-let shaderLayerOrder = Object.keys(shaderLayerConfig);
+let shaderLayerOrder = [
+    "base_rainbow",
+    "group_photo_overlay",
+    "optional_duomo",
+];
 
+function sourceIndex(sourceKey) {
+    return IMAGE_SOURCE_INDEX_BY_KEY[sourceKey];
+}
 
 function renderShaderLayerControls(shaderLayer, shaderConfig, htmlContext = {}) {
     const container = document.getElementById("my-shader-ui-container");
@@ -150,35 +186,21 @@ function renderShaderLayerControls(shaderLayer, shaderConfig, htmlContext = {}) 
     const wrapper = document.createElement("div");
     wrapper.className = [
         "shader-control-card",
-        `shader-control-card--depth-${depth}`,
+        `shader-control-card--depth-${Math.min(depth, 3)}`,
         isGroupChild ? "shader-control-card--group-child" : "shader-control-card--top",
         isGroup ? "shader-control-card--group" : "",
     ].filter(Boolean).join(" ");
 
-    wrapper.style.marginLeft = `${depth * 18}px`;
-    wrapper.style.marginBottom = "6px";
-    wrapper.style.padding = "6px";
-    wrapper.style.border = "1px solid #d1d5db";
-    wrapper.style.borderLeft = isGroupChild ? "3px solid #d1d5db" : "1px solid #d1d5db";
-    wrapper.style.borderRadius = "0";
-    wrapper.style.background = isGroupChild ? "#fafafa" : "#ffffff";
-
     const header = document.createElement("div");
-    header.style.display = "flex";
-    header.style.alignItems = "flex-start";
-    header.style.justifyContent = "space-between";
-    header.style.gap = "10px";
-    header.style.marginBottom = "6px";
+    header.className = "shader-control-card__header";
 
     const titleWrap = document.createElement("div");
-    titleWrap.style.minWidth = "0";
+    titleWrap.className = "shader-control-card__title-wrap";
     titleWrap.appendChild(createShaderControlTitle(shaderConfig));
 
     if (isGroupChild && parentName) {
         const parentLabel = document.createElement("div");
-        parentLabel.style.fontSize = "12px";
-        parentLabel.style.color = "#6b7280";
-        parentLabel.style.marginTop = "2px";
+        parentLabel.className = "shader-control-card__parent";
         parentLabel.textContent = `In group: ${parentName}`;
         titleWrap.appendChild(parentLabel);
     }
@@ -189,9 +211,7 @@ function renderShaderLayerControls(shaderLayer, shaderConfig, htmlContext = {}) 
 
     if (shaderLayer.error) {
         const errorNode = document.createElement("div");
-        errorNode.style.marginBottom = "8px";
-        errorNode.style.color = "#b91c1c";
-        errorNode.style.fontSize = "12px";
+        errorNode.className = "shader-control-card__error";
         errorNode.textContent = shaderLayer.error;
         wrapper.appendChild(errorNode);
     }
@@ -215,8 +235,7 @@ function resetShaderLayerControls() {
 
 function createShaderControlTitle(shaderConfig) {
     const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.style.margin = "0";
+    title.className = "shader-control-card__title";
     title.textContent = shaderConfig.name || shaderConfig.type;
 
     return title;
@@ -224,75 +243,39 @@ function createShaderControlTitle(shaderConfig) {
 
 function createShaderBadges({ isGroup, isGroupChild, depth }) {
     const badges = document.createElement("div");
-    badges.style.display = "flex";
-    badges.style.gap = "6px";
-    badges.style.flexWrap = "wrap";
-    badges.style.justifyContent = "flex-end";
+    badges.className = "shader-control-card__badges";
 
     if (isGroup) {
-        badges.appendChild(createBadge("Group", {
-            border: "1px solid #9ca3af",
-            background: "#ffffff",
-        }));
+        badges.appendChild(createBadge("Group", "shader-badge--group"));
     }
 
     if (isGroupChild) {
-        badges.appendChild(createBadge(`Level ${depth}`, {
-            background: "#e5e7eb",
-        }));
+        badges.appendChild(createBadge(`Level ${depth}`));
     }
 
     return badges;
 }
 
-function createBadge(text, style = {}) {
+function createBadge(text, className = "") {
     const badge = document.createElement("span");
+    badge.className = ["shader-badge", className].filter(Boolean).join(" ");
     badge.textContent = text;
-    badge.style.fontSize = "11px";
-    badge.style.padding = "2px 6px";
-    badge.style.borderRadius = "999px";
-    badge.style.color = "#374151";
-    badge.style.whiteSpace = "nowrap";
 
-    Object.assign(badge.style, style);
     return badge;
 }
-
-function renderImageSourceIndexPanel() {
-    const rows = indexedImageSources.map((source) => `
-        <tr>
-            <td>${escapeHtml(source.label)}</td>
-            <td><code>${source.index}</code></td>
-        </tr>
-    `).join("");
-
-    setPanelHtml("image-source-index-panel", `
-        <h3>Image sources</h3>
-        <table class="image-source-index-table">
-            <thead>
-                <tr>
-                    <th>Label</th>
-                    <th>Index</th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
-    `);
-}
-
 
 function renderShaderConfigPanel() {
     ensureGroupOrders(shaderLayerConfig);
 
     setPanelHtml("shader-config-panel", `
         <h3>Shader layer configuration</h3>
-        ${renderShaderConfigList(shaderLayerConfig, shaderLayerOrder)}
+        <div class="shader-config-scroll">
+            ${renderShaderConfigList(shaderLayerConfig, shaderLayerOrder)}
+        </div>
         <p class="shader-config-help">
-            Drag layers to reorder them. Edit names directly. Choose image indexes from the Image sources table.
-            Mode controls whether the layer is shown, blended, or used as a clip.
-            Blend controls how the layer combines when mode is blend or clip.
-            Group layers keep their type fixed and do not bind directly to an image source.
-            Changing a non-group type resets shader-specific params and cache.
+            Drag cards to reorder active layers. Use the visibility checkbox, image source dropdown, type dropdown,
+            mode dropdown, and blend dropdown to test group handling. Group cards keep their type fixed and do not
+            bind directly to an image source.
         </p>
     `);
 
@@ -330,41 +313,41 @@ function renderShaderConfigItem(shaderId, shaderConfig, path) {
     return `
         <li class="shader-config-item" data-shader-id="${escapeHtml(shaderId)}">
             <div class="shader-config-row ${isGroup ? "shader-config-row--group" : ""}">
-            <span class="shader-config-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
+                <span class="shader-config-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
 
-            <label class="shader-config-visible-label" title="Visible">
-                <input
-                    type="checkbox"
-                    class="shader-config-visible-toggle"
-                    data-shader-path="${escapeHtml(pathString)}"
-                    ${visible ? "checked" : ""}
-                >
-            </label>
+                <label class="shader-config-visible-label" title="Visible">
+                    <input
+                        type="checkbox"
+                        class="shader-config-visible-toggle"
+                        data-shader-path="${escapeHtml(pathString)}"
+                        ${visible ? "checked" : ""}
+                    >
+                </label>
 
-            <label class="shader-config-field-label shader-config-row__name">
-                Name
-                <input
-                    type="text"
-                    class="shader-config-name-input"
-                    data-shader-path="${escapeHtml(pathString)}"
-                    value="${escapeHtml(name)}"
-                >
-            </label>
+                <label class="shader-config-field-label shader-config-row__name">
+                    Name
+                    <input
+                        type="text"
+                        class="shader-config-name-input"
+                        data-shader-path="${escapeHtml(pathString)}"
+                        value="${escapeHtml(name)}"
+                    >
+                </label>
 
-            <div class="shader-config-row__selectors">
-                <div class="shader-config-row__type">
-                    ${renderShaderTypeControl(shaderConfig, pathString)}
+                <div class="shader-config-row__selectors">
+                    <div class="shader-config-row__type">
+                        ${renderShaderTypeControl(shaderConfig, pathString)}
+                    </div>
+
+                    <div class="shader-config-row__image">
+                        ${renderShaderImageSourceControl(shaderConfig, pathString)}
+                    </div>
                 </div>
 
-                <div class="shader-config-row__image">
-                    ${renderShaderImageIndexControl(shaderConfig, pathString)}
+                <div class="shader-config-row__blend">
+                    ${renderShaderBlendControls(shaderConfig, pathString)}
                 </div>
             </div>
-
-            <div class="shader-config-row__blend">
-                ${renderShaderBlendControls(shaderConfig, pathString)}
-            </div>
-        </div>
 
             ${children}
         </li>
@@ -403,13 +386,13 @@ function renderShaderTypeOptions(selectedType) {
     }).join("");
 }
 
-function renderImageIndexOptions(selectedIndex) {
-    return indexedImageSources.map((source) => {
-        const selected = source.index === selectedIndex ? "selected" : "";
+function renderImageSourceOptions(selectedIndex) {
+    return IMAGE_SOURCES.map((source, index) => {
+        const selected = index === selectedIndex ? "selected" : "";
 
         return `
-            <option value="${source.index}" ${selected}>
-                ${escapeHtml(source.label)} (${source.index})
+            <option value="${index}" ${selected}>
+                ${escapeHtml(source.label)}
             </option>
         `;
     }).join("");
@@ -453,7 +436,7 @@ function renderUseBlendOptions(selectedBlend) {
     }).join("");
 }
 
-function renderShaderImageIndexControl(shaderConfig, pathString) {
+function renderShaderImageSourceControl(shaderConfig, pathString) {
     if (shaderConfig.type === "group") {
         return `
             <label class="shader-config-field-label">
@@ -471,7 +454,7 @@ function renderShaderImageIndexControl(shaderConfig, pathString) {
         <label class="shader-config-field-label">
             Image
             <select class="shader-config-image-index-select" data-shader-path="${escapeHtml(pathString)}">
-                ${renderImageIndexOptions(selectedIndex)}
+                ${renderImageSourceOptions(selectedIndex)}
             </select>
         </label>
     `;
@@ -574,6 +557,7 @@ function bindShaderConfigPanelEvents() {
 
             const previousParams = shaderConfig.params || {};
             const preservedGlobalParams = {
+                opacity: previousParams.opacity,
                 use_mode: previousParams.use_mode,
                 use_blend: previousParams.use_blend,
             };
@@ -707,7 +691,5 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
-
 applyShaderLayerGuiConfig();
-renderImageSourceIndexPanel();
 renderShaderConfigPanel();

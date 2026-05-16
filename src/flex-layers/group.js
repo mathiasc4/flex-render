@@ -95,7 +95,6 @@
 
                 for (let id in shaderLayerConfigs) {
                     let config = shaderLayerConfigs[id];
-                    $.console.log("Creating shader layer", id, config);
                     this.shaderLayers[id] = this.createShaderLayer(id, config);
                 }
 
