@@ -38,10 +38,6 @@ const DIAGNOSTIC_SCENARIOS = {
     "mixed-reasons": {
         failurePattern: "mixed",
         failureReason: "mixed"
-    },
-    "custom": {
-        failurePattern: "center",
-        failureReason: "invalid-data"
     }
 };
 
@@ -55,7 +51,7 @@ const drawerOptions = {
     }
 };
 
-$("#title-w").html("FlexRenderer tile diagnostics demo");
+$("#title-w").html("FlexRenderer missing-data feedback demo");
 
 installDiagnosticDemoTileSource(OpenSeadragon);
 
@@ -410,31 +406,14 @@ function createDemoTileSourceOptions() {
 
 function getDiagnosticSettingsFromControls() {
     const scenarioSelect = document.getElementById("diagnostic-scenario-select");
-    const patternSelect = document.getElementById("failure-pattern-select");
-    const reasonSelect = document.getElementById("failure-reason-select");
-
     const scenario = scenarioSelect ? scenarioSelect.value : DEMO_SOURCE_OPTIONS.diagnosticScenario;
-    const preset = DIAGNOSTIC_SCENARIOS[scenario] || DIAGNOSTIC_SCENARIOS["custom"];
+    const preset = DIAGNOSTIC_SCENARIOS[scenario] || DIAGNOSTIC_SCENARIOS[DEMO_SOURCE_OPTIONS.diagnosticScenario];
 
     return {
-        scenario: scenario,
-        failurePattern: patternSelect ? patternSelect.value : preset.failurePattern,
-        failureReason: reasonSelect ? reasonSelect.value : preset.failureReason
+        scenario,
+        failurePattern: preset.failurePattern,
+        failureReason: preset.failureReason
     };
-}
-
-function applyScenarioPresetToControls(scenario) {
-    const patternSelect = document.getElementById("failure-pattern-select");
-    const reasonSelect = document.getElementById("failure-reason-select");
-    const preset = DIAGNOSTIC_SCENARIOS[scenario] || DIAGNOSTIC_SCENARIOS["custom"];
-
-    if (patternSelect) {
-        patternSelect.value = preset.failurePattern === "mixed" ? "none" : preset.failurePattern;
-    }
-
-    if (reasonSelect) {
-        reasonSelect.value = preset.failureReason === "mixed" ? "invalid-data" : preset.failureReason;
-    }
 }
 
 function reloadDemoSource() {
@@ -457,24 +436,36 @@ function renderShaderLayerControls(shaderLayer, shaderConfig) {
         return "";
     }
 
-    const card = document.createElement("div");
-    card.style.marginBottom = "6px";
-    card.style.padding = "6px";
-    card.style.border = "1px solid #d1d5db";
-    card.style.background = "#ffffff";
+    const wrapper = document.createElement("div");
+    wrapper.className = "shader-control-card";
+
+    const header = document.createElement("div");
+    header.className = "shader-control-card__header";
 
     const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.style.marginBottom = "6px";
+    title.className = "shader-control-card__title";
     title.textContent = shaderConfig.name || shaderConfig.type;
+    header.appendChild(title);
+
+    const badges = document.createElement("div");
+    badges.className = "shader-control-card__badges";
+    header.appendChild(badges);
+
+    wrapper.appendChild(header);
+
+    if (shaderLayer.error) {
+        const errorNode = document.createElement("div");
+        errorNode.className = "shader-control-card__error";
+        errorNode.textContent = shaderLayer.error;
+        wrapper.appendChild(errorNode);
+    }
 
     const controls = document.createElement("div");
+    controls.className = "shader-control-card__controls";
     controls.innerHTML = shaderLayer.htmlControls();
+    wrapper.appendChild(controls);
 
-    card.appendChild(title);
-    card.appendChild(controls);
-    container.appendChild(card);
-
+    container.appendChild(wrapper);
     return "";
 }
 
@@ -495,13 +486,15 @@ function renderShaderConfigPanel() {
     setPanelHtml("shader-config-panel", `
         <h3>Shader layer configuration</h3>
 
-        <ul class="shader-config-list">
-            ${rows}
-        </ul>
+        <div class="shader-config-scroll">
+            <ul class="shader-config-list">
+                ${rows}
+            </ul>
+        </div>
 
         <p class="shader-config-help">
             Drag layers to reorder them. Toggle visibility, mode, blend, type, and image source
-            to verify that first-pass tile diagnostics still compose through normal shader layers.
+            to verify that first-pass missing-data feedback still composes through normal shader layers.
         </p>
     `);
 
@@ -772,8 +765,6 @@ function applyShaderLayerGuiConfig() {
 function setupDiagnosticsPanel() {
     const renderDiagnosticsToggle = document.getElementById("render-diagnostics-toggle");
     const scenarioSelect = document.getElementById("diagnostic-scenario-select");
-    const patternSelect = document.getElementById("failure-pattern-select");
-    const reasonSelect = document.getElementById("failure-reason-select");
     const reloadSourceButton = document.getElementById("reload-source-button");
 
     const syncControls = () => {
@@ -800,32 +791,8 @@ function setupDiagnosticsPanel() {
 
     if (scenarioSelect) {
         scenarioSelect.value = DEMO_SOURCE_OPTIONS.diagnosticScenario;
-        applyScenarioPresetToControls(scenarioSelect.value);
 
         scenarioSelect.addEventListener("change", () => {
-            applyScenarioPresetToControls(scenarioSelect.value);
-            reloadDemoSource();
-            syncControls();
-        });
-    }
-
-    if (patternSelect) {
-        patternSelect.addEventListener("change", () => {
-            if (scenarioSelect) {
-                scenarioSelect.value = "custom";
-            }
-
-            reloadDemoSource();
-            syncControls();
-        });
-    }
-
-    if (reasonSelect) {
-        reasonSelect.addEventListener("change", () => {
-            if (scenarioSelect) {
-                scenarioSelect.value = "custom";
-            }
-
             reloadDemoSource();
             syncControls();
         });
@@ -1123,14 +1090,12 @@ function writeDiagnosticsState() {
             renderer.getRenderDiagnostics() :
             null,
         scenario: settings.scenario,
-        failurePattern: settings.failurePattern,
-        failureReason: settings.failureReason,
         expectedReasons: Array.from(new Set(expectedDiagnostics.map((item) => item.reason))),
-        expectedDiagnosticSource: "renderer preparation failure converted to diagnostic sentinel",
+        expectedDiagnosticSource: "renderer preparation failure converted to missing-data feedback sentinel",
         expectedDiagnosticsAtMaxLevel: expectedDiagnostics,
         note: settings.scenario === "mixed-reasons" ?
             "Mixed scenario uses fixed tiles for invalid-data, tainted-data, and unsupported-data." :
-            "Custom controls apply one reason across the selected pattern."
+            "Scenario presets determine affected tiles and diagnostic reason."
     });
 }
 

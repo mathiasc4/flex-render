@@ -26,7 +26,7 @@ const state = {
     lastAction: "No action yet."
 };
 
-$("#title-w").html("FlexDrawer shared-context validation demo");
+$("#title-w").html("OpenSeadragon viewer using FlexRenderer shared contexts");
 
 installSharedContextValidationTileSource(OpenSeadragon);
 
@@ -80,6 +80,10 @@ function createViewers() {
     });
 
     const key = getSharedContextKey();
+
+    setViewerStatus("shared-a", "Creating shared viewer A...", "info");
+    setViewerStatus("shared-b", "Creating shared viewer B...", "info");
+    setViewerStatus("private", "Creating private viewer...", "info");
 
     state.viewerA = createViewer({
         id: "viewer-shared-a",
@@ -155,6 +159,7 @@ function createViewer({
             state.loaded[loadStateKey] = false;
         }
 
+        setViewerStatus(variant, `Opened ${label}; waiting for full load...`, "info");
         writeState(`Opened ${label}.`);
     });
 
@@ -163,6 +168,8 @@ function createViewer({
             if (loadStateKey) {
                 state.loaded[loadStateKey] = true;
             }
+
+            setViewerStatus(variant, `Fully loaded ${label}.`, "ok");
 
             setTimeout(() => {
                 writeState(`Fully loaded ${label}.`);
@@ -189,6 +196,9 @@ function destroyViewers() {
     clearElement("viewer-shared-a");
     clearElement("viewer-shared-b");
     clearElement("viewer-private");
+    setViewerStatus("shared-a", "Viewer destroyed.", "info");
+    setViewerStatus("shared-b", "Viewer destroyed.", "info");
+    setViewerStatus("private", "Viewer destroyed.", "info");
 
     resetLoadState();
     state.clearCheckActive = false;
@@ -201,6 +211,9 @@ function reloadSources() {
 
     resetLoadState();
     state.clearCheckActive = false;
+    setViewerStatus("shared-a", "Reloading source...", "info");
+    setViewerStatus("shared-b", "Reloading source...", "info");
+    setViewerStatus("private", "Reloading source...", "info");
 
     state.viewerA.open(createDemoTileSourceOptions({
         label: "Shared viewer A",
@@ -245,6 +258,10 @@ function runClearCheck() {
         sharedAAlpha: readPresentationAlphaSum(rendererA),
         sharedBAlpha: readPresentationAlphaSum(rendererB)
     };
+
+    setViewerStatus("shared-a", "Clear check ran: this viewer should now be blank.", "ok");
+    setViewerStatus("shared-b", "Clear check ran: this shared viewer should remain visible.", "ok");
+    setViewerStatus("private", "Clear check ran: private viewer should remain visible.", "ok");
 
     writeState("Ran clear check: only Shared viewer A should be blank afterward.", {
         before,
@@ -1142,6 +1159,40 @@ function renderChecks(
             </li>
         `;
     }).join("");
+}
+
+function setViewerStatus(variant, message, status = "info") {
+    const id = getViewerStatusId(variant);
+    const element = id ? document.getElementById(id) : null;
+
+    if (!element) {
+        return;
+    }
+
+    element.textContent = message;
+    element.classList.remove("viewer-status--ok", "viewer-status--error");
+
+    if (status === "ok") {
+        element.classList.add("viewer-status--ok");
+    } else if (status === "error") {
+        element.classList.add("viewer-status--error");
+    }
+}
+
+function getViewerStatusId(variant) {
+    if (variant === "shared-a") {
+        return "viewer-shared-a-status";
+    }
+
+    if (variant === "shared-b") {
+        return "viewer-shared-b-status";
+    }
+
+    if (variant === "private") {
+        return "viewer-private-status";
+    }
+
+    return null;
 }
 
 function writeJson(id, value) {

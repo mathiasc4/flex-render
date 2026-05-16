@@ -2,35 +2,40 @@ const IMAGE_SOURCES = [
     {
         key: "rainbow",
         label: "Rainbow Grid",
-        tileSource: "../data/testpattern.dzi"
+        tileSource: "../data/testpattern.dzi",
     },
     {
         key: "leaves",
         label: "Leaves",
-        tileSource: "../data/iiif_2_0_sizes/info.json"
+        tileSource: "../data/iiif_2_0_sizes/info.json",
     },
     {
         key: "a",
         label: "A",
         tileSource: {
             type: "image",
-            url: "../data/A.png"
-        }
+            url: "../data/A.png",
+        },
     },
     {
         key: "bblue",
         label: "Blue B",
         tileSource: {
             type: "image",
-            url: "../data/BBlue.png"
-        }
+            url: "../data/BBlue.png",
+        },
     },
     {
         key: "duomo",
         label: "Duomo",
-        tileSource: "https://openseadragon.github.io/example-images/duomo/duomo.dzi"
+        tileSource: "https://openseadragon.github.io/example-images/duomo/duomo.dzi",
     },
 ];
+
+const IMAGE_SOURCE_INDEX_BY_KEY = IMAGE_SOURCES.reduce((result, source, index) => {
+    result[source.key] = index;
+    return result;
+}, {});
 
 const drawerOptions = {
     "flex-renderer": {
@@ -40,38 +45,41 @@ const drawerOptions = {
             enabled: true,
             preventContextMenu: true,
             notifyOnMove: false,
-            viewerInputCaptureMode: "drag"
+            viewerInputCaptureMode: "drag",
         },
         htmlHandler: renderShaderLayerControls,
-        htmlReset: resetShaderLayerControls
-    }
+        htmlReset: resetShaderLayerControls,
+    },
 };
 
-$("#title-w").html("FlexRenderer interaction uniform demo");
+$("#title-w").html("OpenSeadragon viewer using FlexRenderer interaction uniforms");
+
+const viewportMargins = {
+    left: 70,
+    top: 0,
+    right: 70,
+    bottom: 0,
+};
 
 const viewer = window.viewer = OpenSeadragon({
     id: "drawer-canvas",
     prefixUrl: "../../openseadragon/images/",
     minZoomImageRatio: 0.01,
     maxZoomPixelRatio: 100,
+    minPixelRatio: 1.2,
     smoothTileEdgesMinZoom: 1.1,
     crossOriginPolicy: "Anonymous",
     ajaxWithCredentials: false,
     drawer: "flex-renderer",
-    drawerOptions,
+    drawerOptions: drawerOptions,
     blendTime: 0,
     showNavigator: true,
-    viewportMargins: {
-        left: 100,
-        top: 0,
-        right: 0,
-        bottom: 50
-    }
+    viewportMargins: viewportMargins
 });
 
 IMAGE_SOURCES.forEach((source) => {
     viewer.addTiledImage({
-        tileSource: source.tileSource
+        tileSource: source.tileSource,
     });
 });
 
@@ -86,14 +94,22 @@ let shaderLayerConfig = {
         type: "identity",
         visible: 1,
         fixed: false,
-        tiledImages: [0]
+        tiledImages: [sourceIndex("rainbow")],
+        params: {
+            opacity: 1,
+            use_mode: "show",
+        },
     },
     below_leaves: {
         name: "Leaves",
         type: "fisheye-lens",
         visible: 1,
         fixed: false,
-        tiledImages: [1]
+        tiledImages: [sourceIndex("leaves")],
+        params: {
+            opacity: 1,
+            use_mode: "show",
+        },
     },
     interaction_debug: {
         name: "Interaction Debug",
@@ -101,14 +117,24 @@ let shaderLayerConfig = {
         visible: 1,
         fixed: false,
         tiledImages: [],
-        cache: {}
+        params: {
+            opacity: 1,
+            use_mode: "blend",
+            use_blend: "source-over",
+        },
+        cache: {},
     },
     above_bblue: {
         name: "Blue B",
         type: "identity",
         visible: 0,
         fixed: false,
-        tiledImages: [3]
+        tiledImages: [sourceIndex("bblue")],
+        params: {
+            opacity: 0.85,
+            use_mode: "blend",
+            use_blend: "source-over",
+        },
     },
 };
 
@@ -116,8 +142,12 @@ let shaderLayerOrder = [
     "base_rainbow",
     "below_leaves",
     "interaction_debug",
-    "above_bblue"
+    "above_bblue",
 ];
+
+function sourceIndex(sourceKey) {
+    return IMAGE_SOURCE_INDEX_BY_KEY[sourceKey];
+}
 
 function renderShaderLayerControls(shaderLayer, shaderConfig) {
     const container = document.getElementById("my-shader-ui-container");
@@ -126,25 +156,53 @@ function renderShaderLayerControls(shaderLayer, shaderConfig) {
         return "";
     }
 
-    const card = document.createElement("div");
-    card.style.marginBottom = "6px";
-    card.style.padding = "6px";
-    card.style.border = "1px solid #d1d5db";
-    card.style.background = "#ffffff";
+    const isInteractionLayer = shaderConfig.type === "interaction-debug";
+    const wrapper = document.createElement("div");
+    wrapper.className = [
+        "shader-control-card",
+        isInteractionLayer ? "shader-control-card--interaction" : "",
+    ].filter(Boolean).join(" ");
+
+    const header = document.createElement("div");
+    header.className = "shader-control-card__header";
 
     const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.style.marginBottom = "6px";
+    title.className = "shader-control-card__title";
     title.textContent = shaderConfig.name || shaderConfig.type;
+    header.appendChild(title);
+
+    const badges = document.createElement("div");
+    badges.className = "shader-control-card__badges";
+
+    if (isInteractionLayer) {
+        badges.appendChild(createBadge("Interaction", "shader-badge--interaction"));
+    }
+
+    header.appendChild(badges);
+    wrapper.appendChild(header);
+
+    if (shaderLayer.error) {
+        const errorNode = document.createElement("div");
+        errorNode.className = "shader-control-card__error";
+        errorNode.textContent = shaderLayer.error;
+        wrapper.appendChild(errorNode);
+    }
 
     const controls = document.createElement("div");
+    controls.className = "shader-control-card__controls";
     controls.innerHTML = shaderLayer.htmlControls();
+    wrapper.appendChild(controls);
 
-    card.appendChild(title);
-    card.appendChild(controls);
-    container.appendChild(card);
-
+    container.appendChild(wrapper);
     return "";
+}
+
+function createBadge(text, className = "") {
+    const badge = document.createElement("span");
+    badge.className = ["shader-badge", className].filter(Boolean).join(" ");
+    badge.textContent = text;
+
+    return badge;
 }
 
 function resetShaderLayerControls() {
@@ -163,13 +221,13 @@ function renderShaderConfigPanel() {
 
     setPanelHtml("shader-config-panel", `
         <h3>Shader layer configuration</h3>
-
-        <ul class="shader-config-list">
-            ${rows}
-        </ul>
-
+        <div class="shader-config-scroll">
+            <ul class="shader-config-list">
+                ${rows}
+            </ul>
+        </div>
         <p class="shader-config-help">
-            Drag layers to reorder them. Keep at least one layer above and below Interaction Debug
+            Drag cards to reorder active layers. Keep at least one layer above and below Interaction Debug
             to test composition. Toggle visibility, mode, blend, type, and image source to validate
             that the interaction layer behaves as a regular ShaderLayer.
         </p>
@@ -183,7 +241,7 @@ function renderShaderConfigItem(shaderId, shaderConfig) {
 
     return `
         <li class="shader-config-item" data-shader-id="${escapeHtml(shaderId)}">
-            <div class="shader-config-row">
+            <div class="shader-config-row ${shaderConfig.type === "interaction-debug" ? "shader-config-row--interaction" : ""}">
                 <span class="shader-config-drag-handle ui-icon ui-icon-arrowthick-2-n-s"></span>
 
                 <label class="shader-config-visible-label" title="Visible">
@@ -402,7 +460,7 @@ function bindShaderConfigPanelEvents() {
             if (!shaderTypeHasSources(shaderConfig.type)) {
                 shaderConfig.tiledImages = [];
             } else if (!Array.isArray(shaderConfig.tiledImages) || !shaderConfig.tiledImages.length) {
-                shaderConfig.tiledImages = [0];
+                shaderConfig.tiledImages = [sourceIndex("rainbow")];
             }
         });
     });
@@ -467,8 +525,11 @@ function setupInteractionPanel() {
     if (enabledToggle) {
         enabledToggle.addEventListener("change", () => {
             viewer.drawer.setInteractionOptions({
-                enabled: enabledToggle.checked
+                enabled: enabledToggle.checked,
             });
+            setViewerStatus(enabledToggle.checked ?
+                "Interaction forwarding enabled." :
+                "Interaction forwarding disabled; shader-visible state should clear.");
             syncControls();
         });
     }
@@ -476,8 +537,11 @@ function setupInteractionPanel() {
     if (preventContextMenuToggle) {
         preventContextMenuToggle.addEventListener("change", () => {
             viewer.drawer.setInteractionOptions({
-                preventContextMenu: preventContextMenuToggle.checked
+                preventContextMenu: preventContextMenuToggle.checked,
             });
+            setViewerStatus(preventContextMenuToggle.checked ?
+                "Context menu prevention enabled." :
+                "Context menu prevention disabled.");
             syncControls();
         });
     }
@@ -485,8 +549,11 @@ function setupInteractionPanel() {
     if (notifyOnMoveToggle) {
         notifyOnMoveToggle.addEventListener("change", () => {
             viewer.drawer.setInteractionOptions({
-                notifyOnMove: notifyOnMoveToggle.checked
+                notifyOnMove: notifyOnMoveToggle.checked,
             });
+            setViewerStatus(notifyOnMoveToggle.checked ?
+                "Pointer-move notifications enabled for event-driven readout." :
+                "Pointer-move notifications disabled; use the polled readout for continuous state.");
             syncControls();
         });
     }
@@ -494,8 +561,9 @@ function setupInteractionPanel() {
     if (viewerInputCaptureModeSelect) {
         viewerInputCaptureModeSelect.addEventListener("change", () => {
             viewer.drawer.setInteractionOptions({
-                viewerInputCaptureMode: viewerInputCaptureModeSelect.value
+                viewerInputCaptureMode: viewerInputCaptureModeSelect.value,
             });
+            setViewerStatus(`Viewer input capture mode: ${viewerInputCaptureModeSelect.value}.`);
             syncControls();
         });
     }
@@ -503,8 +571,9 @@ function setupInteractionPanel() {
     if (clearButton) {
         clearButton.addEventListener("click", () => {
             viewer.drawer.clearInteractionState({
-                reason: "demo-clear-interaction-state"
+                reason: "demo-clear-interaction-state",
             });
+            setViewerStatus("Interaction state cleared.");
         });
     }
 
@@ -514,8 +583,9 @@ function setupInteractionPanel() {
                 reason: event.reason,
                 changed: event.changed,
                 previous: event.previous,
-                current: event.current
+                current: event.current,
             });
+            setViewerStatus(`Interaction event: ${event.reason || "state change"}.`);
             syncControls();
         });
     }
@@ -531,11 +601,19 @@ function setupInteractionPanel() {
 
     viewer.drawer.setInteractionOptions(viewer.drawer.getInteractionOptions(), {
         reason: "demo-init-interaction-options",
-        redraw: true
+        redraw: true,
     });
 
     syncControls();
     poll();
+}
+
+function setViewerStatus(message) {
+    const element = document.getElementById("interaction-viewer-status");
+
+    if (element) {
+        element.textContent = message;
+    }
 }
 
 function writeJson(id, value) {
@@ -566,3 +644,4 @@ function escapeHtml(value) {
 applyShaderLayerGuiConfig();
 renderShaderConfigPanel();
 setupInteractionPanel();
+setViewerStatus("Ready. Move, click, and drag inside the viewer to exercise the interaction-debug shader layer.");

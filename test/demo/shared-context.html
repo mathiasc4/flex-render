@@ -9,7 +9,7 @@
     <script type="text/javascript" src="../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js"></script>
     <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
 
-    <script type="module" src="shared-context-validation.js"></script>
+    <script type="module" src="shared-context.js"></script>
 
     <style>
         html,
@@ -20,391 +20,456 @@
         body {
             min-height: 100vh;
             margin: 0;
+            font-family: Arial, sans-serif;
+            color: #111827;
+            background: #eef1f5;
+            overflow: hidden;
         }
 
         .content {
-            max-width: 1280px;
-            min-height: 100vh;
-            margin: 0 auto;
+            height: 100vh;
+            padding: 10px;
+            box-sizing: border-box;
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            gap: 8px;
+        }
+
+        .page-header {
             display: flex;
-            flex-direction: column;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 16px;
+            min-width: 0;
+        }
+
+        .page-header h2 {
+            margin: 0;
+            font-size: 18px;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+
+        .page-header p {
+            margin: 0;
+            color: #4b5563;
+            font-size: 12px;
+            line-height: 1.3;
+            text-align: right;
+            min-width: 0;
+        }
+
+        .toolbar,
+        .panel,
+        .viewer-card {
+            border: 1px solid #d1d5db;
+            background: #ffffff;
             box-sizing: border-box;
         }
 
-        .demo-layout {
+        .toolbar {
+            padding: 8px;
             display: grid;
-            grid-template-columns: 320px minmax(0, 1fr) 340px;
-            gap: 20px;
-            align-items: stretch;
-            flex: 0 0 auto;
-            margin-bottom: 12px;
+            grid-template-columns: minmax(260px, 0.8fr) minmax(380px, 1.2fr) minmax(360px, 1fr);
+            gap: 10px;
+            align-items: start;
         }
 
-        .demo-main {
+        .toolbar-group {
+            display: grid;
+            gap: 6px;
             min-width: 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
         }
 
-        .viewer-title {
-            margin: 0 0 8px 0;
+        .toolbar-group h4,
+        .panel h3,
+        .viewer-card h4 {
+            margin: 0;
+            font-size: 12px;
+        }
+
+        .toolbar-row,
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            font-size: 12px;
+        }
+
+        .toolbar-row label,
+        .checkbox-row label {
+            color: #374151;
+            white-space: nowrap;
+        }
+
+        input[type="text"] {
+            min-width: 0;
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 12px;
+        }
+
+        button {
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .button-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .workspace {
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(0, 1.25fr) minmax(430px, 0.75fr);
+            grid-template-rows: minmax(0, 1fr);
+            gap: 8px;
+        }
+
+        .viewer-output-panel,
+        .diagnostics-column,
+        .panel {
+            min-height: 0;
+        }
+
+        .viewer-output-panel {
+            padding: 8px;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) auto;
+            gap: 6px;
+            overflow: hidden;
         }
 
         .viewer-grid {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            align-items: stretch;
+            min-height: 0;
+            height: 100%;
+            display: grid;
+            gap: 8px;
+        }
+
+        .viewer-grid.size-preset-unequal {
+            grid-template-rows: minmax(220px, 1.25fr) minmax(140px, 0.75fr) minmax(180px, 1fr);
+        }
+
+        .viewer-grid.size-preset-swapped {
+            grid-template-rows: minmax(140px, 0.75fr) minmax(220px, 1.25fr) minmax(180px, 1fr);
         }
 
         .viewer-card {
-            min-width: 0;
-            width: 100%;
-            padding: 10px;
-            border: thin gray solid;
-            background: #f8f8f8;
-            box-sizing: border-box;
+            min-height: 0;
+            padding: 8px;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) auto;
+            gap: 6px;
         }
 
-        .viewer-card h3 {
-            margin: 0 0 8px 0;
-            font-size: 14px;
+        .viewer-card h4 {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .viewer-label-note {
+            color: #4b5563;
+            font-size: 10px;
+            font-weight: 400;
+            line-height: 1.2;
+            text-align: right;
         }
 
         .viewer-container {
-            width: 100%;
-            height: 240px;
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            box-sizing: border-box;
-            position: relative;
-        }
-
-        .viewer-grid.size-preset-unequal .viewer-card-shared-a .viewer-container {
-            height: 320px;
-        }
-
-        .viewer-grid.size-preset-unequal .viewer-card-shared-b .viewer-container {
-            height: 190px;
-        }
-
-        .viewer-grid.size-preset-unequal .viewer-card-private .viewer-container {
-            height: 260px;
-        }
-
-        .viewer-grid.size-preset-swapped .viewer-card-shared-a .viewer-container {
-            height: 190px;
-        }
-
-        .viewer-grid.size-preset-swapped .viewer-card-shared-b .viewer-container {
-            height: 320px;
-        }
-
-        .viewer-grid.size-preset-swapped .viewer-card-private .viewer-container {
-            height: 260px;
-        }
-
-        .viewer-note {
-            margin: 8px 0 0 0;
-            color: #666;
-            font-size: 12px;
-            line-height: 1.35;
-        }
-
-        .diagnostics-panel-stack,
-        .side-panel-stack {
-            min-width: 0;
             min-height: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .diagnostics-controls-panel,
-        .diagnostics-guide-panel,
-        .validation-status-panel,
-        .validation-checks-panel {
-            margin: 0;
-            padding: 10px;
-            border: thin gray solid;
-            background: #f8f8f8;
-            font-size: 13px;
+            width: 100%;
+            height: 100%;
+            border: 1px solid #9ca3af;
+            background: #111827;
+            position: relative;
             box-sizing: border-box;
         }
 
-        .diagnostics-controls-panel h3,
-        .diagnostics-guide-panel h3,
-        .validation-status-panel h3,
-        .validation-checks-panel h3,
-        .diagnostics-controls-panel h4,
-        .diagnostics-guide-panel h4,
-        .validation-status-panel h4,
-        .validation-checks-panel h4 {
-            margin: 0 0 8px 0;
+        .viewer-status,
+        .panel-help {
+            padding: 4px 6px;
+            border: 1px solid #d1d5db;
+            background: #f9fafb;
+            color: #374151;
+            font-size: 11px;
+            line-height: 1.25;
         }
 
-        .diagnostics-controls-panel h4,
-        .diagnostics-guide-panel h4,
-        .validation-status-panel h4,
-        .validation-checks-panel h4 {
-            margin-top: 10px;
-            font-size: 13px;
+        .viewer-status--error {
+            border-color: #fecaca;
+            background: #fff1f2;
+            color: #7f1d1d;
         }
 
-        .diagnostics-control-list {
-            display: flex;
-            flex-direction: column;
+        .viewer-status--ok {
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+            color: #14532d;
+        }
+
+        .panel {
+            padding: 8px;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
             gap: 6px;
-            margin-bottom: 8px;
         }
 
-        .diagnostics-control-label {
-            display: flex;
-            align-items: center;
-            gap: 6px;
+        .panel-scroll {
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .panel-help {
+            margin: 0;
+            color: #4b5563;
+            font-size: 10px;
             line-height: 1.3;
         }
 
-        .diagnostics-control-label input[type="text"],
-        .diagnostics-control-label select {
-            flex: 1 1 auto;
-            min-width: 0;
-        }
-
-        .diagnostics-action-row {
-            display: flex;
-            align-items: center;
+        .diagnostics-column {
+            display: grid;
+            grid-template-rows: minmax(150px, 0.45fr) minmax(200px, 0.75fr) minmax(180px, 0.65fr) minmax(180px, 0.65fr);
             gap: 8px;
-            flex-wrap: wrap;
-            margin: 8px 0;
-        }
-
-        .diagnostics-action-row button {
-            font-size: 13px;
-            padding: 4px 8px;
         }
 
         .diagnostics-state-readout {
-            max-height: 260px;
-            margin: 0 0 8px 0;
+            margin: 0;
             padding: 8px;
+            min-height: 0;
+            height: 100%;
             overflow: auto;
-            background: #ffffff;
-            border: 1px solid #d1d5db;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            box-sizing: border-box;
+            color: #111827;
             font-size: 11px;
             line-height: 1.35;
             white-space: pre-wrap;
             word-break: break-word;
         }
 
-        .diagnostics-guide-panel ul,
-        .diagnostics-guide-panel ol,
-        .validation-checks-panel ul {
-            margin: 0 0 8px 18px;
+        .split-panel {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+            gap: 6px;
+        }
+
+        .split-panel-section {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 4px;
+        }
+
+        .split-panel-section h4 {
+            margin: 0;
+            font-size: 11px;
+        }
+
+        .checks-list {
+            margin: 0;
             padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 4px;
+            align-content: start;
         }
 
-        .diagnostics-guide-panel li,
-        .validation-checks-panel li {
-            margin-bottom: 4px;
-        }
-
-        .diagnostics-guide-note {
-            margin: 8px 0 0 0;
-            color: #666;
-            font-size: 12px;
+        .checks-list li {
+            padding: 5px 6px;
+            border: 1px solid #e5e7eb;
+            background: #f9fafb;
+            font-size: 11px;
+            line-height: 1.25;
         }
 
         .validation-pass {
-            color: #166534;
+            color: #14532d;
+            border-color: #bbf7d0 !important;
+            background: #f0fdf4 !important;
             font-weight: 600;
         }
 
         .validation-fail {
-            color: #991b1b;
+            color: #7f1d1d;
+            border-color: #fecaca !important;
+            background: #fff1f2 !important;
             font-weight: 600;
         }
 
         .validation-neutral {
-            color: #666;
+            color: #4b5563;
             font-weight: 600;
         }
 
-        @media (max-width: 1000px) {
-            .demo-layout {
-                grid-template-columns: 1fr;
+        @media (max-width: 1100px) {
+            body {
+                overflow: auto;
             }
 
-            .diagnostics-panel-stack,
-            .side-panel-stack {
-                width: auto;
-                max-height: none;
+            .content {
+                height: auto;
+                min-height: 100vh;
+            }
+
+            .toolbar,
+            .workspace,
+            .diagnostics-column {
+                grid-template-columns: 1fr;
+                grid-template-rows: none;
+            }
+
+            .viewer-grid.size-preset-unequal,
+            .viewer-grid.size-preset-swapped {
+                grid-template-rows: repeat(3, minmax(220px, 1fr));
+            }
+
+            .diagnostics-column {
+                display: grid;
+            }
+
+            .diagnostics-state-readout {
+                max-height: 260px;
             }
         }
     </style>
 </head>
 <body>
 <div class="content">
-    <h2>Shared WebGL Context Validation Demo</h2>
+    <header class="page-header">
+        <h2 id="title-w">Shared WebGL Context Validation Demo</h2>
+        <p>
+            Validates FlexRenderer shared WebGL backing contexts, independent presentation canvases,
+            clear isolation, and resize behavior across three OpenSeadragon viewers.
+        </p>
+    </header>
 
-    <h3 id="title-w" class="viewer-title">Loading...</h3>
+    <section class="toolbar">
+        <div class="toolbar-group">
+            <h4>Shared context</h4>
+            <div class="toolbar-row">
+                <label for="shared-context-key-input">Shared key</label>
+                <input id="shared-context-key-input" type="text" value="demo-shared-context">
+            </div>
+            <div class="button-row">
+                <button id="create-viewers-button" type="button">Create viewers</button>
+                <button id="destroy-viewers-button" type="button">Destroy viewers</button>
+                <button id="reload-sources-button" type="button">Reload sources</button>
+            </div>
+        </div>
 
-    <div class="demo-layout">
-        <aside class="diagnostics-panel-stack">
-            <section class="diagnostics-controls-panel">
-                <h3>Validation controls</h3>
+        <div class="toolbar-group">
+            <h4>Validation actions</h4>
+            <div class="button-row">
+                <button id="run-clear-check-button" type="button">Run clear check</button>
+                <button id="run-resize-check-button" type="button">Run resize check</button>
+                <button id="refresh-state-button" type="button">Refresh state</button>
+            </div>
+            <div class="button-row">
+                <button id="apply-unequal-sizes-button" type="button">Apply unequal sizes</button>
+                <button id="swap-shared-sizes-button" type="button">Swap shared sizes</button>
+            </div>
+        </div>
 
-                <div class="diagnostics-control-list">
-                    <label class="diagnostics-control-label">
-                        <span>Shared key</span>
-                        <input id="shared-context-key-input" type="text" value="demo-shared-context">
-                    </label>
-                </div>
+        <div class="toolbar-group">
+            <h4>Expected result</h4>
+            <p class="panel-help">
+                Shared viewers A and B should reuse one WebGL context while keeping separate presentation canvases.
+                The private viewer should use its own context. Clear and resize checks should not cross-contaminate outputs.
+            </p>
+        </div>
+    </section>
 
-                <div class="diagnostics-action-row">
-                    <button id="create-viewers-button" type="button">Create viewers</button>
-                    <button id="destroy-viewers-button" type="button">Destroy viewers</button>
-                </div>
-
-                <div class="diagnostics-action-row">
-                    <button id="reload-sources-button" type="button">Reload sources</button>
-                    <button id="refresh-state-button" type="button">Refresh state</button>
-                </div>
-
-                <div class="diagnostics-action-row">
-                    <button id="run-clear-check-button" type="button">Run clear check</button>
-                </div>
-
-                <div class="diagnostics-action-row">
-                    <button id="apply-unequal-sizes-button" type="button">Apply unequal sizes</button>
-                    <button id="swap-shared-sizes-button" type="button">Swap shared sizes</button>
-                    <button id="run-resize-check-button" type="button">Run resize check</button>
-                </div>
-
-                <h4>Latest action</h4>
-                <pre id="action-output" class="diagnostics-state-readout">No action yet.</pre>
-            </section>
-
-            <section class="diagnostics-guide-panel">
-                <h3>What this demo shows</h3>
-                <ul>
-                    <li>Two real OpenSeadragon viewers use FlexDrawer with the same sharedContextKey.</li>
-                    <li>FlexDrawer passes the key into FlexRenderer through drawerOptions.</li>
-                    <li>The two shared drawers use one WebGL backing canvas but separate presentation canvases.</li>
-                    <li>A third viewer omits sharedContextKey and remains private.</li>
-                    <li>Shared renderer output is presented through each renderer's local presentation canvas.</li>
-                    <li>Shared clear() clears only the selected renderer-local presentation output.</li>
-                    <li>Shared viewer A and B are stacked vertically and deliberately use different CSS heights.</li>
-                    <li>Resize presets verify that each shared renderer keeps an independent presentation canvas size.</li>
-                </ul>
-
-                <h3>Expected after Create viewers</h3>
-                <ol>
-                    <li>All three viewer panels should visibly render their labeled tile pattern.</li>
-                    <li>Shared context status should contain one entry for the configured shared key.</li>
-                    <li>The shared entry refCount should be exactly 2 because navigators are disabled.</li>
-                    <li>Shared viewer A and B should share the same WebGL canvas.</li>
-                    <li>Shared viewer A and B should use different presentation canvases.</li>
-                    <li>The private viewer should report private-context mode.</li>
-                    <li>The WebGL context usage panel should report 3 renderers using 2 WebGL contexts.</li>
-                    <li>Every item in the Checks panel should pass after all viewers finish loading.</li>
-                    <li>Shared viewer A and B should have different presentation canvas sizes that match their own render dimensions.</li>
-                </ol>
-
-                <h3>Expected after Run clear check</h3>
-                <ol>
-                    <li>Only Shared viewer A should become visually blank.</li>
-                    <li>Shared viewer B should remain visible.</li>
-                    <li>The private viewer should remain visible.</li>
-                    <li>The latest action should report passed: true.</li>
-                    <li>The alpha readout should show Shared A dropping to 0 while Shared B remains above 0.</li>
-                </ol>
-
-                <h3>Expected after Run resize check</h3>
-                <ol>
-                    <li>The demo should switch the shared viewer size preset.</li>
-                    <li>Shared viewer A and B should both redraw visibly.</li>
-                    <li>Shared viewer A and B should still use the same WebGL context.</li>
-                    <li>Shared viewer A and B should keep different presentation canvas sizes.</li>
-                    <li>Each renderer presentation canvas should match only its own render dimensions.</li>
-                    <li>The latest action should report passed: true.</li>
-                </ol>
-
-                <h3>Expected after Reload sources</h3>
-                <ol>
-                    <li>Shared viewer A should render again after being cleared.</li>
-                    <li>Shared viewer B and the private viewer should continue rendering normally.</li>
-                    <li>All Checks panel items should pass again after the viewers finish loading.</li>
-                </ol>
-
-                <p class="diagnostics-guide-note">
-                    Shared-context presentation currently uses readPixels only. The previous default-framebuffer blit transfer path was removed because it is not reliable across browser/context configurations.
-                </p>
-            </section>
-        </aside>
-
-        <main class="demo-main">
-            <section id="viewer-grid" class="viewer-grid size-preset-unequal">
+    <main class="workspace">
+        <section class="viewer-output-panel panel">
+            <h3>Viewer output</h3>
+            <div id="viewer-grid" class="viewer-grid size-preset-unequal">
                 <div class="viewer-card viewer-card-shared-a">
-                    <h3>Shared viewer A</h3>
+                    <h4>
+                        Shared viewer A
+                        <span class="viewer-label-note">sharedContextKey enabled</span>
+                    </h4>
                     <div id="viewer-shared-a" class="viewer-container"></div>
-                    <p class="viewer-note">
-                        Uses drawerOptions["flex-renderer"].sharedContextKey.
-                    </p>
+                    <div id="viewer-shared-a-status" class="viewer-status">Waiting for viewer...</div>
                 </div>
 
                 <div class="viewer-card viewer-card-shared-b">
-                    <h3>Shared viewer B</h3>
+                    <h4>
+                        Shared viewer B
+                        <span class="viewer-label-note">same key as A</span>
+                    </h4>
                     <div id="viewer-shared-b" class="viewer-container"></div>
-                    <p class="viewer-note">
-                        Uses the same shared key as viewer A.
-                    </p>
+                    <div id="viewer-shared-b-status" class="viewer-status">Waiting for viewer...</div>
                 </div>
 
                 <div class="viewer-card viewer-card-private">
-                    <h3>Private viewer</h3>
+                    <h4>
+                        Private viewer
+                        <span class="viewer-label-note">no sharedContextKey</span>
+                    </h4>
                     <div id="viewer-private" class="viewer-container"></div>
-                    <p class="viewer-note">
-                        Omits sharedContextKey and should keep a private WebGL context.
-                    </p>
+                    <div id="viewer-private-status" class="viewer-status">Waiting for viewer...</div>
+                </div>
+            </div>
+            <p class="panel-help">
+                Size presets intentionally give shared viewers different heights so presentation-canvas sizing can be verified independently of the shared WebGL canvas.
+            </p>
+        </section>
+
+        <aside class="diagnostics-column">
+            <section class="panel">
+                <h3>Checks</h3>
+                <div class="panel-scroll">
+                    <ul id="checks-list" class="checks-list">
+                        <li class="validation-neutral">Waiting for viewers.</li>
+                    </ul>
                 </div>
             </section>
 
-            <section class="validation-status-panel">
-                <h3>Shared context status</h3>
-                <pre id="shared-context-status-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
-
-                <h3>Canvas identity checks</h3>
-                <pre id="identity-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
-            </section>
-        </main>
-
-        <aside class="side-panel-stack">
-            <section class="validation-checks-panel">
-                <h3>Checks</h3>
-                <ul id="checks-list">
-                    <li class="validation-neutral">Waiting for viewers.</li>
-                </ul>
+            <section class="panel split-panel">
+                <h3>Context identity</h3>
+                <div class="split-panel-section">
+                    <h4>Shared context status</h4>
+                    <pre id="shared-context-status-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+                </div>
+                <div class="split-panel-section">
+                    <h4>Canvas identity checks</h4>
+                    <pre id="identity-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+                </div>
             </section>
 
-            <section class="validation-status-panel">
-                <h3>WebGL context usage</h3>
-                <pre id="webgl-context-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+            <section class="panel split-panel">
+                <h3>Rendering state</h3>
+                <div class="split-panel-section">
+                    <h4>Latest action</h4>
+                    <pre id="action-output" class="diagnostics-state-readout">No action yet.</pre>
+                </div>
+                <div class="split-panel-section">
+                    <h4>WebGL context usage</h4>
+                    <pre id="webgl-context-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+                </div>
             </section>
 
-            <section class="validation-status-panel">
-                <h3>Presentation output</h3>
-                <pre id="presentation-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
-            </section>
-
-            <section class="validation-status-panel">
-                <h3>Resize validation</h3>
-                <pre id="dimensions-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+            <section class="panel split-panel">
+                <h3>Output and resize validation</h3>
+                <div class="split-panel-section">
+                    <h4>Presentation output</h4>
+                    <pre id="presentation-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+                </div>
+                <div class="split-panel-section">
+                    <h4>Resize validation</h4>
+                    <pre id="dimensions-output" class="diagnostics-state-readout">Waiting for viewers...</pre>
+                </div>
             </section>
         </aside>
-    </div>
+    </main>
 </div>
 </body>
 </html>
