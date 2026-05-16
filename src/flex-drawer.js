@@ -123,6 +123,7 @@
                 handleNavigator: true,
                 shaderSourceResolver: null,
                 sharedContextKey: null,
+                profiling: false,
                 interaction: false,
                 // hex bg color, by default transparent
                 backgroundColor: undefined
@@ -986,6 +987,31 @@
             };
 
             this.viewer.addHandler("resize", this._resizeHandler);
+        }
+
+        /**
+         * Return the current CPU timestamp used for drawer profiling spans.
+         *
+         * @private
+         * @returns {number} Timestamp in milliseconds.
+         */
+        _getProfilingTime() {
+            if (
+                OpenSeadragon.FlexRenderer &&
+                typeof OpenSeadragon.FlexRenderer.getProfilingTime === "function"
+            ) {
+                return OpenSeadragon.FlexRenderer.getProfilingTime();
+            }
+
+            if (
+                typeof performance !== "undefined" &&
+                performance &&
+                typeof performance.now === "function"
+            ) {
+                return performance.now();
+            }
+
+            return Date.now();
         }
 
         _resolveRenderView(view = undefined) {
@@ -1896,7 +1922,27 @@
                 return;
             }
 
+            const profilingEnabled = this.renderer && typeof this.renderer.isProfilingEnabled === "function" ?
+                this.renderer.isProfilingEnabled() :
+                false;
+
+            const drawerProfile = profilingEnabled ? {
+                totalMs: 0,
+                resolveViewMs: 0,
+                collectFirstPassMs: 0,
+                collectSecondPassMs: 0,
+                tileCount: 0,
+                sourceCount: tiledImages.length
+            } : null;
+
+            const drawerStart = profilingEnabled ? this._getProfilingTime() : 0;
+
+            const resolveViewStart = profilingEnabled ? this._getProfilingTime() : 0;
             view = this._resolveRenderView(view);
+
+            if (profilingEnabled) {
+                drawerProfile.resolveViewMs = this._getProfilingTime() - resolveViewStart;
+            }
 
             // TODO consider sending data and computing on GPU.
             // calculate view matrix for viewer
@@ -1908,12 +1954,34 @@
 
             this._ensurePackLayout();
 
+            const firstPassStart = profilingEnabled ? this._getProfilingTime() : 0;
             const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
+
+            if (profilingEnabled) {
+                drawerProfile.collectFirstPassMs = this._getProfilingTime() - firstPassStart;
+                drawerProfile.tileCount = firstPass.reduce((count, source) => {
+                    const rasterCount = Array.isArray(source.tiles) ? source.tiles.length : 0;
+                    const vectorCount = Array.isArray(source.vectors) ? source.vectors.length : 0;
+                    const diagnosticCount = Array.isArray(source.diagnostics) ? source.diagnostics.length : 0;
+
+                    return count + rasterCount + vectorCount + diagnosticCount;
+                }, 0);
+            }
+
+            const secondPassStart = profilingEnabled ? this._getProfilingTime() : 0;
             const secondPass = this._collectSecondPassPayload(view);
+
+            if (profilingEnabled) {
+                drawerProfile.collectSecondPassMs = this._getProfilingTime() - secondPassStart;
+                drawerProfile.totalMs = this._getProfilingTime() - drawerStart;
+            }
 
             this.renderer.render({
                 firstPass: firstPass,
-                secondPass: secondPass
+                secondPass: secondPass,
+                profiling: profilingEnabled ? {
+                    drawer: drawerProfile
+                } : undefined
             });
         } // end of function
 
@@ -2333,6 +2401,7 @@
                     debug: false,
                     webGLPreferredVersion: "2.0",
                     sharedContextKey: null,
+                    profiling: false,
                 },
                 // User-defined
                 this.options,
@@ -2342,6 +2411,7 @@
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,
                     sharedContextKey: this.options.sharedContextKey,
+                    profiling: this.options.profiling,
                     // TODO: problem when navigator renders first
                     // Navigator must not have the handler since it would attempt to define the controls twice
                     htmlHandler: this._isNavigatorDrawer ? null : this.options.htmlHandler,
