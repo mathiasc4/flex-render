@@ -1,6 +1,9 @@
 /**
  * Default graph used by the modular ShaderLayer demo and tests.
  *
+ * This graph recreates the legacy heatmap ShaderLayer with modules:
+ * raw scalar sample -> layer filter chain -> heatmap threshold alpha -> fixed RGB color.
+ *
  * @type {object}
  */
 const DEFAULT_MODULAR_GRAPH = Object.freeze({
@@ -12,27 +15,34 @@ const DEFAULT_MODULAR_GRAPH = Object.freeze({
                 channelIndex: 0
             }
         },
-        threshold: {
-            type: "threshold-mask",
+        filtered: {
+            type: "apply-filter",
             inputs: {
                 value: "src.value"
-            },
-            params: {
-                threshold: 0.5
             }
         },
-        colorize: {
-            type: "colorize",
+        alpha: {
+            type: "threshold-alpha-gate",
             inputs: {
-                value: "src.value",
-                alpha: "threshold.mask"
+                value: "filtered.value"
             },
             params: {
-                color: "#00ffff"
+                threshold: 1,
+                inverse: false
+            }
+        },
+        color: {
+            type: "color-with-alpha",
+            inputs: {
+                value: "alpha.alpha",
+                alpha: "alpha.alpha"
+            },
+            params: {
+                color: "#fff700"
             }
         }
     },
-    output: "colorize.color"
+    output: "color.color"
 });
 
 /**
@@ -55,45 +65,28 @@ function createDefaultModularGraph() {
  */
 const MODULAR_SHADER_PRESETS = Object.freeze([
     {
-        id: "single-channel",
-        label: "Single channel tint",
-        name: "Modular single channel",
-        description: "Samples one scalar channel, tints it with a configurable color, and uses the same scalar as alpha.",
+        id: "identity",
+        label: "Identity",
+        name: "Modular identity",
+        description: "Recreates the legacy identity ShaderLayer by sampling four source channels and returning the vec4 unchanged.",
         graph: {
             nodes: {
                 src: {
-                    type: "sample-source-channel",
+                    type: "sample-source-channels",
                     params: {
                         sourceIndex: 0,
-                        channelIndex: 0
-                    }
-                },
-                colorize: {
-                    type: "colorize",
-                    inputs: {
-                        value: "src.value",
-                        alpha: "src.value"
-                    },
-                    params: {
-                        color: "#ff00ff"
+                        channelIndexes: [0, 1, 2, 3]
                     }
                 }
             },
-            output: "colorize.color"
+            output: "src.value"
         }
     },
     {
-        id: "heatmap-threshold",
-        label: "Heatmap threshold",
-        name: "Modular heatmap",
-        description: "Samples one scalar channel, thresholds it into a visibility mask, and colorizes visible values.",
-        graph: createDefaultModularGraph()
-    },
-    {
-        id: "global-threshold",
-        label: "Global threshold",
-        name: "Modular global threshold",
-        description: "Applies OpenCV-like threshold modes and renders the result as a foreground/background binary preview.",
+        id: "threshold",
+        label: "Threshold",
+        name: "Modular threshold",
+        description: "Recreates the legacy global threshold ShaderLayer: filter the scalar source, apply the OpenCV-like threshold mode, and render binary fg/bg or grayscale output.",
         graph: {
             nodes: {
                 src: {
@@ -103,208 +96,71 @@ const MODULAR_SHADER_PRESETS = Object.freeze([
                         channelIndex: 0
                     }
                 },
-                threshold: {
-                    type: "threshold-mode",
+                filtered: {
+                    type: "apply-filter",
                     inputs: {
                         value: "src.value"
+                    }
+                },
+                threshold: {
+                    type: "opencv-threshold",
+                    inputs: {
+                        value: "filtered.value"
                     },
                     params: {
                         threshold: 0.5,
                         max_value: 1.0,
-                        mode: 0
+                        version: 0
                     }
                 },
-                colorize: {
-                    type: "binary-colorize",
+                preview: {
+                    type: "threshold-preview-color",
                     inputs: {
-                        mask: "threshold.mask"
+                        value: "threshold.value",
+                        mode: "threshold.mode",
+                        maxValue: "threshold.maxValue",
+                        binaryMode: "threshold.binaryMode"
                     },
                     params: {
+                        colorize_binary: true,
                         fg_color: "#ffffff",
-                        bg_color: "#000000"
+                        bg_color: "#000000",
+                        opacity: 1
                     }
                 }
             },
-            output: "colorize.color"
-        }
-    },
-    {
-        id: "adaptive-threshold",
-        label: "Adaptive threshold",
-        name: "Modular adaptive threshold",
-        description: "Computes a local mean/Gaussian statistic, compares the center value against localStat - C, and renders foreground/background colors.",
-        graph: {
-            nodes: {
-                local: {
-                    type: "local-window-statistic",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndex: 0,
-                        maxRadius: 5,
-                        block_size: 5,
-                        gaussian: false
-                    }
-                },
-                mask: {
-                    type: "local-threshold-mask",
-                    inputs: {
-                        value: "local.center",
-                        statistic: "local.statistic"
-                    },
-                    params: {
-                        c_value: 0.03,
-                        invert: false
-                    }
-                },
-                palette: {
-                    type: "binary-palette",
-                    inputs: {
-                        mask: "mask.mask"
-                    },
-                    params: {
-                        fg_color: "#ffffff",
-                        bg_color: "#000000"
-                    }
-                }
-            },
-            output: "palette.color"
-        }
-    },
-    {
-        id: "bipolar-heatmap",
-        label: "Bipolar heatmap",
-        name: "Modular bipolar heatmap",
-        description: "Treats 0.5 as the midpoint, measures distance from it, thresholds that magnitude, and uses separate colors for low/high sides.",
-        graph: {
-            nodes: {
-                src: {
-                    type: "sample-source-channel",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndex: 0
-                    }
-                },
-                midpoint: {
-                    type: "midpoint-distance",
-                    inputs: {
-                        value: "src.value"
-                    },
-                    params: {
-                        midpoint: 0.5
-                    }
-                },
-                threshold: {
-                    type: "threshold-mask",
-                    inputs: {
-                        value: "midpoint.magnitude"
-                    },
-                    params: {
-                        threshold: 0.1
-                    }
-                },
-                colorize: {
-                    type: "diverging-colorize",
-                    inputs: {
-                        magnitude: "midpoint.magnitude",
-                        sign: "midpoint.sign",
-                        mask: "threshold.mask"
-                    },
-                    params: {
-                        colorHigh: "#ff1000",
-                        colorLow: "#01ff00"
-                    }
-                }
-            },
-            output: "colorize.color"
-        }
-    },
-    {
-        id: "colormap",
-        label: "Classified colormap",
-        name: "Modular colormap",
-        description: "Classifies one scalar channel with advanced-slider breaks, maps the class ratio through a discrete colormap, and uses the slider mask as alpha.",
-        graph: {
-            nodes: {
-                src: {
-                    type: "sample-source-channel",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndex: 0
-                    }
-                },
-                classify: {
-                    type: "classify-breaks",
-                    inputs: {
-                        value: "src.value"
-                    },
-                    params: {
-                        threshold: {
-                            type: "advanced_slider",
-                            default: [0.25, 0.75],
-                            mask: [1, 0, 1],
-                            maskOnly: false
-                        }
-                    }
-                },
-                colorize: {
-                    type: "colormap-colorize",
-                    inputs: {
-                        value: "classify.classRatio",
-                        alpha: "classify.mask"
-                    },
-                    params: {
-                        color: {
-                            type: "colormap",
-                            default: "Viridis",
-                            mode: "sequential",
-                            steps: 3,
-                            continuous: false
-                        }
-                    }
-                }
-            },
-            output: "colorize.color"
+            output: "preview.color"
         }
     },
     {
         id: "sobel",
-        label: "Sobel edge detector",
+        label: "Sobel",
         name: "Modular Sobel",
-        description: "Samples a 3×3 RGB neighborhood, computes Sobel X/Y gradients, converts them to magnitude, and renders grayscale edge strength.",
+        description: "Recreates the legacy Sobel ShaderLayer by sampling a 3x3 RGB neighborhood, computing Sobel X/Y edge strength, and returning grayscale with alpha fixed to 1.",
         graph: {
             nodes: {
-                neighborhood: {
-                    type: "sample-neighborhood-3x3",
+                edge: {
+                    type: "sobel-edge",
                     params: {
                         sourceIndex: 0,
                         channelIndexes: [0, 1, 2]
                     }
                 },
-                sobel: {
-                    type: "sobel-gradient",
-                    inputs: {
-                        upperLeft: "neighborhood.upperLeft",
-                        up: "neighborhood.up",
-                        upperRight: "neighborhood.upperRight",
-                        left: "neighborhood.left",
-                        center: "neighborhood.center",
-                        right: "neighborhood.right",
-                        lowerLeft: "neighborhood.lowerLeft",
-                        down: "neighborhood.down",
-                        lowerRight: "neighborhood.lowerRight"
-                    }
-                },
-                magnitude: {
-                    type: "gradient-magnitude",
-                    inputs: {
-                        gx: "sobel.gx",
-                        gy: "sobel.gy"
-                    }
-                },
                 grayscale: {
-                    type: "grayscale-colorize",
+                    type: "grayscale-alpha",
                     inputs: {
-                        value: "magnitude.magnitude"
+                        value: "edge.edge"
+                    },
+                    params: {
+                        opacity: {
+                            type: "range",
+                            default: 1,
+                            min: 0,
+                            max: 1,
+                            step: 0.1,
+                            title: "Opacity",
+                            interactive: false
+                        }
                     }
                 }
             },
@@ -312,105 +168,102 @@ const MODULAR_SHADER_PRESETS = Object.freeze([
         }
     },
     {
-        id: "threshold-edge",
-        label: "Threshold edge",
-        name: "Modular threshold edge",
-        description: "Samples a local scalar neighborhood, detects threshold crossings, and renders lower/upper sides with separate edge colors.",
+        id: "heatmap",
+        label: "Heatmap",
+        name: "Modular heatmap",
+        description: "Recreates the legacy heatmap ShaderLayer by filtering one scalar channel, applying heatmap threshold/inverse alpha logic, and tinting visible values.",
+        graph: createDefaultModularGraph()
+    },
+    {
+        id: "colormap",
+        label: "ColorMap",
+        name: "Modular colormap",
+        description: "Recreates the legacy colormap ShaderLayer by filtering one scalar channel, sampling a discrete colormap, and using an advanced-slider mask as alpha.",
         graph: {
             nodes: {
-                distance: {
-                    type: "zoom-scaled-distance",
-                    params: {
-                        edge_thickness: 1,
-                        zoom_scale: 0.005,
-                        base_distance: 0.008
-                    }
-                },
-                neighborhood: {
-                    type: "cross-neighborhood-sample",
-                    inputs: {
-                        distance: "distance.distance"
-                    },
+                src: {
+                    type: "sample-source-channel",
                     params: {
                         sourceIndex: 0,
                         channelIndex: 0
                     }
                 },
-                score: {
-                    type: "threshold-neighborhood-score",
+                filtered: {
+                    type: "apply-filter",
                     inputs: {
-                        upperLeft: "neighborhood.upperLeft",
-                        up: "neighborhood.up",
-                        upperRight: "neighborhood.upperRight",
-                        left: "neighborhood.left",
-                        center: "neighborhood.center",
-                        right: "neighborhood.right",
-                        lowerLeft: "neighborhood.lowerLeft",
-                        down: "neighborhood.down",
-                        lowerRight: "neighborhood.lowerRight"
-                    },
-                    params: {
-                        threshold: 50
+                        value: "src.value"
                     }
                 },
-                crossing: {
-                    type: "edge-crossing",
+                classify: {
+                    type: "colormap-classify",
                     inputs: {
-                        centerScore: "score.centerScore",
-                        minScore: "score.minScore",
-                        maxScore: "score.maxScore"
-                    }
-                },
-                colorize: {
-                    type: "two-sided-edge-colorize",
-                    inputs: {
-                        lowerAlpha: "crossing.lowerAlpha",
-                        upperAlpha: "crossing.upperAlpha"
+                        value: "filtered.value"
                     },
                     params: {
-                        inner_color: "#b2a800",
-                        outer_color: "#fff700"
+                        color: {
+                            type: "colormap",
+                            default: "Viridis",
+                            mode: "sequential",
+                            steps: [0, 0.25, 0.75, 1],
+                            continuous: false
+                        },
+                        threshold: {
+                            type: "advanced_slider",
+                            default: [0.25, 0.75],
+                            mask: [1, 0, 1],
+                            maskOnly: true,
+                            inverted: false,
+                            title: "Breaks",
+                            pips: {
+                                mode: "positions",
+                                values: [0, 35, 50, 75, 90, 100],
+                                density: 4
+                            }
+                        }
                     }
                 }
             },
-            output: "colorize.color"
+            output: "classify.color"
         }
     },
     {
-        id: "synthetic-channel-4-alpha-7",
-        label: "8-channel source: channel 4 with channel 7 alpha",
-        name: "Modular 8-channel source test",
-        description: "Samples channel 4 from the second RGBA pack as magenta intensity and channel 7 from the second RGBA pack as alpha. Select the Synthetic 8-channel GPU set image source.",
+        id: "bipolar-heatmap",
+        label: "Bipolar heatmap",
+        name: "Modular bipolar heatmap",
+        description: "Recreates the legacy bipolar-heatmap ShaderLayer by treating 0.5 as neutral, filtering low/high distance from midpoint, thresholding it, and rendering side-specific colors.",
         graph: {
             nodes: {
-                channel4: {
+                src: {
                     type: "sample-source-channel",
                     params: {
                         sourceIndex: 0,
-                        channelIndex: 4
+                        channelIndex: 0
                     }
                 },
-                channel7: {
-                    type: "sample-source-channel",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndex: 7
-                    }
-                },
-                colorize: {
-                    type: "colorize",
+                strengths: {
+                    type: "bipolar-strengths",
                     inputs: {
-                        value: "channel4.value",
-                        alpha: "channel7.value"
+                        value: "src.value"
                     },
                     params: {
-                        color: "#ff00ff"
+                        threshold: 1
+                    }
+                },
+                color: {
+                    type: "bipolar-colorize",
+                    inputs: {
+                        lowAlpha: "strengths.lowAlpha",
+                        highAlpha: "strengths.highAlpha"
+                    },
+                    params: {
+                        colorHigh: "#ff1000",
+                        colorLow: "#01ff00"
                     }
                 }
             },
-            output: "colorize.color"
+            output: "color.color"
         }
-    },
+    }
 ]);
 
 const CUSTOM_SHADER_PRESET_ID = "custom";
@@ -618,116 +471,284 @@ const IMAGE_SOURCES = [
     },
 ];
 
+
+const REGULAR_SHADER_ID = "regular";
 const MODULAR_SHADER_ID = "modular";
+const DEFAULT_PRESET_ID = "heatmap";
 
-
-
-const drawer = "flex-renderer";
-const drawerOptions = {
-    "flex-renderer": {
-        debug: false,
-        webGLPreferredVersion: "2.0",
-        htmlHandler: renderShaderLayerControls,
-        htmlReset: resetShaderLayerControls,
+const REGULAR_SHADER_PRESETS = Object.freeze([
+    {
+        id: "identity",
+        label: "Identity",
+        name: "Identity",
+        type: "identity",
+        description: "Uses the existing identity ShaderLayer to sample the source as-is.",
+        params: {}
     },
-};
-
-const viewportMargins = {
-    left: 100,
-    top: 0,
-    right: 0,
-    bottom: 50,
-};
-
-$("#title-w").html("OpenSeadragon viewer using FlexRenderer");
-
-const viewer = window.viewer = OpenSeadragon({
-    id: "drawer-canvas",
-    prefixUrl: "../../openseadragon/images/",
-    minZoomImageRatio: 0.01,
-    maxZoomPixelRatio: 100,
-    smoothTileEdgesMinZoom: 1.1,
-    crossOriginPolicy: "Anonymous",
-    ajaxWithCredentials: false,
-    drawer: drawer,
-    drawerOptions: drawerOptions,
-    blendTime: 0,
-    showNavigator: true,
-    viewportMargins: viewportMargins,
-});
+    {
+        id: "threshold",
+        label: "Threshold",
+        name: "Threshold",
+        type: "threshold",
+        description: "Uses the existing global threshold ShaderLayer with OpenCV-like threshold modes.",
+        params: {
+            threshold: 0.5,
+            max_value: 1.0,
+            version: 0,
+            colorize_binary: true,
+            fg_color: "#ffffff",
+            bg_color: "#000000",
+            opacity: 1
+        }
+    },
+    {
+        id: "sobel",
+        label: "Sobel",
+        name: "Sobel",
+        type: "sobel",
+        description: "Uses the existing Sobel ShaderLayer to render grayscale edge strength.",
+        params: {}
+    },
+    {
+        id: "heatmap",
+        label: "Heatmap",
+        name: "Heatmap",
+        type: "heatmap",
+        description: "Uses the existing heatmap ShaderLayer to tint one scalar channel and gate opacity with threshold/inverse logic.",
+        params: {
+            color: "#fff700",
+            threshold: 1,
+            inverse: false
+        }
+    },
+    {
+        id: "colormap",
+        label: "ColorMap",
+        name: "ColorMap",
+        type: "colormap",
+        description: "Uses the existing ColorMap ShaderLayer with an advanced-slider class mask.",
+        params: {
+            color: {
+                type: "colormap",
+                default: "Viridis",
+                mode: "sequential",
+                steps: [0, 0.25, 0.75, 1],
+                continuous: false
+            },
+            threshold: {
+                type: "advanced_slider",
+                default: [0.25, 0.75],
+                mask: [1, 0, 1],
+                maskOnly: true,
+                inverted: false,
+                title: "Breaks",
+                pips: {
+                    mode: "positions",
+                    values: [0, 35, 50, 75, 90, 100],
+                    density: 4
+                }
+            },
+            connect: true
+        }
+    },
+    {
+        id: "bipolar-heatmap",
+        label: "Bipolar heatmap",
+        name: "Bi-polar Heatmap",
+        type: "bipolar-heatmap",
+        description: "Uses the existing bipolar-heatmap ShaderLayer to render low/high sides around midpoint 0.5.",
+        params: {
+            colorHigh: "#ff1000",
+            colorLow: "#01ff00",
+            threshold: 1
+        }
+    }
+]);
 
 const indexedImageSources = IMAGE_SOURCES.map((source, index) => ({
     index,
     label: source.label,
 }));
 
-IMAGE_SOURCES.forEach((source) => {
-    viewer.addTiledImage({
-        tileSource: source.tileSource,
-    });
-});
-
-let shaderLayerConfig = {
-    [MODULAR_SHADER_ID]: {
-        name: "Modular heatmap",
-        type: "modular",
-        visible: 1,
-        fixed: false,
-        tiledImages: [0],
-        params: {
-            graph: createDefaultModularGraph(),
-        },
-        cache: {},
-    },
+const viewportMargins = {
+    left: 70,
+    top: 0,
+    right: 70,
+    bottom: 0,
 };
 
-let shaderLayerOrder = [MODULAR_SHADER_ID];
+function createDrawerOptions(controlContainerId, badgeText, badgeClass) {
+    return {
+        "flex-renderer": {
+            debug: false,
+            webGLPreferredVersion: "2.0",
+            htmlHandler: (shaderLayer, shaderConfig) => renderShaderLayerControls(
+                shaderLayer,
+                shaderConfig,
+                controlContainerId,
+                badgeText,
+                badgeClass
+            ),
+            htmlReset: () => resetShaderLayerControls(controlContainerId),
+        },
+    };
+}
+
+$("#title-w").html("ShaderLayer / ModularShaderLayer comparison");
+
+const regularViewer = window.regularViewer = OpenSeadragon({
+    id: "regular-drawer-canvas",
+    prefixUrl: "../../openseadragon/images/",
+    minZoomImageRatio: 0.01,
+    maxZoomPixelRatio: 100,
+    minPixelRatio: 1.2,
+    smoothTileEdgesMinZoom: 1.1,
+    crossOriginPolicy: "Anonymous",
+    ajaxWithCredentials: false,
+    drawer: "flex-renderer",
+    drawerOptions: createDrawerOptions("regular-shader-ui-container", "Existing", "shader-badge--legacy"),
+    blendTime: 0,
+    showNavigator: true,
+    viewportMargins: viewportMargins,
+});
+
+const modularViewer = window.modularViewer = OpenSeadragon({
+    id: "modular-drawer-canvas",
+    prefixUrl: "../../openseadragon/images/",
+    minZoomImageRatio: 0.01,
+    maxZoomPixelRatio: 100,
+    minPixelRatio: 1.2,
+    smoothTileEdgesMinZoom: 1.1,
+    crossOriginPolicy: "Anonymous",
+    ajaxWithCredentials: false,
+    drawer: "flex-renderer",
+    drawerOptions: createDrawerOptions("modular-shader-ui-container", "Modular", "shader-badge--modular"),
+    blendTime: 0,
+    showNavigator: true,
+    viewportMargins: viewportMargins,
+});
+
+window.viewer = modularViewer;
+
+addImageSourcesToViewer(regularViewer, "regular-viewer-status");
+addImageSourcesToViewer(modularViewer, "modular-viewer-status");
+
+let regularShaderLayerConfig = {
+    [REGULAR_SHADER_ID]: createRegularShaderLayerConfig(getRegularShaderPreset(DEFAULT_PRESET_ID), 0),
+};
+
+let modularShaderLayerConfig = {
+    [MODULAR_SHADER_ID]: createModularShaderLayerConfig(getModularShaderPreset(DEFAULT_PRESET_ID), 0),
+};
+
+let regularShaderLayerOrder = [REGULAR_SHADER_ID];
+let modularShaderLayerOrder = [MODULAR_SHADER_ID];
 
 let pendingGraphText = null;
 let modularConfigDiagnostics = [];
 let modularConfigAnalysis = null;
-let selectedShaderPresetId = "heatmap-threshold";
+let selectedRegularPresetId = DEFAULT_PRESET_ID;
+let selectedModularPresetId = DEFAULT_PRESET_ID;
 let moduleGraphEditor = null;
 let moduleGraphPreviewDrawer = null;
 
-function renderShaderLayerControls(shaderLayer, shaderConfig) {
-    const container = document.getElementById("my-shader-ui-container");
+function addImageSourcesToViewer(targetViewer, statusElementId) {
+    let loadedCount = 0;
+
+    IMAGE_SOURCES.forEach((source) => {
+        targetViewer.addTiledImage({
+            tileSource: cloneTileSource(source.tileSource),
+            success: () => {
+                loadedCount++;
+                setViewerStatus(statusElementId, `Loaded ${loadedCount}/${IMAGE_SOURCES.length} image sources.`, "ok");
+            },
+            error: (event) => {
+                const message = event && event.message ? event.message : "Image source failed to load.";
+                setViewerStatus(statusElementId, message, "error");
+            }
+        });
+    });
+}
+
+function cloneTileSource(tileSource) {
+    if (typeof tileSource === "string") {
+        return tileSource;
+    }
+
+    return cloneJson(tileSource);
+}
+
+function setViewerStatus(id, message, kind = "info") {
+    const status = document.getElementById(id);
+
+    if (!status) {
+        return;
+    }
+
+    status.textContent = message;
+    status.className = "viewer-status";
+
+    if (kind === "error") {
+        status.classList.add("viewer-status--error");
+    } else if (kind === "ok") {
+        status.classList.add("viewer-status--ok");
+    }
+}
+
+function createRegularShaderLayerConfig(preset, imageIndex) {
+    const selectedPreset = preset || getRegularShaderPreset(DEFAULT_PRESET_ID);
+
+    return {
+        name: selectedPreset.name,
+        type: selectedPreset.type,
+        visible: 1,
+        fixed: false,
+        tiledImages: [imageIndex],
+        params: cloneJson(selectedPreset.params || {}),
+        cache: {},
+    };
+}
+
+function createModularShaderLayerConfig(preset, imageIndex) {
+    const selectedPreset = preset || getModularShaderPreset(DEFAULT_PRESET_ID);
+
+    return {
+        name: selectedPreset.name,
+        type: "modular",
+        visible: 1,
+        fixed: false,
+        tiledImages: [imageIndex],
+        params: {
+            graph: cloneJson(selectedPreset.graph),
+        },
+        cache: {},
+    };
+}
+
+function renderShaderLayerControls(shaderLayer, shaderConfig, containerId, badgeText, badgeClass) {
+    const container = document.getElementById(containerId);
 
     if (!container || !shaderLayer) {
         return "";
     }
 
     const wrapper = document.createElement("div");
-    wrapper.className = "shader-control-card shader-control-card--top";
-    wrapper.style.marginBottom = "6px";
-    wrapper.style.padding = "6px";
-    wrapper.style.border = "1px solid #d1d5db";
-    wrapper.style.borderRadius = "0";
-    wrapper.style.background = "#ffffff";
+    wrapper.className = "shader-control-card";
 
     const header = document.createElement("div");
-    header.style.display = "flex";
-    header.style.alignItems = "flex-start";
-    header.style.justifyContent = "space-between";
-    header.style.gap = "10px";
-    header.style.marginBottom = "6px";
+    header.className = "shader-control-card__header";
 
-    const titleWrap = document.createElement("div");
-    titleWrap.style.minWidth = "0";
-    titleWrap.appendChild(createShaderControlTitle(shaderConfig));
+    const title = document.createElement("div");
+    title.className = "shader-control-card__title";
+    title.textContent = shaderConfig.name || shaderConfig.type;
+    header.appendChild(title);
 
-    header.appendChild(titleWrap);
-    header.appendChild(createBadge("Modular", {
-        border: "1px solid #9ca3af",
-        background: "#ffffff",
-    }));
+    header.appendChild(createBadge(badgeText, badgeClass));
     wrapper.appendChild(header);
 
     if (shaderLayer.error) {
         const errorNode = document.createElement("div");
-        errorNode.style.marginBottom = "8px";
-        errorNode.style.color = "#b91c1c";
-        errorNode.style.fontSize = "12px";
+        errorNode.className = "shader-control-card__error";
         errorNode.textContent = shaderLayer.error;
         wrapper.appendChild(errorNode);
     }
@@ -741,111 +762,186 @@ function renderShaderLayerControls(shaderLayer, shaderConfig) {
     return "";
 }
 
-function resetShaderLayerControls() {
-    const container = document.getElementById("my-shader-ui-container");
+function resetShaderLayerControls(containerId) {
+    const container = document.getElementById(containerId);
 
     if (container) {
         container.innerHTML = "";
     }
 }
 
-function createShaderControlTitle(shaderConfig) {
-    const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.style.margin = "0";
-    title.textContent = shaderConfig.name || shaderConfig.type;
-
-    return title;
-}
-
-function createBadge(text, style = {}) {
+function createBadge(text, className = "") {
     const badge = document.createElement("span");
+    badge.className = ["shader-badge", className].filter(Boolean).join(" ");
     badge.textContent = text;
-    badge.style.fontSize = "11px";
-    badge.style.padding = "2px 6px";
-    badge.style.borderRadius = "999px";
-    badge.style.color = "#374151";
-    badge.style.whiteSpace = "nowrap";
 
-    Object.assign(badge.style, style);
     return badge;
 }
 
-function renderImageSourceIndexPanel() {
-    const rows = indexedImageSources.map((source) => `
-        <tr>
-            <td>${escapeHtml(source.label)}</td>
-            <td><code>${source.index}</code></td>
-        </tr>
-    `).join("");
+function renderRegularShaderConfigPanel() {
+    const shaderConfig = regularShaderLayerConfig[REGULAR_SHADER_ID];
 
-    setPanelHtml("image-source-index-panel", `
-        <h3>Image sources</h3>
-        <table class="image-source-index-table">
-            <thead>
-                <tr>
-                    <th>Label</th>
-                    <th>Index</th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
-    `);
-}
-
-function renderShaderConfigPanel() {
-    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
-
-    setPanelHtml("shader-config-panel", `
+    setPanelHtml("regular-shader-config-panel", `
         <h3>Shader layer configuration</h3>
-        ${renderModularShaderConfigCard(shaderConfig)}
+        ${renderRegularShaderConfigCard(shaderConfig)}
         <p class="shader-config-help">
-            This demo contains one fixed <code>modular</code> shader layer.
-            Edit the layer name, choose the image source, or replace the graph JSON below.
-            The graph must compile to a <code>vec4</code> output. Press <code>Ctrl/Cmd+Enter</code> in the editor to commit immediately.
+            This viewer uses the original non-modular ShaderLayer implementations. Choose a preset and image source to compare against the modular equivalent.
         </p>
     `);
 
-    bindShaderConfigPanelEvents();
+    bindRegularShaderConfigPanelEvents();
+}
+
+function renderRegularShaderConfigCard(shaderConfig) {
+    const preset = getRegularShaderPreset(selectedRegularPresetId);
+    const description = preset ? preset.description : "Manual existing ShaderLayer configuration.";
+    const selectedIndex = getSelectedImageIndex(shaderConfig);
+
+    return `
+        <div class="shader-config-preset-panel">
+            <label class="shader-config-field-label">
+                Preset shader layer configuration
+                <select class="shader-config-preset-select regular-shader-preset-select">
+                    ${renderRegularShaderPresetOptions()}
+                </select>
+            </label>
+            <p class="shader-config-preset-description">${escapeHtml(description)}</p>
+        </div>
+
+        <ul class="shader-config-list">
+            <li class="shader-config-item" data-shader-id="${escapeHtml(REGULAR_SHADER_ID)}">
+                <div class="shader-config-row">
+                    <label class="shader-config-field-label">
+                        Name
+                        <input
+                            type="text"
+                            class="shader-config-name-input regular-shader-name-input"
+                            value="${escapeHtml(shaderConfig.name || REGULAR_SHADER_ID)}"
+                        >
+                    </label>
+
+                    <div class="shader-config-row__selectors">
+                        <div>
+                            <label class="shader-config-field-label">
+                                Type
+                                <span class="shader-config-type-locked">${escapeHtml(shaderConfig.type || "")}</span>
+                            </label>
+                        </div>
+
+                        <div>
+                            <label class="shader-config-field-label">
+                                Image
+                                <select class="shader-config-image-index-select regular-shader-image-index-select">
+                                    ${renderImageIndexOptions(selectedIndex)}
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </li>
+        </ul>
+    `;
+}
+
+function renderRegularShaderPresetOptions() {
+    return REGULAR_SHADER_PRESETS.map((preset) => {
+        const selected = preset.id === selectedRegularPresetId ? "selected" : "";
+
+        return `
+            <option value="${escapeHtml(preset.id)}" ${selected}>
+                ${escapeHtml(preset.label)}
+            </option>
+        `;
+    }).join("");
+}
+
+function bindRegularShaderConfigPanelEvents() {
+    $(".regular-shader-preset-select").on("change", function() {
+        applyRegularShaderLayerPreset(this.value);
+    });
+
+    $(".regular-shader-name-input").on("change", function() {
+        const shaderConfig = regularShaderLayerConfig[REGULAR_SHADER_ID];
+
+        shaderConfig.name = this.value.trim() || REGULAR_SHADER_ID;
+        applyRegularShaderLayerGuiConfig();
+        renderRegularShaderConfigPanel();
+    });
+
+    $(".regular-shader-image-index-select").on("change", function() {
+        const shaderConfig = regularShaderLayerConfig[REGULAR_SHADER_ID];
+
+        shaderConfig.tiledImages = [Number(this.value)];
+        shaderConfig.cache = {};
+        applyRegularShaderLayerGuiConfig();
+        renderRegularShaderConfigPanel();
+    });
+}
+
+function applyRegularShaderLayerPreset(presetId) {
+    const preset = getRegularShaderPreset(presetId);
+
+    if (!preset) {
+        return;
+    }
+
+    const currentConfig = regularShaderLayerConfig[REGULAR_SHADER_ID];
+    const imageIndex = getSelectedImageIndex(currentConfig);
+
+    selectedRegularPresetId = preset.id;
+    regularShaderLayerConfig[REGULAR_SHADER_ID] = createRegularShaderLayerConfig(preset, imageIndex);
+
+    applyRegularShaderLayerGuiConfig();
+    renderRegularShaderConfigPanel();
+}
+
+function renderModularShaderConfigPanel() {
+    const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID];
+
+    setPanelHtml("modular-shader-config-panel", `
+        <h3>Shader layer configuration</h3>
+        ${renderModularShaderConfigCard(shaderConfig)}
+        <p class="shader-config-help">
+            This viewer uses one fixed <code>modular</code> ShaderLayer. Edit the layer name, choose the image source, or replace the <code>params.graph</code> JSON. Press <code>Ctrl/Cmd+Enter</code> in the JSON editor to commit immediately.
+        </p>
+    `);
+
+    bindModularShaderConfigPanelEvents();
 }
 
 function renderModularShaderConfigCard(shaderConfig) {
     const name = shaderConfig.name || MODULAR_SHADER_ID;
-    const selectedIndex = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
-        Number(shaderConfig.tiledImages[0]) :
-        0;
-
+    const selectedIndex = getSelectedImageIndex(shaderConfig);
     const graphText = pendingGraphText !== null ?
         pendingGraphText : JSON.stringify(getGraphConfig(shaderConfig), null, 4);
-
     const diagnosticsHtml = modularConfigDiagnostics.length ? renderGraphDiagnostics(modularConfigDiagnostics) : "";
 
     return `
-        ${renderShaderPresetPanel()}
+        ${renderModularShaderPresetPanel()}
         <ul class="shader-config-list">
             <li class="shader-config-item" data-shader-id="${escapeHtml(MODULAR_SHADER_ID)}">
                 <div class="shader-config-row shader-config-row--modular">
-                    <label class="shader-config-field-label shader-config-row__name">
+                    <label class="shader-config-field-label">
                         Name
                         <input
                             type="text"
-                            class="shader-config-name-input"
+                            class="shader-config-name-input modular-shader-name-input"
                             value="${escapeHtml(name)}"
                         >
                     </label>
 
                     <div class="shader-config-row__selectors">
-                        <div class="shader-config-row__type">
+                        <div>
                             <label class="shader-config-field-label">
                                 Type
                                 <span class="shader-config-type-locked">modular</span>
                             </label>
                         </div>
 
-                        <div class="shader-config-row__image">
+                        <div>
                             <label class="shader-config-field-label">
                                 Image
-                                <select class="shader-config-image-index-select">
+                                <select class="shader-config-image-index-select modular-shader-image-index-select">
                                     ${renderImageIndexOptions(selectedIndex)}
                                 </select>
                             </label>
@@ -856,7 +952,7 @@ function renderModularShaderConfigCard(shaderConfig) {
                         <label class="shader-config-field-label">
                             Modular configuration <span class="shader-config-type-locked">params.graph JSON</span>
                             <textarea
-                                class="shader-config-module-textarea"
+                                class="shader-config-module-textarea modular-shader-module-textarea"
                                 spellcheck="false"
                             >${escapeHtml(graphText)}</textarea>
                         </label>
@@ -868,13 +964,8 @@ function renderModularShaderConfigCard(shaderConfig) {
     `;
 }
 
-/**
- * Render the preset selector above the modular graph editor.
- *
- * @returns {string} Preset selector HTML.
- */
-function renderShaderPresetPanel() {
-    const preset = getShaderPreset(selectedShaderPresetId);
+function renderModularShaderPresetPanel() {
+    const preset = getModularShaderPreset(selectedModularPresetId);
     const description = preset ?
         preset.description :
         "Manual graph configuration. Editing the name or JSON marks the selection as custom.";
@@ -883,8 +974,8 @@ function renderShaderPresetPanel() {
         <div class="shader-config-preset-panel">
             <label class="shader-config-field-label">
                 Preset shader layer configuration
-                <select class="shader-config-preset-select">
-                    ${renderShaderPresetOptions()}
+                <select class="shader-config-preset-select modular-shader-preset-select">
+                    ${renderModularShaderPresetOptions()}
                 </select>
             </label>
             <p class="shader-config-preset-description">
@@ -894,18 +985,13 @@ function renderShaderPresetPanel() {
     `;
 }
 
-/**
- * Render preset selector options.
- *
- * @returns {string} Preset option HTML.
- */
-function renderShaderPresetOptions() {
-    const customSelected = selectedShaderPresetId === CUSTOM_SHADER_PRESET_ID ? "selected" : "";
+function renderModularShaderPresetOptions() {
+    const customSelected = selectedModularPresetId === CUSTOM_SHADER_PRESET_ID ? "selected" : "";
 
     return `
         <option value="${CUSTOM_SHADER_PRESET_ID}" ${customSelected}>Custom / manual JSON</option>
         ${MODULAR_SHADER_PRESETS.map((preset) => {
-        const selected = preset.id === selectedShaderPresetId ? "selected" : "";
+        const selected = preset.id === selectedModularPresetId ? "selected" : "";
 
         return `
                 <option value="${escapeHtml(preset.id)}" ${selected}>
@@ -916,14 +1002,108 @@ function renderShaderPresetOptions() {
     `;
 }
 
-/**
- * Return a preset by id.
- *
- * @param {string} id - Preset id.
- * @returns {object|undefined} Matching preset.
- */
-function getShaderPreset(id) {
+function bindModularShaderConfigPanelEvents() {
+    $(".modular-shader-preset-select").on("change", function() {
+        if (this.value === CUSTOM_SHADER_PRESET_ID) {
+            selectedModularPresetId = CUSTOM_SHADER_PRESET_ID;
+            renderModularShaderConfigPanel();
+            return;
+        }
+
+        applyModularShaderLayerPreset(this.value);
+    });
+
+    $(".modular-shader-name-input").on("change", function() {
+        const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID];
+
+        selectedModularPresetId = CUSTOM_SHADER_PRESET_ID;
+        shaderConfig.name = this.value.trim() || MODULAR_SHADER_ID;
+        applyModularShaderLayerGuiConfig();
+        renderModularShaderConfigPanel();
+    });
+
+    $(".modular-shader-image-index-select").on("change", function() {
+        const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID];
+
+        shaderConfig.tiledImages = [Number(this.value)];
+        shaderConfig.cache = {};
+        applyModularShaderLayerGuiConfig();
+        renderModularShaderConfigPanel();
+
+        if (moduleGraphEditor) {
+            moduleGraphEditor.resize();
+        }
+    });
+
+    $(".modular-shader-module-textarea").on("input", function() {
+        selectedModularPresetId = CUSTOM_SHADER_PRESET_ID;
+        updateDraftGraphDiagnostics(this.value);
+    });
+
+    $(".modular-shader-module-textarea").on("change", function() {
+        commitModularGraphFromText(this.value);
+    });
+
+    $(".modular-shader-module-textarea").on("keydown", function(event) {
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+            event.preventDefault();
+            commitModularGraphFromText(this.value);
+        }
+    });
+}
+
+function applyModularShaderLayerPreset(presetId) {
+    const preset = getModularShaderPreset(presetId);
+
+    if (!preset) {
+        return;
+    }
+
+    const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID];
+    const graph = cloneJson(preset.graph);
+    const result = analyzeGraphConfig(graph);
+    const hasErrors = result.diagnostics.some((diagnostic) => diagnostic.severity === "error");
+
+    selectedModularPresetId = preset.id;
+    shaderConfig.name = preset.name;
+
+    if (hasErrors) {
+        pendingGraphText = JSON.stringify(graph, null, 4);
+        modularConfigDiagnostics = result.diagnostics;
+        modularConfigAnalysis = result.analysis;
+        renderModularShaderConfigPanel();
+        return;
+    }
+
+    shaderConfig.params = shaderConfig.params || {};
+    shaderConfig.params.graph = graph;
+    shaderConfig.cache = {};
+
+    pendingGraphText = null;
+    modularConfigDiagnostics = [];
+    modularConfigAnalysis = null;
+
+    applyModularShaderLayerGuiConfig();
+    renderModularShaderConfigPanel();
+    syncModuleGraphEditorFromConfig("apply-modular-shader-layer-preset");
+}
+
+function resetDefaultGraph() {
+    applyModularShaderLayerPreset(DEFAULT_PRESET_ID);
+}
+
+function getRegularShaderPreset(id) {
+    return REGULAR_SHADER_PRESETS.find((preset) => preset.id === id);
+}
+
+function getModularShaderPreset(id) {
     return MODULAR_SHADER_PRESETS.find((preset) => preset.id === id);
+}
+
+function getSelectedImageIndex(shaderConfig) {
+    return Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
+        Number(shaderConfig.tiledImages[0]) :
+        0;
 }
 
 function renderImageIndexOptions(selectedIndex) {
@@ -938,109 +1118,6 @@ function renderImageIndexOptions(selectedIndex) {
     }).join("");
 }
 
-function bindShaderConfigPanelEvents() {
-    $(".shader-config-preset-select").on("change", function() {
-        if (this.value === CUSTOM_SHADER_PRESET_ID) {
-            selectedShaderPresetId = CUSTOM_SHADER_PRESET_ID;
-            renderShaderConfigPanel();
-            return;
-        }
-
-        applyShaderLayerPreset(this.value);
-    });
-
-    $(".shader-config-name-input").on("change", function() {
-        const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
-
-        selectedShaderPresetId = CUSTOM_SHADER_PRESET_ID;
-        shaderConfig.name = this.value.trim() || MODULAR_SHADER_ID;
-        applyShaderLayerGuiConfig();
-        renderShaderConfigPanel();
-    });
-
-    $(".shader-config-image-index-select").on("change", function() {
-        const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
-
-        shaderConfig.tiledImages = [Number(this.value)];
-        applyShaderLayerGuiConfig();
-        renderShaderConfigPanel();
-
-        if (moduleGraphEditor) {
-            moduleGraphEditor.resize();
-        }
-    });
-
-    $(".shader-config-module-textarea").on("input", function() {
-        selectedShaderPresetId = CUSTOM_SHADER_PRESET_ID;
-        updateDraftGraphDiagnostics(this.value);
-    });
-
-    $(".shader-config-module-textarea").on("change", function() {
-        commitModularGraphFromText(this.value);
-    });
-
-    $(".shader-config-module-textarea").on("keydown", function(event) {
-        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-            event.preventDefault();
-            commitModularGraphFromText(this.value);
-        }
-    });
-}
-
-/**
- * Apply a preset to the single modular ShaderLayer.
- *
- * The current image binding is intentionally preserved so users can compare
- * presets against the same image source.
- *
- * @param {string} presetId - Preset id.
- * @returns {void}
- */
-function applyShaderLayerPreset(presetId) {
-    const preset = getShaderPreset(presetId);
-    if (!preset) {
-        return;
-    }
-
-    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
-
-    const graph = cloneJson(preset.graph);
-    const result = analyzeGraphConfig(graph);
-    const hasErrors = result.diagnostics.some((diagnostic) => diagnostic.severity === "error");
-
-    selectedShaderPresetId = preset.id;
-    shaderConfig.name = preset.name;
-
-    if (hasErrors) {
-        pendingGraphText = JSON.stringify(graph, null, 4);
-        modularConfigDiagnostics = result.diagnostics;
-        modularConfigAnalysis = result.analysis;
-        renderShaderConfigPanel();
-        return;
-    }
-
-    shaderConfig.params = shaderConfig.params || {};
-    shaderConfig.params.graph = graph;
-    shaderConfig.cache = {};
-
-    pendingGraphText = null;
-    modularConfigDiagnostics = [];
-    modularConfigAnalysis = null;
-
-    applyShaderLayerGuiConfig();
-    renderShaderConfigPanel();
-    syncModuleGraphEditorFromConfig("apply-shader-layer-preset");
-}
-
-function resetDefaultGraph() {
-    applyShaderLayerPreset("heatmap-threshold");
-}
-
-/**
- * Mount the standalone module graph editor into the demo panel.
- *
- * @returns {void}
- */
 function mountModuleGraphEditor() {
     const container = document.getElementById("module-graph-editor-container");
 
@@ -1062,11 +1139,11 @@ function mountModuleGraphEditor() {
 
     moduleGraphEditor = new OpenSeadragon.FlexRenderer.ShaderModuleGraphEditor({
         container,
-        graphConfig: cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID])),
-        height: 560,
+        graphConfig: cloneJson(getGraphConfig(modularShaderLayerConfig[MODULAR_SHADER_ID])),
+        height: 680,
         previewProvider: createModuleGraphPreviewProvider(),
         onDraftChange: () => {
-            setModuleGraphEditorStatus("Editor draft changed. Apply the graph editor changes to update the live shader layer.", "info");
+            setModuleGraphEditorStatus("Editor draft changed. Apply the graph editor changes to update the live modular ShaderLayer.", "info");
         },
         onDiagnosticsChange: (event) => {
             const diagnostics = event.diagnostics || [];
@@ -1092,11 +1169,6 @@ function mountModuleGraphEditor() {
     setModuleGraphEditorStatus("Module graph editor ready.", "ok");
 }
 
-/**
- * Bind graph editor panel buttons.
- *
- * @returns {void}
- */
 function bindModuleGraphEditorPanelEvents() {
     const applyButton = document.getElementById("module-graph-editor-apply");
     const resetButton = document.getElementById("module-graph-editor-reset");
@@ -1110,11 +1182,6 @@ function bindModuleGraphEditorPanelEvents() {
     }
 }
 
-/**
- * Apply a valid graph editor draft into the demo ShaderLayer config.
- *
- * @returns {void}
- */
 function applyModuleGraphEditorDraft() {
     if (!moduleGraphEditor) {
         return;
@@ -1125,14 +1192,14 @@ function applyModuleGraphEditorDraft() {
     if (!result.ok) {
         modularConfigAnalysis = result.analysis;
         modularConfigDiagnostics = result.diagnostics || [];
-        renderShaderConfigPanel();
+        renderModularShaderConfigPanel();
         bindModuleGraphEditorPanelEvents();
         return;
     }
 
-    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
+    const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID];
 
-    selectedShaderPresetId = CUSTOM_SHADER_PRESET_ID;
+    selectedModularPresetId = CUSTOM_SHADER_PRESET_ID;
     shaderConfig.params = shaderConfig.params || {};
     shaderConfig.params.graph = cloneJson(result.graphConfig);
     shaderConfig.cache = {};
@@ -1141,477 +1208,24 @@ function applyModuleGraphEditorDraft() {
     modularConfigAnalysis = result.analysis;
     modularConfigDiagnostics = result.diagnostics || [];
 
-    applyShaderLayerGuiConfig();
-    renderShaderConfigPanel();
+    applyModularShaderLayerGuiConfig();
+    renderModularShaderConfigPanel();
     bindModuleGraphEditorPanelEvents();
     setModuleGraphEditorStatus("Graph editor changes applied to the live modular ShaderLayer.", "ok");
 }
 
-/**
- * Reset the graph editor draft from the current live demo graph config.
- *
- * @returns {void}
- */
 function resetModuleGraphEditorDraft() {
     syncModuleGraphEditorFromConfig("reset-editor-draft");
-    setModuleGraphEditorStatus("Graph editor draft reset from the current shader layer config.", "ok");
+    setModuleGraphEditorStatus("Graph editor draft reset from the current modular shader layer config.", "ok");
 }
 
-/**
- * Run a demo-local smoke test for the module graph editor integration.
- *
- * This test intentionally exercises the public editor API instead of private
- * editor internals. It applies one valid graph through the demo path, then
- * restores the previous demo graph so the live renderer is not left in a test
- * state.
- *
- * @returns {{ok: boolean, checks: object[], error: (string|null)}} Smoke test result.
- */
-function runModuleGraphEditorSmokeTest() {
-    const checks = [];
-    let previousGraph = null;
-    let previousPresetId = null;
-    let previousPendingGraphText = null;
-    let previousDiagnostics = null;
-    let previousAnalysis = null;
-    let shouldRestore = false;
-
-    const assert = (condition, message, details = undefined) => {
-        checks.push({
-            ok: !!condition,
-            message,
-            details
-        });
-
-        if (!condition) {
-            throw new Error(message);
-        }
-    };
-
-    const getNodeByType = (graphConfig, moduleType) => {
-        const nodes = graphConfig && graphConfig.nodes ? graphConfig.nodes : {};
-
-        for (const nodeId of Object.keys(nodes)) {
-            if (nodes[nodeId] && nodes[nodeId].type === moduleType) {
-                return {
-                    nodeId,
-                    nodeConfig: nodes[nodeId]
-                };
-            }
-        }
-
-        return null;
-    };
-
-    const record = (name, ok, details = {}) => {
-        checks.push({
-            name,
-            ok: !!ok,
-            details
-        });
-
-        if (!ok) {
-            throw new Error(`${name} failed`);
-        }
-    };
-
-    const restorePreviousState = () => {
-        if (!shouldRestore || !previousGraph) {
-            return;
-        }
-
-        const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
-
-        shaderConfig.params = shaderConfig.params || {};
-        shaderConfig.params.graph = cloneJson(previousGraph);
-        shaderConfig.cache = {};
-
-        selectedShaderPresetId = previousPresetId;
-        pendingGraphText = previousPendingGraphText;
-        modularConfigDiagnostics = previousDiagnostics || [];
-        modularConfigAnalysis = previousAnalysis || null;
-
-        applyShaderLayerGuiConfig();
-        renderShaderConfigPanel();
-        syncModuleGraphEditorFromConfig("module-graph-editor-smoke-test-restore");
-    };
-
-    try {
-        if (!moduleGraphEditor) {
-            mountModuleGraphEditor();
-        }
-
-        record("editor-mounted", !!moduleGraphEditor);
-
-        previousGraph = cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID]));
-        previousPresetId = selectedShaderPresetId;
-        previousPendingGraphText = pendingGraphText;
-        previousDiagnostics = cloneJson(modularConfigDiagnostics);
-        previousAnalysis = modularConfigAnalysis;
-        shouldRestore = true;
-
-        /*
-         * Source-channel Inspector smoke checks.
-         *
-         * These checks intentionally run before the existing valid/invalid apply checks.
-         * The existing smoke-test restore path below still restores the previous live
-         * demo graph at the end.
-         */
-        const scalarGraph = {
-            nodes: {
-                sample_source_channel_smoke: {
-                    type: "sample-source-channel",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndex: 4
-                    }
-                }
-            },
-            output: "sample_source_channel_smoke.value",
-            editor: {
-                layoutVersion: 1,
-                nodes: {
-                    sample_source_channel_smoke: {
-                        x: 80,
-                        y: 80
-                    }
-                }
-            }
-        };
-
-        moduleGraphEditor.setDraftGraphConfig(scalarGraph, {
-            reason: "smoke-test-scalar-channel-index"
-        });
-
-        let draft = moduleGraphEditor.getDraftGraphConfig();
-        let scalarNode = getNodeByType(draft, "sample-source-channel");
-
-        assert(
-            scalarNode && scalarNode.nodeConfig.params.channelIndex === 4,
-            "Scalar source sampler preserves channelIndex.",
-            scalarNode
-        );
-
-        assert(
-            scalarNode && !Object.prototype.hasOwnProperty.call(scalarNode.nodeConfig.params, "sourceChannels"),
-            "Scalar source sampler does not create sourceChannels.",
-            scalarNode
-        );
-
-        if (moduleGraphEditor.graphCanvas && moduleGraphEditor._liteNodesById && moduleGraphEditor._liteNodesById.sample_source_channel_smoke) {
-            moduleGraphEditor._selectedNodeId = "sample_source_channel_smoke";
-            moduleGraphEditor.graphCanvas.selectNode(moduleGraphEditor._liteNodesById.sample_source_channel_smoke);
-            moduleGraphEditor._renderInspector();
-
-            const channelInput = moduleGraphEditor.inspector &&
-                moduleGraphEditor.inspector.querySelector('.fr-module-graph-editor__source-channel-input[data-source-channel-param="channelIndex"]');
-
-            assert(
-                !!channelInput,
-                "Inspector exposes channelIndex input for scalar source sampler."
-            );
-
-            if (channelInput) {
-                channelInput.value = "7";
-                channelInput.dispatchEvent(new Event("change", {
-                    bubbles: true
-                }));
-
-                draft = moduleGraphEditor.getDraftGraphConfig();
-                scalarNode = getNodeByType(draft, "sample-source-channel");
-
-                assert(
-                    scalarNode && scalarNode.nodeConfig.params.channelIndex === 7,
-                    "Inspector updates scalar channelIndex.",
-                    scalarNode
-                );
-
-                assert(
-                    moduleGraphEditor._selectedNodeId === "sample_source_channel_smoke",
-                    "Scalar channelIndex edit keeps the source sampler selected.",
-                    {
-                        selectedNodeId: moduleGraphEditor._selectedNodeId
-                    }
-                );
-            }
-        }
-
-        const vectorGraph = {
-            nodes: {
-                sample_source_channels_smoke: {
-                    type: "sample-source-channels",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndexes: [0, 4, 7]
-                    }
-                }
-            },
-            output: "sample_source_channels_smoke.value",
-            editor: {
-                layoutVersion: 1,
-                nodes: {
-                    sample_source_channels_smoke: {
-                        x: 80,
-                        y: 80
-                    }
-                }
-            }
-        };
-
-        moduleGraphEditor.setDraftGraphConfig(vectorGraph, {
-            reason: "smoke-test-channel-indexes"
-        });
-
-        draft = moduleGraphEditor.getDraftGraphConfig();
-        let vectorNode = getNodeByType(draft, "sample-source-channels");
-
-        assert(
-            vectorNode && Array.isArray(vectorNode.nodeConfig.params.channelIndexes) &&
-            vectorNode.nodeConfig.params.channelIndexes.join(",") === "0,4,7",
-            "Multi-channel source sampler preserves channelIndexes.",
-            vectorNode
-        );
-
-        assert(
-            vectorNode && !Object.prototype.hasOwnProperty.call(vectorNode.nodeConfig.params, "sourceChannels"),
-            "Multi-channel source sampler does not create sourceChannels.",
-            vectorNode
-        );
-
-        if (moduleGraphEditor.graphCanvas && moduleGraphEditor._liteNodesById && moduleGraphEditor._liteNodesById.sample_source_channels_smoke) {
-            moduleGraphEditor._selectedNodeId = "sample_source_channels_smoke";
-            moduleGraphEditor.graphCanvas.selectNode(moduleGraphEditor._liteNodesById.sample_source_channels_smoke);
-            moduleGraphEditor._renderInspector();
-
-            const channelInputs = moduleGraphEditor.inspector ?
-                moduleGraphEditor.inspector.querySelectorAll('.fr-module-graph-editor__source-channel-input[data-source-channel-param="channelIndexes"]') :
-                [];
-
-            assert(
-                channelInputs.length === 3,
-                "Inspector exposes channelIndexes inputs for multi-channel source sampler.",
-                {
-                    inputCount: channelInputs.length
-                }
-            );
-
-            if (channelInputs.length >= 2) {
-                channelInputs[1].value = "6";
-                channelInputs[1].dispatchEvent(new Event("change", {
-                    bubbles: true
-                }));
-
-                draft = moduleGraphEditor.getDraftGraphConfig();
-                vectorNode = getNodeByType(draft, "sample-source-channels");
-
-                assert(
-                    vectorNode && vectorNode.nodeConfig.params.channelIndexes.join(",") === "0,6,7",
-                    "Inspector updates one channelIndexes entry.",
-                    vectorNode
-                );
-            }
-
-            const addButton = moduleGraphEditor.inspector &&
-                moduleGraphEditor.inspector.querySelector('.fr-module-graph-editor__source-channel-add[data-source-channel-param="channelIndexes"]');
-
-            assert(
-                !!addButton,
-                "Inspector exposes Add channel for channelIndexes."
-            );
-
-            if (addButton) {
-                addButton.click();
-
-                draft = moduleGraphEditor.getDraftGraphConfig();
-                vectorNode = getNodeByType(draft, "sample-source-channels");
-
-                assert(
-                    vectorNode && vectorNode.nodeConfig.params.channelIndexes.length === 4,
-                    "Inspector can add a channelIndexes entry.",
-                    vectorNode
-                );
-            }
-
-            const removeButton = moduleGraphEditor.inspector &&
-                moduleGraphEditor.inspector.querySelector('.fr-module-graph-editor__source-channel-remove[data-source-channel-param="channelIndexes"][data-source-channel-index="3"]');
-
-            if (removeButton) {
-                removeButton.click();
-
-                draft = moduleGraphEditor.getDraftGraphConfig();
-                vectorNode = getNodeByType(draft, "sample-source-channels");
-
-                assert(
-                    vectorNode && vectorNode.nodeConfig.params.channelIndexes.length === 3,
-                    "Inspector can remove a channelIndexes entry.",
-                    vectorNode
-                );
-            }
-        }
-
-        moduleGraphEditor.setDraftGraphConfig(cloneJson(previousGraph), {
-            updateSource: false,
-            reason: "smoke-test-restore-draft-before-apply-checks"
-        });
-
-        const testGraph = {
-            nodes: {
-                sample_1: {
-                    type: "sample-source-channel",
-                    params: {
-                        sourceIndex: 0,
-                        channelIndex: 0
-                    }
-                },
-                threshold_1: {
-                    type: "threshold-mask",
-                    inputs: {
-                        value: "sample_1.value"
-                    },
-                    params: {
-                        threshold: {
-                            type: "range",
-                            default: 0.5,
-                            min: 0,
-                            max: 1,
-                            step: 0.01,
-                            title: "Threshold"
-                        }
-                    }
-                },
-                colorize_1: {
-                    type: "colorize",
-                    inputs: {
-                        value: "sample_1.value",
-                        alpha: "threshold_1.mask"
-                    },
-                    params: {
-                        color: "#00ffff"
-                    }
-                }
-            },
-            output: "colorize_1.color"
-        };
-
-        moduleGraphEditor.setDraftGraphConfig(cloneJson(testGraph), {
-            updateSource: true,
-            reason: "module-graph-editor-smoke-test"
-        });
-
-        draft = moduleGraphEditor.getDraftGraphConfig();
-
-        record("draft-has-nodes", !!draft.nodes && !!draft.nodes.sample_1 && !!draft.nodes.threshold_1 && !!draft.nodes.colorize_1, {
-            nodeIds: Object.keys(draft.nodes || {})
-        });
-
-        record("draft-has-threshold-reference", draft.nodes.threshold_1.inputs.value === "sample_1.value", {
-            value: draft.nodes.threshold_1.inputs && draft.nodes.threshold_1.inputs.value
-        });
-
-        record("draft-has-colorize-references", (
-            draft.nodes.colorize_1.inputs.value === "sample_1.value" &&
-            draft.nodes.colorize_1.inputs.alpha === "threshold_1.mask"
-        ), {
-            inputs: draft.nodes.colorize_1.inputs
-        });
-
-        record("draft-has-vec4-output", draft.output === "colorize_1.color", {
-            output: draft.output
-        });
-
-        const invalidApply = (() => {
-            moduleGraphEditor.setDraftGraphConfig({
-                nodes: {
-                    sample_1: {
-                        type: "sample-source-channel",
-                        params: {
-                            sourceIndex: 0,
-                            channelIndex: 0
-                        }
-                    }
-                },
-                output: "missing.value"
-            }, {
-                updateSource: false,
-                reason: "module-graph-editor-smoke-test-invalid"
-            });
-
-            return moduleGraphEditor.apply();
-        })();
-
-        record("invalid-apply-blocked", invalidApply.ok === false, {
-            diagnostics: invalidApply.diagnostics
-        });
-
-        moduleGraphEditor.setDraftGraphConfig(cloneJson(testGraph), {
-            updateSource: true,
-            reason: "module-graph-editor-smoke-test-valid"
-        });
-
-        const validApply = moduleGraphEditor.apply();
-
-        record("valid-apply-ok", validApply.ok === true, {
-            diagnostics: validApply.diagnostics
-        });
-
-        applyModuleGraphEditorDraft();
-
-        const liveGraph = getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID]);
-
-        record("demo-config-updated", !!liveGraph.nodes && liveGraph.output === "colorize_1.color", {
-            output: liveGraph.output,
-            nodeIds: Object.keys(liveGraph.nodes || {})
-        });
-
-        restorePreviousState();
-        shouldRestore = false;
-
-        setModuleGraphEditorStatus("Module graph editor smoke test passed. Previous graph restored.", "ok");
-
-        return {
-            ok: true,
-            checks,
-            error: null
-        };
-    } catch (error) {
-        try {
-            restorePreviousState();
-        } catch (restoreError) {
-            checks.push({
-                name: "restore-previous-state",
-                ok: false,
-                details: {
-                    error: restoreError && restoreError.message ? restoreError.message : String(restoreError)
-                }
-            });
-        }
-
-        setModuleGraphEditorStatus(
-            `Module graph editor smoke test failed: ${error && error.message ? error.message : String(error)}`,
-            "error"
-        );
-
-        return {
-            ok: false,
-            checks,
-            error: error && error.message ? error.message : String(error)
-        };
-    }
-}
-
-/**
- * Replace the editor draft with the current demo graph config.
- *
- * @param {string} reason - Synchronization reason.
- * @returns {void}
- */
 function syncModuleGraphEditorFromConfig(reason) {
     if (!moduleGraphEditor) {
         return;
     }
 
     moduleGraphEditor.setDraftGraphConfig(
-        cloneJson(getGraphConfig(shaderLayerConfig[MODULAR_SHADER_ID])),
+        cloneJson(getGraphConfig(modularShaderLayerConfig[MODULAR_SHADER_ID])),
         {
             updateSource: true,
             reason
@@ -1621,13 +1235,6 @@ function syncModuleGraphEditorFromConfig(reason) {
     moduleGraphEditor.resize();
 }
 
-/**
- * Update the graph editor status message.
- *
- * @param {string} message - Status message.
- * @param {"info"|"ok"|"error"} [kind="info"] - Status kind.
- * @returns {void}
- */
 function setModuleGraphEditorStatus(message, kind = "info") {
     const status = document.getElementById("module-graph-editor-status");
 
@@ -1638,9 +1245,9 @@ function setModuleGraphEditorStatus(message, kind = "info") {
     status.className = "module-graph-editor-status";
 
     if (kind === "ok") {
-        status.classList.add("module-graph-editor-status--ok");
+        status.classList.add("viewer-status--ok");
     } else if (kind === "error") {
-        status.classList.add("module-graph-editor-status--error");
+        status.classList.add("viewer-status--error");
     }
 
     status.textContent = message;
@@ -1656,7 +1263,7 @@ function updateDraftGraphDiagnostics(text) {
 }
 
 function commitModularGraphFromText(text) {
-    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID];
+    const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID];
     pendingGraphText = text;
 
     const result = analyzeGraphText(text);
@@ -1664,10 +1271,11 @@ function commitModularGraphFromText(text) {
     modularConfigDiagnostics = result.diagnostics;
 
     if (modularConfigDiagnostics.some((diagnostic) => diagnostic.severity === "error")) {
-        renderShaderConfigPanel();
+        renderModularShaderConfigPanel();
         return;
     }
 
+    selectedModularPresetId = CUSTOM_SHADER_PRESET_ID;
     shaderConfig.params = shaderConfig.params || {};
     shaderConfig.params.graph = result.graph;
     shaderConfig.cache = {};
@@ -1676,8 +1284,8 @@ function commitModularGraphFromText(text) {
     modularConfigDiagnostics = [];
     modularConfigAnalysis = null;
 
-    applyShaderLayerGuiConfig();
-    renderShaderConfigPanel();
+    applyModularShaderLayerGuiConfig();
+    renderModularShaderConfigPanel();
     syncModuleGraphEditorFromConfig("commit-modular-graph-json");
 }
 
@@ -1734,11 +1342,11 @@ function analyzeGraphConfig(graph) {
 }
 
 function getLiveFlexRenderer() {
-    if (!viewer || !viewer.drawer) {
+    if (!modularViewer || !modularViewer.drawer) {
         return null;
     }
 
-    return viewer.drawer.renderer || viewer.drawer.flexRenderer || null;
+    return modularViewer.drawer.renderer || modularViewer.drawer.flexRenderer || null;
 }
 
 function getLiveModularShaderLayer() {
@@ -1767,16 +1375,6 @@ function makeDraftModuleGraphOwner() {
     };
 }
 
-/**
- * Create the preview provider used by the module graph editor.
- *
- * The provider keeps demo/OpenSeadragon state outside the editor. Structural
- * preview validation is delegated to the live FlexRenderer, while drawing uses
- * the current FlexDrawer extraction path so the preview reflects the active
- * source/view state.
- *
- * @returns {object} Preview provider for ShaderModuleGraphEditor.
- */
 function createModuleGraphPreviewProvider() {
     return {
         isNodePreviewAvailable(request) {
@@ -1876,17 +1474,12 @@ function createModuleGraphPreviewProvider() {
     };
 }
 
-/**
- * Return the tiled images used by the live modular ShaderLayer.
- *
- * @returns {OpenSeadragon.TiledImage[]} Tiled images currently bound to the demo layer.
- */
 function getModuleGraphPreviewTiledImages() {
-    if (!viewer || !viewer.world || typeof viewer.world.getItemAt !== "function") {
+    if (!modularViewer || !modularViewer.world || typeof modularViewer.world.getItemAt !== "function") {
         return [];
     }
 
-    const shaderConfig = shaderLayerConfig[MODULAR_SHADER_ID] || {};
+    const shaderConfig = modularShaderLayerConfig[MODULAR_SHADER_ID] || {};
     const indexes = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length ?
         shaderConfig.tiledImages :
         [0];
@@ -1899,7 +1492,7 @@ function getModuleGraphPreviewTiledImages() {
             continue;
         }
 
-        const tiledImage = viewer.world.getItemAt(numericIndex);
+        const tiledImage = modularViewer.world.getItemAt(numericIndex);
 
         if (tiledImage) {
             result.push(tiledImage);
@@ -1909,11 +1502,6 @@ function getModuleGraphPreviewTiledImages() {
     return result;
 }
 
-/**
- * Return dimensions used to preserve preview aspect ratio.
- *
- * @returns {{width: number, height: number}} Preview source dimensions.
- */
 function getModuleGraphPreviewSourceDimensions() {
     const tiledImages = getModuleGraphPreviewTiledImages();
     const tiledImage = tiledImages[0];
@@ -1925,10 +1513,10 @@ function getModuleGraphPreviewSourceDimensions() {
         };
     }
 
-    if (viewer && viewer.drawer && viewer.drawer.canvas) {
+    if (modularViewer && modularViewer.drawer && modularViewer.drawer.canvas) {
         return {
-            width: Math.max(1, Number(viewer.drawer.canvas.width) || 1),
-            height: Math.max(1, Number(viewer.drawer.canvas.height) || 1)
+            width: Math.max(1, Number(modularViewer.drawer.canvas.width) || 1),
+            height: Math.max(1, Number(modularViewer.drawer.canvas.height) || 1)
         };
     }
 
@@ -1938,11 +1526,6 @@ function getModuleGraphPreviewSourceDimensions() {
     };
 }
 
-/**
- * Return the standalone drawer used for module output previews.
- *
- * @returns {?OpenSeadragon.FlexDrawer} Standalone extraction drawer, or null.
- */
 function getModuleGraphPreviewDrawer() {
     if (moduleGraphPreviewDrawer) {
         return moduleGraphPreviewDrawer;
@@ -1952,17 +1535,12 @@ function getModuleGraphPreviewDrawer() {
         return null;
     }
 
-    moduleGraphPreviewDrawer = OpenSeadragon.makeStandaloneFlexDrawer(viewer);
+    moduleGraphPreviewDrawer = OpenSeadragon.makeStandaloneFlexDrawer(modularViewer);
     return moduleGraphPreviewDrawer;
 }
 
-/**
- * Return the current viewer view for standalone preview rendering.
- *
- * @returns {object} Current viewport state.
- */
 function getModuleGraphPreviewView() {
-    const bounds = viewer.viewport.getBoundsNoRotateWithMargins(true);
+    const bounds = modularViewer.viewport.getBoundsNoRotateWithMargins(true);
 
     return {
         bounds,
@@ -1970,8 +1548,8 @@ function getModuleGraphPreviewView() {
             bounds.x + bounds.width / 2,
             bounds.y + bounds.height / 2
         ),
-        rotation: viewer.viewport.getRotation(true) * Math.PI / 180,
-        zoom: viewer.viewport.getZoom(true)
+        rotation: modularViewer.viewport.getRotation(true) * Math.PI / 180,
+        zoom: modularViewer.viewport.getZoom(true)
     };
 }
 
@@ -2027,7 +1605,7 @@ function formatDiagnosticPath(path) {
 }
 
 function renderGraphDiagnosticsIntoPanel() {
-    const modulePanel = document.querySelector(".shader-config-row__module");
+    const modulePanel = document.querySelector("#modular-shader-config-panel .shader-config-row__module");
     if (!modulePanel) {
         return;
     }
@@ -2050,8 +1628,12 @@ function getGraphConfig(shaderConfig) {
     return params.graph || createDefaultModularGraph();
 }
 
-function applyShaderLayerGuiConfig(options = {}) {
-    return viewer.drawer.overrideConfigureAll(shaderLayerConfig, shaderLayerOrder, options);
+function applyRegularShaderLayerGuiConfig(options = {}) {
+    return regularViewer.drawer.overrideConfigureAll(regularShaderLayerConfig, regularShaderLayerOrder, options);
+}
+
+function applyModularShaderLayerGuiConfig(options = {}) {
+    return modularViewer.drawer.overrideConfigureAll(modularShaderLayerConfig, modularShaderLayerOrder, options);
 }
 
 function setPanelHtml(id, html) {
@@ -2075,15 +1657,21 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
-/**
- * Debug helpers exposed for manual demo verification from the browser console.
- */
 window.modularShaderLayerDemo = {
-    viewer,
-    shaderLayerConfig,
-    shaderLayerOrder,
+    regularViewer,
+    modularViewer,
+    regularShaderLayerConfig,
+    modularShaderLayerConfig,
+    regularShaderLayerOrder,
+    modularShaderLayerOrder,
+    regularShaderPresets: REGULAR_SHADER_PRESETS,
+    modularShaderPresets: MODULAR_SHADER_PRESETS,
+    regularShaderId: REGULAR_SHADER_ID,
     modularShaderId: MODULAR_SHADER_ID,
-    applyShaderLayerGuiConfig,
+    applyRegularShaderLayerGuiConfig,
+    applyModularShaderLayerGuiConfig,
+    applyRegularShaderLayerPreset,
+    applyModularShaderLayerPreset,
     getLiveFlexRenderer,
     getLiveModularShaderLayer,
     makeDraftModuleGraphOwner,
@@ -2093,19 +1681,18 @@ window.modularShaderLayerDemo = {
     analyzeGraphText,
     analyzeGraphConfig,
     resetDefaultGraph,
-    renderShaderConfigPanel,
-    shaderPresets: MODULAR_SHADER_PRESETS,
-    applyShaderLayerPreset,
+    renderRegularShaderConfigPanel,
+    renderModularShaderConfigPanel,
     mountModuleGraphEditor,
     syncModuleGraphEditorFromConfig,
     applyModuleGraphEditorDraft,
     resetModuleGraphEditorDraft,
-    runModuleGraphEditorSmokeTest,
     getModuleGraphEditor: () => moduleGraphEditor,
     cloneJson,
 };
 
-applyShaderLayerGuiConfig();
-renderImageSourceIndexPanel();
-renderShaderConfigPanel();
+applyRegularShaderLayerGuiConfig();
+applyModularShaderLayerGuiConfig();
+renderRegularShaderConfigPanel();
+renderModularShaderConfigPanel();
 mountModuleGraphEditor();

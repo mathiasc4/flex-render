@@ -136,7 +136,7 @@
         .workspace {
             min-height: 0;
             display: grid;
-            grid-template-columns: minmax(0, 1.25fr) minmax(390px, 0.75fr);
+            grid-template-columns: minmax(390px, 0.85fr) minmax(0, 1.15fr);
             grid-template-rows: minmax(0, 1fr);
             gap: 8px;
         }
@@ -149,11 +149,11 @@
         }
 
         .left-column {
-            grid-template-rows: minmax(380px, 1.25fr) minmax(220px, 0.75fr);
+            grid-template-rows: auto minmax(92px, 0.32fr) minmax(0, 1.68fr);
         }
 
         .right-column {
-            grid-template-rows: auto minmax(160px, 0.7fr) minmax(180px, 1fr);
+            grid-template-rows: minmax(380px, 1.25fr) minmax(220px, 0.75fr);
         }
 
         .viewer-grid {
@@ -286,11 +286,11 @@
 
         .charts-grid {
             min-height: 0;
+            height: 100%;
             display: grid;
-            grid-template-columns: 1.15fr 0.85fr;
-            grid-auto-rows: minmax(150px, auto);
+            grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.1fr);
+            grid-template-rows: minmax(150px, 1fr) minmax(120px, auto);
             gap: 8px;
-            align-content: start;
         }
 
         .visualization-panel {
@@ -301,12 +301,36 @@
 
         .visualization-panel .charts-grid {
             min-height: 0;
-            overflow: auto;
-            padding-right: 4px;
+            overflow: hidden;
         }
 
-        .chart-card--wide {
-            grid-column: 1 / -1;
+        .timing-history-card {
+            grid-column: 2;
+            grid-row: 1 / -1;
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            gap: 4px;
+        }
+
+        .timing-history-card .chart-scroll {
+            height: auto;
+            min-height: 0;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: repeat(6, minmax(0, 1fr));
+            gap: 5px;
+        }
+
+        .sparkline-card {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .sparkline-label {
+            font-size: 10px;
+            color: #374151;
+            line-height: 1.2;
         }
 
         .latest-breakdown-card {
@@ -332,9 +356,6 @@
             min-height: 0;
         }
 
-        .chart-card--wide {
-            min-height: 0;
-        }
 
         .svg-chart {
             display: block;
@@ -490,6 +511,20 @@
                 grid-template-columns: 1fr;
             }
 
+            .charts-grid {
+                height: auto;
+                grid-template-rows: auto;
+            }
+
+            .timing-history-card {
+                grid-column: auto;
+                grid-row: auto;
+            }
+
+            .timing-history-card .chart-scroll {
+                overflow: visible;
+            }
+
             .left-column,
             .right-column {
                 grid-template-rows: auto;
@@ -588,16 +623,20 @@
 
     <main class="workspace">
         <section class="left-column">
-            <section class="panel viewer-output-panel">
-                <h3>Rendered output</h3>
-                <div id="profiling-viewers" class="viewer-grid viewer-grid--single"></div>
-                <div id="profiling-status" class="viewer-status">Initializing profiling demo...</div>
+            <section class="panel">
+                <h3>Summary</h3>
+                <div id="profiling-kpis" class="kpi-grid"></div>
+            </section>
+
+            <section class="panel">
+                <h3>Latest frame / active viewers</h3>
+                <div id="profiling-latest-details" class="detail-grid panel-scroll"></div>
             </section>
 
             <section class="panel visualization-panel">
                 <h3>Frame and source visualizations</h3>
                 <div class="charts-grid">
-                    <div class="chart-card chart-card--wide">
+                    <div class="chart-card">
                         <h4>Frame history timeline</h4>
                         <p>
                             Each vertical bar is one recorded render attempt from the primary viewer.
@@ -614,14 +653,14 @@
                             <p>
                                 Stacked timing for the newest recorded primary-viewer frame. This panel shows
                                 the immediate per-frame phase split; longer per-viewer details are shown in
-                                the right-side Latest frame / active viewers panel.
+                                the left-side Latest frame / active viewers panel.
                             </p>
                             <div id="profiling-latest-breakdown"></div>
                             <div id="profiling-latest-breakdown-legend" class="legend"></div>
                         </div>
                     </div>
 
-                    <div class="chart-card">
+                    <div class="chart-card timing-history-card">
                         <h4>Timing history</h4>
                         <p>
                             Small-multiple sparklines over the retained frame history. Each graph shows
@@ -635,14 +674,10 @@
         </section>
 
         <aside class="right-column">
-            <section class="panel">
-                <h3>Summary</h3>
-                <div id="profiling-kpis" class="kpi-grid"></div>
-            </section>
-
-            <section class="panel">
-                <h3>Latest frame / active viewers</h3>
-                <div id="profiling-latest-details" class="detail-grid panel-scroll"></div>
+            <section class="panel viewer-output-panel">
+                <h3>Rendered output</h3>
+                <div id="profiling-viewers" class="viewer-grid viewer-grid--single"></div>
+                <div id="profiling-status" class="viewer-status">Initializing profiling demo...</div>
             </section>
 
             <section class="panel comparison-panel">

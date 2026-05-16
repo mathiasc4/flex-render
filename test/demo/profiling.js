@@ -1110,8 +1110,8 @@
     }
 
     function renderSparkline(series) {
-        const width = 250;
-        const height = 46;
+        const width = 560;
+        const height = 52;
         const values = series.values || [];
         const maxValue = Math.max(1, ...values);
         const points = values.map((value, index) => {
@@ -1122,8 +1122,8 @@
         const latest = values.length ? values[values.length - 1] : 0;
 
         return `
-            <div>
-                <div style="font-size:10px;color:#374151">${escapeHtml(series.label)} latest ${escapeHtml(formatMs(latest))}, max ${escapeHtml(formatMs(maxValue))}</div>
+            <div class="sparkline-card">
+                <div class="sparkline-label">${escapeHtml(series.label)} latest ${escapeHtml(formatMs(latest))}, max ${escapeHtml(formatMs(maxValue))}</div>
                 <svg class="svg-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(series.label)} sparkline">
                     <line x1="4" y1="${height - 8}" x2="${width - 4}" y2="${height - 8}" stroke="${COLORS.axis}" />
                     <polyline points="${points}" fill="none" stroke="${series.color}" stroke-width="2" />
