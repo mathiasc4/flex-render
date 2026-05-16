@@ -361,7 +361,7 @@
         },
 
         compileDocsModel() {
-            const shaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers().map(Shader => {
+            const shaders = $.FlexRenderer.ShaderLayerRegistry.availableLayers().map(Shader => {
                 const sources = typeof Shader.sources === "function" ? (Shader.sources() || []) : [];
                 const controls = this._compileControlDescriptors(Shader);
                 const customParams = Shader.customParams || {};
@@ -407,7 +407,7 @@
         },
 
         compileConfigSchemaModel() {
-            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
+            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableLayers();
             const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
             const shaderModules = this._compileShaderModuleJsonSchemas();
             const shaderModuleGraph = this._compileShaderModuleGraphJsonSchema(shaderModules);
@@ -1056,30 +1056,28 @@
         },
 
         _compileShaderModuleDescriptors() {
-            const Mediator = $.FlexRenderer.ShaderModuleMediator;
+            const ShaderModuleRegistry = $.FlexRenderer.ShaderModuleRegistry;
 
-            if (!Mediator || typeof Mediator.availableModules !== "function") {
+            if (!ShaderModuleRegistry || typeof ShaderModuleRegistry.availableModules !== "function") {
                 return [];
             }
 
-            return Mediator.availableModules().map(Module =>
-                this._compileShaderModuleDescriptor(Module)
-            );
+            return ShaderModuleRegistry.availableModules().map(ShaderModule => this._compileShaderModuleDescriptor(ShaderModule));
         },
 
-        _compileShaderModuleDescriptor(Module) {
-            const type = Module.type();
-            const inputs = typeof Module.inputs === "function" ? (Module.inputs() || {}) : {};
-            const outputs = typeof Module.outputs === "function" ? (Module.outputs() || {}) : {};
+        _compileShaderModuleDescriptor(ShaderModule) {
+            const type = ShaderModule.type();
+            const inputs = typeof ShaderModule.inputs === "function" ? (ShaderModule.inputs() || {}) : {};
+            const outputs = typeof ShaderModule.outputs === "function" ? (ShaderModule.outputs() || {}) : {};
 
             return {
                 type,
-                name: typeof Module.name === "function" ? Module.name() : type,
-                description: typeof Module.description === "function" ? Module.description() : "",
+                name: typeof ShaderModule.name === "function" ? ShaderModule.name() : type,
+                description: typeof ShaderModule.description === "function" ? ShaderModule.description() : "",
                 inputs: this._compileShaderModulePortDescriptors(inputs),
                 outputs: this._compileShaderModulePortDescriptors(outputs, { allowMultipleTypes: true }),
-                controls: this._compileShaderModuleControlDescriptors(Module),
-                classDocs: this._getModuleClassDocs(Module)
+                controls: this._compileShaderModuleControlDescriptors(ShaderModule),
+                classDocs: this._getModuleClassDocs(ShaderModule)
             };
         },
 
@@ -1151,7 +1149,7 @@
         },
 
         _compileShaderModuleJsonSchemas() {
-            const Mediator = $.FlexRenderer.ShaderModuleMediator;
+            const Mediator = $.FlexRenderer.ShaderModuleRegistry;
             const schemas = {};
 
             if (!Mediator || typeof Mediator.availableModules !== "function") {

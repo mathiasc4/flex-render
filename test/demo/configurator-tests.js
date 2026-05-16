@@ -88,7 +88,7 @@
 
         const ShaderConfigurator = FlexRenderer.ShaderConfigurator;
         const ShaderMediator = FlexRenderer.ShaderMediator;
-        const ShaderModuleMediator = FlexRenderer.ShaderModuleMediator;
+        const ShaderModuleRegistry = FlexRenderer.ShaderModuleRegistry;
         const ShaderModuleGraphAnalyzer = FlexRenderer.ShaderModuleGraphAnalyzer;
 
         if (!ShaderConfigurator) {
@@ -130,7 +130,7 @@
             FlexRenderer,
             ShaderConfigurator,
             ShaderMediator,
-            ShaderModuleMediator,
+            ShaderModuleRegistry: ShaderModuleRegistry,
             ShaderModuleGraphAnalyzer,
             docs,
             docsError,
@@ -147,7 +147,7 @@
     }
 
     function getRegisteredModuleTypes(context) {
-        const mediator = context.ShaderModuleMediator;
+        const mediator = context.ShaderModuleRegistry;
 
         if (!mediator || typeof mediator.availableTypes !== "function") {
             return [];
@@ -157,7 +157,7 @@
     }
 
     function getRegisteredModules(context) {
-        const mediator = context.ShaderModuleMediator;
+        const mediator = context.ShaderModuleRegistry;
 
         if (!mediator || typeof mediator.availableModules !== "function") {
             return [];
@@ -169,8 +169,8 @@
     function getModularShader(context) {
         const mediator = context.ShaderMediator;
 
-        if (typeof mediator.getClass === "function") {
-            return mediator.getClass("modular");
+        if (typeof mediator.get === "function") {
+            return mediator.get("modular");
         }
 
         if (typeof mediator.getShaderByType === "function") {
@@ -344,13 +344,13 @@
                         }
                     },
                     {
-                        name: "ShaderModuleMediator registry is usable",
+                        name: "ShaderModuleRegistry registry is usable",
                         run(context) {
-                            const mediator = context.ShaderModuleMediator;
+                            const mediator = context.ShaderModuleRegistry;
 
-                            assert(mediator, "ShaderModuleMediator is not available.");
-                            assert(typeof mediator.availableModules === "function", "ShaderModuleMediator.availableModules() is missing.");
-                            assert(typeof mediator.availableTypes === "function", "ShaderModuleMediator.availableTypes() is missing.");
+                            assert(mediator, "ShaderModuleRegistry is not available.");
+                            assert(typeof mediator.availableModules === "function", "ShaderModuleRegistry.availableModules() is missing.");
+                            assert(typeof mediator.availableTypes === "function", "ShaderModuleRegistry.availableTypes() is missing.");
 
                             const modules = getRegisteredModules(context);
                             const types = getRegisteredModuleTypes(context);
@@ -369,7 +369,7 @@
                                 const type = Module.type();
 
                                 assert(type && typeof type === "string", "Module type should be a non-empty string.");
-                                assert(mediator.getClass(type) === Module, `getClass('${type}') should return the registered module class.`);
+                                assert(mediator.get(type) === Module, `get('${type}') should return the registered module class.`);
                                 assert(typeof Module.inputs === "function", `${type}.inputs() is missing.`);
                                 assert(typeof Module.outputs === "function", `${type}.outputs() is missing.`);
                                 assert(typeof Module.description === "function", `${type}.description() is missing.`);

@@ -1,5 +1,5 @@
 (function($) {
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         class ThresholdMaskModule extends $.FlexRenderer.ShaderModule {
             static type() {
                 return "threshold-mask";

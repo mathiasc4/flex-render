@@ -1,5 +1,5 @@
 (function($) {
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         class ColorizeModule extends $.FlexRenderer.ShaderModule {
             static type() {
                 return "colorize";

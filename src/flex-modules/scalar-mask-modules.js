@@ -81,7 +81,7 @@
         };
     }
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that inverts a float mask.
          */
@@ -167,7 +167,7 @@
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that multiplies two float masks.
          */
@@ -251,7 +251,7 @@
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that selects between two float inputs using a mask.
          */
@@ -342,7 +342,7 @@
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that applies one OpenCV-like threshold mode to a scalar value.
          */
@@ -495,7 +495,7 @@ float ${mask} = step(1e-6, abs(${value}));
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that maps a binary mask to foreground and background colors.
          */
@@ -606,7 +606,7 @@ float ${mask} = step(1e-6, abs(${value}));
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that maps a scalar to grayscale RGBA output.
          */
@@ -690,7 +690,7 @@ float ${mask} = step(1e-6, abs(${value}));
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that measures distance and side relative to a midpoint.
          */
@@ -827,7 +827,7 @@ float ${highMask} = step(0.0, ${this.uid}_delta) * step(1e-6, abs(${this.uid}_de
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that colors centered scalar magnitude with low and high colors.
          */
@@ -949,7 +949,7 @@ vec4 ${out} = vec4(${this.uid}_rgb, ${this.uid}_alpha);
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that converts a class index to a normalized class ratio.
          */
@@ -1036,7 +1036,7 @@ vec4 ${out} = vec4(${this.uid}_rgb, ${this.uid}_alpha);
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that emits a numeric float constant.
          */
@@ -1099,7 +1099,7 @@ vec4 ${out} = vec4(${this.uid}_rgb, ${this.uid}_alpha);
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Compatibility alias for select-float using a conditional naming convention.
          */
@@ -1190,7 +1190,7 @@ vec4 ${out} = vec4(${this.uid}_rgb, ${this.uid}_alpha);
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Compatibility alias for binary-palette using colorize terminology.
          */

@@ -184,7 +184,7 @@
         };
     }
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Source module that samples one numeric channel from one source slot.
          */
@@ -296,7 +296,7 @@
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Source module that samples one to four numeric channels from one source slot.
          */

@@ -1,4 +1,5 @@
 (function($) {
+
     /**
      * Determines how a shader layer participates in stack composition.
      *
@@ -1385,89 +1386,105 @@ ${code}
 
 
     /**
-     * A registry of ShaderLayers.
-     *
-     * @property {boolean} _acceptsShaderLayers - Whether the mediator allows new ShaderLayer registrations.
-     * @property {Record<string, ShaderLayer>} _ShaderLayers - Registered ShaderLayers keyed by their type() output, { ShaderLayer.type(): ShaderLayer }.
+     * A registry for ShaderLayer classes.
      *
      * @memberof OpenSeadragon.FlexRenderer
      */
     class ShaderLayerRegistry {
         /**
-         * Enable or disable ShaderLayer registrations.
+         * Whether this registry currently accepts new ShaderLayer registrations.
          *
-         * @param {boolean} accepts
+         * @type {boolean}
          */
-        static setAcceptsRegistrations(accepts) {
-            if (accepts === true || accepts === false) {
-                this._acceptsShaderLayers = accepts;
-            } else {
-                console.warn("OpenSeadragon.FlexRenderer.ShaderLayerRegistry::setAcceptsRegistrations: accepts parameter must be either true or false!");
+        static get acceptsRegistrations() {
+            return this._acceptsRegistrations;
+        }
+
+        /**
+         * Set whether this registry accepts new ShaderLayer registrations.
+         *
+         * @param {boolean} accepts - Whether new ShaderLayer registrations are accepted.
+         */
+        static set acceptsRegistrations(accepts) {
+            if (typeof accepts !== "boolean") {
+                $.console.warn("accepts must be a boolean.");
             }
+
+            this._acceptsRegistrations = accepts;
         }
 
         /**
          * Registers a ShaderLayer.
          *
          * @param {typeof ShaderLayer} ShaderLayerClass - The ShaderLayer to be registered.
+         * @returns {void}
          */
         static register(ShaderLayerClass) {
-            if (this._acceptsShaderLayers) {
-                if (this._ShaderLayers[ShaderLayerClass.type()]) {
-                    console.warn(`OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayer ${ShaderLayerClass.type()} already registered, overwriting the content!`);
-                }
-
-                this._ShaderLayers[ShaderLayerClass.type()] = ShaderLayerClass;
-            } else {
-                console.warn("OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayerRegistry is set to not accept new ShaderLayers!");
+            if (!this._acceptsRegistrations) {
+                $.console.warn("ShaderLayerRegistry is set to not accept new ShaderLayer registrations!");
+                return;
             }
+
+            if (!ShaderLayerClass || typeof ShaderLayerClass.type !== "function") {
+                throw new TypeError("Expected ShaderLayerClass to define a static type() method.");
+            }
+
+            const type = ShaderLayerClass.type();
+            if (typeof type !== "string" || type.trim().length === 0) {
+                throw new TypeError("Expected ShaderLayerClass.type() to return a non-empty string.");
+            }
+
+            if (this._layers[type]) {
+                $.console.warn(`ShaderLayer '${type}' already registered, overwriting!`);
+            }
+
+            this._layers[ShaderLayerClass.type()] = ShaderLayerClass;
         }
 
         /**
-         * Gets the specified ShaderLayer.
+         * Returns a registered ShaderLayer by its type.
          *
-         * @param {string} shaderLayerType - The output of type() of the desired ShaderLayer.
-         * @returns {typeof ShaderLayer}
+         * @param {string} type - The output of type() of the desired ShaderLayer.
+         * @returns {typeof ShaderLayer | undefined}
          */
-        static get(shaderLayerType) {
-            return this._ShaderLayers[shaderLayerType];
+        static get(type) {
+            return this._layers[type];
         }
 
         /**
-         * Gets all available ShaderLayer types.
+         * Returns all available ShaderLayer types.
          *
          * @returns {string[]}
          */
         static availableTypes() {
-            return Object.keys(this._ShaderLayers);
+            return Object.keys(this._layers);
         }
 
         /**
-         * Gets all available ShaderLayers.
+         * Returns all available ShaderLayers.
          *
          * @returns {(typeof ShaderLayer)[]}
          */
-        static availableShaderLayers() {
-            return Object.values(this._ShaderLayers);
+        static availableLayers() {
+            return Object.values(this._layers);
         }
     }
 
     /**
-     * Whether the mediator allows new ShaderLayer registrations.
+     * Whether the registry allows new ShaderLayer registrations.
      *
-     * @type {boolean}
      * @private
+     * @type {boolean}
      */
-    ShaderLayerRegistry._acceptsShaderLayers = true;
+    ShaderLayerRegistry._acceptsRegistrations = true;
 
     /**
      * Registered ShaderLayers keyed by their type() output, { ShaderLayer.type(): ShaderLayer }.
      *
-     * @type {Record<string, (typeof ShaderLayer)>}
      * @private
+     * @type {Record<string, (typeof ShaderLayer)>}
      */
-    ShaderLayerRegistry._ShaderLayers = {};
-
+    ShaderLayerRegistry._layers = {};
 
     $.FlexRenderer.ShaderLayerRegistry = ShaderLayerRegistry;
 

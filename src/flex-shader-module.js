@@ -1,61 +1,4 @@
 (function($) {
-    /**
-     * Registry for ShaderModule classes used by ModularShaderLayer graphs.
-     */
-    $.FlexRenderer.ShaderModuleMediator = class {
-        /**
-         * Register a ShaderModule class.
-         *
-         * @param {typeof ShaderModule} moduleClass - Module class to register.
-         * @returns {void}
-         */
-        static registerModule(moduleClass) {
-            if (!moduleClass || typeof moduleClass.type !== "function") {
-                throw new Error("ShaderModuleMediator::registerModule: moduleClass.type() is required.");
-            }
-
-            const type = moduleClass.type();
-            if (!type || typeof type !== "string") {
-                throw new Error("ShaderModuleMediator::registerModule: module type must be a non-empty string.");
-            }
-
-            if (this._modules[type]) {
-                $.console.warn(`ShaderModuleMediator::registerModule: ShaderModule '${type}' already registered, overwriting.`);
-            }
-
-            this._modules[type] = moduleClass;
-        }
-
-        /**
-         * Return a registered ShaderModule class.
-         *
-         * @param {string} type - Module type.
-         * @returns {typeof ShaderModule|undefined}
-         */
-        static getClass(type) {
-            return this._modules[type];
-        }
-
-        /**
-         * Return all registered ShaderModule classes.
-         *
-         * @returns {Function[]}
-         */
-        static availableModules() {
-            return Object.values(this._modules);
-        }
-
-        /**
-         * Return all registered ShaderModule type names.
-         *
-         * @returns {string[]}
-         */
-        static availableTypes() {
-            return Object.keys(this._modules);
-        }
-    };
-
-    $.FlexRenderer.ShaderModuleMediator._modules = {};
 
     /**
      * Value type supported by the ShaderModule graph validator.
@@ -197,9 +140,9 @@
      * and compile-time emission logic.
      *
      * This class is not meant to be instantiated directly. Register concrete module
-     * classes through ShaderModuleMediator.registerModule(...). Concrete modules may
+     * classes through ShaderModuleRegistry.register(...). Concrete modules may
      * extend this class or provide the same static and instance contract expected by
-     * ShaderModuleMediator, ShaderModuleGraphAnalyzer, ShaderModuleGraphBuilder, and
+     * ShaderModuleRegistry, ShaderModuleGraphAnalyzer, ShaderModuleGraphBuilder, and
      * the runtime ShaderModuleGraph compiler.
      *
      * Required overrides:
@@ -1974,7 +1917,7 @@ ${compiled.execution}
                 return;
             }
 
-            const ModuleClass = $.FlexRenderer.ShaderModuleMediator.getClass(nodeConfig.type);
+            const ModuleClass = $.FlexRenderer.ShaderModuleRegistry.get(nodeConfig.type);
             if (!ModuleClass) {
                 addGraphDiagnostic(state.diagnostics, {
                     severity: "error",
@@ -1984,7 +1927,7 @@ ${compiled.execution}
                     nodeId,
                     details: {
                         moduleType: nodeConfig.type,
-                        availableTypes: $.FlexRenderer.ShaderModuleMediator.availableTypes()
+                        availableTypes: $.FlexRenderer.ShaderModuleRegistry.availableTypes()
                     }
                 });
 
@@ -2560,7 +2503,7 @@ ${compiled.execution}
                 }
 
                 const moduleType = nodeConfig.type;
-                const ModuleClass = $.FlexRenderer.ShaderModuleMediator.getClass(moduleType);
+                const ModuleClass = $.FlexRenderer.ShaderModuleRegistry.get(moduleType);
 
                 if (!ModuleClass) {
                     throw new Error(`${this._errorPrefix(state)}: unknown module type '${moduleType}' for node '${nodeId}'.`);
@@ -2773,4 +2716,109 @@ ${compiled.execution}
             }
         }
     };
+
+
+    /**
+     * A registry for ShaderModule classes.
+     *
+     * @memberof OpenSeadragon.FlexRenderer
+     */
+     class ShaderModuleRegistry {
+        /**
+         * Whether this registry currently accepts new ShaderModule registrations.
+         *
+         * @type {boolean}
+         */
+        static get acceptsRegistrations() {
+            return this._acceptsRegistrations;
+        }
+
+        /**
+         * Set whether this registry accepts new ShaderModule registrations.
+         *
+         * @param {boolean} accepts - Whether new ShaderModule registrations are accepted.
+         */
+        static set acceptsRegistrations(accepts) {
+            if (typeof accepts !== "boolean") {
+                $.console.warn("accepts must be a boolean.");
+            }
+
+            this._acceptsRegistrations = accepts;
+        }
+
+        /**
+         * Registers a ShaderModule.
+         *
+         * @param {typeof ShaderModule} ShaderModuleClass - The ShaderModule to be registered.
+         * @returns {void}
+         */
+        static register(ShaderModuleClass) {
+            if (!this._acceptsRegistrations) {
+                $.console.warn("ShaderModuleRegistry is set to not accept new ShaderModule registrations!");
+                return;
+            }
+
+            if (!ShaderModuleClass || typeof ShaderModuleClass.type !== "function") {
+                throw new TypeError("Expected ShaderModuleClass to define a static type() method.");
+            }
+
+            const type = ShaderModuleClass.type();
+            if (typeof type !== "string" || type.trim().length === 0) {
+                throw new TypeError("Expected ShaderModuleClass.type() to return a non-empty string.");
+            }
+
+            if (this._modules[type]) {
+                $.console.warn(`ShaderModule '${type}' already registered, overwriting!`);
+            }
+
+            this._modules[type] = ShaderModuleClass;
+        }
+
+        /**
+         * Returns a registered ShaderModule by its type.
+         *
+         * @param {string} type - The output of type() of the desired ShaderModule.
+         * @returns {typeof ShaderModule | undefined}
+         */
+        static get(type) {
+            return this._modules[type];
+        }
+
+        /**
+         * Returns all registered ShaderModule types.
+         *
+         * @returns {string[]}
+         */
+        static availableTypes() {
+            return Object.keys(this._modules);
+        }
+
+        /**
+         * Returns all registered ShaderModule classes.
+         *
+         * @returns {(typeof ShaderModule)[]}
+         */
+        static availableModules() {
+            return Object.values(this._modules);
+        }
+    }
+
+    /**
+     * Whether the registry allows new ShaderModule registrations.
+     *
+     * @private
+     * @type {boolean}
+     */
+    ShaderModuleRegistry._acceptsRegistrations = true;
+
+    /**
+     * Registered ShaderModules keyed by their type() output, { ShaderModule.type(): ShaderModule }.
+     *
+     * @private
+     * @type {Record<string, (typeof ShaderModule)>}
+     */
+    ShaderModuleRegistry._modules = {};
+
+    $.FlexRenderer.ShaderModuleRegistry = ShaderModuleRegistry;
+
 })(OpenSeadragon);

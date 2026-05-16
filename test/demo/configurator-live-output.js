@@ -22,7 +22,7 @@
 
     function renderShaderOptions() {
         const select = document.getElementById("shader-selector");
-        const shaders = ShaderMediator.availableShaderLayers()
+        const shaders = ShaderMediator.availableLayers()
             .map(Shader => ({
                 id: Shader.type(),
                 name: typeof Shader.name === "function" ? Shader.name() : Shader.type()

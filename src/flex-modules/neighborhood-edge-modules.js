@@ -298,7 +298,7 @@
         }];
     }
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Source module that samples a configurable 3x3 neighborhood.
          */
@@ -426,7 +426,7 @@
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Source module that computes a local weighted statistic for one scalar source channel.
          */
@@ -609,7 +609,7 @@ float ${statistic} = ${sum} / max(${weightSum}, 1e-6);
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that thresholds a value against a local statistic minus C.
          */
@@ -726,7 +726,7 @@ float ${mask} = ${invert} ? 1.0 - ${this.uid}_base_mask : ${this.uid}_base_mask;
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that computes Sobel X/Y gradients from a vec3 3x3 neighborhood.
          */
@@ -829,7 +829,7 @@ vec3 ${gy} = -${ul} - 2.0 * ${up} - ${ur} + ${ll} + 2.0 * ${down} + ${lr};
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that converts vector gradients to scalar magnitude.
          */
@@ -913,7 +913,7 @@ vec3 ${gy} = -${ul} - 2.0 * ${up} - ${ur} + ${ll} + 2.0 * ${down} + ${lr};
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that computes a zoom-scaled sampling distance.
          */
@@ -1018,7 +1018,7 @@ vec3 ${gy} = -${ul} - 2.0 * ${up} - ${ur} + ${ll} + 2.0 * ${down} + ${lr};
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Source module that samples scalar center and eight neighbors at a dynamic distance.
          */
@@ -1155,7 +1155,7 @@ vec3 ${gy} = -${ul} - 2.0 * ${up} - ${ur} + ${ll} + 2.0 * ${down} + ${lr};
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that converts scalar neighborhood samples to threshold score extrema.
          */
@@ -1291,7 +1291,7 @@ vec3 ${gy} = -${ul} - 2.0 * ${up} - ${ur} + ${ll} + 2.0 * ${down} + ${lr};
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that computes threshold-crossing edge alpha and side masks.
          */
@@ -1425,7 +1425,7 @@ float ${upperAlpha} = ${alpha} * ${side};
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that colorizes lower and upper edge alpha separately.
          */
@@ -1540,7 +1540,7 @@ vec4 ${color} = ${this.uid}_alpha > 0.0 ? vec4(${this.uid}_rgb / ${this.uid}_alp
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that computes value minus a sampled threshold control.
          */
@@ -1637,7 +1637,7 @@ vec4 ${color} = ${this.uid}_alpha > 0.0 ? vec4(${this.uid}_rgb / ${this.uid}_alp
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that computes Gaussian or uniform window weight.
          */
@@ -1749,7 +1749,7 @@ float ${weight} = ${gaussian} ? exp(-${this.uid}_rr / (2.0 * ${this.uid}_sigma *
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that splits edge alpha by the threshold side.
          */

@@ -46,7 +46,7 @@
         };
     }
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that evaluates an advanced-slider control as a mask.
          */
@@ -145,7 +145,7 @@
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that classifies a scalar with an advanced-slider control.
          */
@@ -280,7 +280,7 @@ ${indexStatement}
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that converts an integer class index to a normalized class ratio.
          */
@@ -363,7 +363,7 @@ ${indexStatement}
         }
     );
 
-    $.FlexRenderer.ShaderModuleMediator.registerModule(
+    $.FlexRenderer.ShaderModuleRegistry.register(
         /**
          * Module that maps a scalar through a colormap or color control.
          */

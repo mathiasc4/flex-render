@@ -220,7 +220,7 @@
              * @private
              * @type {object}
              */
-            this.moduleRegistry = options.moduleRegistry || $.FlexRenderer.ShaderModuleMediator;
+            this.moduleRegistry = options.moduleRegistry || $.FlexRenderer.ShaderModuleRegistry;
 
             /**
              * LiteGraph nodes keyed by modular graph node id.
@@ -2874,8 +2874,8 @@
                 return null;
             }
 
-            if (typeof this.moduleRegistry.getClass === "function") {
-                return this.moduleRegistry.getClass(type) || null;
+            if (typeof this.moduleRegistry.get === "function") {
+                return this.moduleRegistry.get(type) || null;
             }
 
             if (typeof this.moduleRegistry.get === "function") {
