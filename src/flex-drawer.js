@@ -933,7 +933,9 @@
 
                 if (!immediate) {
                     setTimeout(() => {
-                        if (this._destroyed) return;
+                        if (this._destroyed) {
+                            return;
+                        }
                         if (!this._isRenderingSuspended()) {
                             this.viewer.forceRedraw();
                         }
