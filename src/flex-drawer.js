@@ -823,6 +823,11 @@
                 }
             }
 
+            if (this._rebuildHandle) {
+                clearTimeout(this._rebuildHandle);
+                this._rebuildHandle = null;
+            }
+
             this.renderer.destroy();
             this.renderer = null;
 
@@ -928,6 +933,7 @@
 
                 if (!immediate) {
                     setTimeout(() => {
+                        if (this._destroyed) return;
                         if (!this._isRenderingSuspended()) {
                             this.viewer.forceRedraw();
                         }
