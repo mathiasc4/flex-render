@@ -33,6 +33,23 @@
      */
 
     /**
+     * Host-supplied HTTP transport used by FlexDrawer-owned workers (MVT, GeoJSON).
+     *
+     * The adapter is a fetch-compatible shim: when supplied, every network request
+     * the library would otherwise issue with `fetch(url)` is routed through it.
+     * Implementations must support method, headers, body, signal, Range headers,
+     * and binary responses (.arrayBuffer / .blob / .body).
+     *
+     * Adapters are resolved in this order:
+     *   1. explicit `httpAdapter` constructor option on the tile source,
+     *   2. drawer-level `httpAdapter` captured into `FlexDrawer._defaultHttpAdapter`,
+     *   3. null — the library falls back to native `fetch`.
+     *
+     * @typedef {object} HttpAdapter
+     * @property {(url: string, init?: RequestInit) => Promise<Response>} fetch
+     */
+
+    /**
      * @property {Number} idGenerator unique ID getter
      *
      * @class OpenSeadragon.FlexDrawer
@@ -58,6 +75,13 @@
             // We have 'undefined' extra format for blank tiles
             this._supportedFormats = ["rasterBlob", "context2d", "image", "vector-mesh", "gpuTextureSet", "undefined"];
             this.rebuildCounter = 0;
+
+            // Capture the host-supplied HttpAdapter as a process-wide fallback so tile sources
+            // instantiated outside the drawer (OSD-managed paths) can still pick it up.
+            // Explicit per-tile-source `httpAdapter` options take precedence.
+            if (this.options.httpAdapter) {
+                FlexDrawer._defaultHttpAdapter = this.options.httpAdapter;
+            }
 
             this._suspendRenderingDepth = 0;
             this._pendingRebuildRequest = null;
@@ -122,6 +146,7 @@
                 copyShaderConfig: false,
                 handleNavigator: true,
                 shaderSourceResolver: null,
+                httpAdapter: null,
                 sharedContextKey: null,
                 interaction: false,
                 // hex bg color, by default transparent

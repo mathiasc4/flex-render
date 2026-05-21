@@ -28,7 +28,7 @@ self.onmessage = async (e) => {
             if (!self.Pbf || !self.vectorTile || !self.earcut) {
                 throw new Error('Missing libs');
             }
-            const resp = await fetch(url);
+            const resp = self.__hasHttpBridge ? await self.requestFetch(url) : await fetch(url);
 
             if (!resp.ok) {
                 throw new Error('HTTP ' + resp.status);
