@@ -39,7 +39,8 @@ $.MVTTileSource = class extends $.TileSource {
                     height,
                     extent = 4096,
                     style,
-                    useNativeLines = false
+                    useNativeLines = false,
+                    httpAdapter = null
                 }) {
         super({ width, height, tileSize, minLevel, maxLevel });
         this.template = template;
@@ -48,8 +49,16 @@ $.MVTTileSource = class extends $.TileSource {
         this.style = style || defaultStyle();
         this.useNativeLines = useNativeLines === true;
 
+        // Resolve adapter: explicit option wins, fall back to the drawer-level default.
+        this._httpAdapter = httpAdapter || ($.FlexDrawer && $.FlexDrawer._defaultHttpAdapter) || null;
+
         this._worker = makeWorker();
         this._pending = new Map(); // key -> {resolve,reject}
+
+        // Install the HTTP bridge before any postMessage that may trigger fetches.
+        this._httpBridge = (this._httpAdapter && $.FlexDrawer && typeof $.FlexDrawer.installHttpBridge === 'function')
+            ? $.FlexDrawer.installHttpBridge(this._worker, this._httpAdapter)
+            : null;
 
         // Wire worker responses
         this._worker.onmessage = (e) => {

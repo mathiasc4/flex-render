@@ -133,7 +133,7 @@ async function fetchGeoJSON(url) {
         throw new Error('GeoJSON worker: url is required.');
     }
 
-    const response = await fetch(url);
+    const response = self.__hasHttpBridge ? await self.requestFetch(url) : await fetch(url);
     if (!response.ok) {
         throw new Error(`GeoJSON worker: failed to fetch ${url}: ${response.status}`);
     }

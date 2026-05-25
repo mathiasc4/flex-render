@@ -51,6 +51,8 @@
      * @property {GeoJSONStyleOptions} [style] - Optional style descriptor.
      * @property {boolean} [useNativeLines=false] - Whether LineString geometries are processed into gl.LINES primitives of stroke-triangle meshes.
      * @property {GeoJSONAggregationOptions} [aggregation] - Optional per-tile aggregation settings.
+     * @property {HttpAdapter} [httpAdapter] - Optional host-supplied HTTP transport used by the GeoJSON worker.
+     *     When omitted, the drawer-level adapter (if any) is used; otherwise native `fetch` is used.
      */
 
     const GEOJSON_ROOT_TYPES = new Set([
@@ -138,6 +140,24 @@
             this.aggregation = normalized.aggregation;
 
             /**
+             * Optional HttpAdapter routing the worker's outbound fetches.
+             *
+             * Explicit option wins; otherwise the drawer-level default is used.
+             *
+             * @private
+             * @type {?HttpAdapter}
+             */
+            this._httpAdapter = normalized.httpAdapter;
+
+            /**
+             * Handle returned by FlexDrawer.installHttpBridge when an adapter is wired.
+             *
+             * @private
+             * @type {?{dispose: function(): void}}
+             */
+            this._httpBridge = null;
+
+            /**
              * Pending tile jobs keyed by tile id.
              *
              * @private
@@ -175,6 +195,13 @@
             this._workerError = null;
 
             this._worker = this._createWorker();
+
+            // Install the HTTP bridge before the worker's config postMessage so the bridge is
+            // already on when the worker performs its initial GeoJSON fetch.
+            if (this._httpAdapter && $.FlexDrawer && typeof $.FlexDrawer.installHttpBridge === 'function') {
+                this._httpBridge = $.FlexDrawer.installHttpBridge(this._worker, this._httpAdapter);
+            }
+
             this._configureWorker();
         }
 
@@ -202,7 +229,8 @@
                 maxLevel: options.maxLevel,
                 style: normalizeStyleOptions(options.style),
                 useNativeLines: options.useNativeLines === true,
-                aggregation: normalizeAggregationOptions(options.aggregation)
+                aggregation: normalizeAggregationOptions(options.aggregation),
+                httpAdapter: options.httpAdapter || ($.FlexDrawer && $.FlexDrawer._defaultHttpAdapter) || null
             };
 
             if (typeof normalized.url !== 'string' || !normalized.url.trim()) {
@@ -453,6 +481,11 @@
          */
         destroy() {
             this._pending.clear();
+
+            if (this._httpBridge) {
+                this._httpBridge.dispose();
+                this._httpBridge = null;
+            }
 
             if (this._worker) {
                 this._worker.terminate();
