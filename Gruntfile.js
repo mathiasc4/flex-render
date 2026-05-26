@@ -44,6 +44,7 @@ module.exports = function(grunt) {
             "src/flex-webgl2.js",
             "src/flex-webgl2-atlas.js",
             "src/flex-drawer.js",
+            "src/workers/http-bridge.main.js",
             "src/flex-standalone.js",
             "src/flex-layers/adaptive-threshold.js",
             "src/flex-layers/bipolar-heatmap.js",
@@ -73,16 +74,19 @@ module.exports = function(grunt) {
             "src/vendor/litegraph.min.js",
         ],
         mvtWorkerDeps = [
+            "src/workers/http-bridge.worker.js",
             "src/vendor/pbf.min.js",
             "src/vendor/vector-tile.min.js",
             "src/vendor/earcut.min.js",
             "src/workers/mvt-worker.core.js"
         ],
         fabricWorkerDeps = [
+            "src/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
             "src/workers/fabric-worker.core.js"
         ],
         geojsonWorkerDeps = [
+            "src/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
             "src/workers/geojson-worker.core.js"
         ];
@@ -273,7 +277,7 @@ module.exports = function(grunt) {
         qunit: {
             normal: {
                 options: {
-                    urls: [ "http://localhost:8000/test/test.html" + moduleFilter ],
+                    urls: [ "http://localhost:8888/test/test.html" + moduleFilter ],
                     timeout: 10000,
                     puppeteer: {
                         headless: 'new'
@@ -282,7 +286,7 @@ module.exports = function(grunt) {
             },
             coverage: {
                 options: {
-                    urls: [ "http://localhost:8000/test/coverage.html" + moduleFilter ],
+                    urls: [ "http://localhost:8888/test/coverage.html" + moduleFilter ],
                     coverage: {
                         src: ['src/*.js'],
                         htmlReport: coverageDir + '/html/',
@@ -302,7 +306,7 @@ module.exports = function(grunt) {
         connect: {
             server: {
                 options: {
-                    port: 8000,
+                    port: 8888,
                     base: {
                         path: ".",
                         options: {
