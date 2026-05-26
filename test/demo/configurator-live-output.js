@@ -3,7 +3,7 @@
     const ShaderMediator = OpenSeadragon.FlexRenderer.ShaderLayerRegistry;
     const demoUniqueId = "configurator_live_output_demo";
     const sourceImagePath = "../data/rainbow.png";
-    const defaultShaderId = "iconmap";
+    const defaultShaderId = "identity";
 
     let loadedImage = null;
     let activeShaderId = defaultShaderId;
@@ -22,7 +22,7 @@
 
     function renderShaderOptions() {
         const select = document.getElementById("shader-selector");
-        const shaders = ShaderMediator.availableShaderLayers()
+        const shaders = ShaderMediator.availableLayers()
             .map(Shader => ({
                 id: Shader.type(),
                 name: typeof Shader.name === "function" ? Shader.name() : Shader.type()

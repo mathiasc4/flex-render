@@ -555,7 +555,7 @@ function renderShaderConfigItem(shaderId, shaderConfig) {
 
 function renderShaderTypeControl(shaderConfig, shaderId) {
     const options = OpenSeadragon.FlexRenderer.ShaderLayerRegistry
-        .availableShaderLayers()
+        .availableLayers()
         .filter((Shader) => Shader.type() !== "group")
         .map((Shader) => {
             const type = Shader.type();

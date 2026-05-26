@@ -45,11 +45,6 @@
                 ]);
 
                 await loadFirst([
-                    "../../src/configurator.js",
-                    "/src/configurator.js"
-                ]);
-
-                await loadFirst([
                     "./configurator-scheme.js",
                     "/test/demo/configurator-scheme.js",
                     "/demo/configurator-scheme.js"
@@ -181,6 +176,27 @@
             filter: brightness(0.95);
         }
 
+        .schema-view {
+            display: grid;
+            gap: 6px;
+            margin-top: 18px;
+            color: var(--muted);
+            font-family: "Trebuchet MS", Verdana, sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .schema-view select {
+            width: 100%;
+            min-height: 38px;
+            padding: 8px 10px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: #ffffff;
+            color: var(--text);
+            font: 13px Consolas, "Courier New", monospace;
+        }
+
         pre {
             margin: 0;
             overflow: auto;
@@ -229,7 +245,26 @@
                             <span class="stat-label">UI control schemas</span>
                             <span class="stat-value" id="control-count">-</span>
                         </div>
+                        <div class="stat">
+                            <span class="stat-label">Shader modules</span>
+                            <span class="stat-value" id="module-count">-</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Graph schema</span>
+                            <span class="stat-value" id="graph-schema-status">-</span>
+                        </div>
                     </div>
+
+                    <label class="schema-view" for="schema-view">
+                        JSON view
+                        <select id="schema-view">
+                            <option value="full">Full schema</option>
+                            <option value="shaderLayers">ShaderLayer schemas</option>
+                            <option value="shaderModules">ShaderModule schemas</option>
+                            <option value="shaderModuleGraph">ShaderModule graph schema</option>
+                            <option value="uiControlEnvelopes">UI control envelope schemas</option>
+                        </select>
+                    </label>
 
                     <div style="margin-top: 18px;">
                         <button id="refresh-btn" type="button">Rebuild JSON</button>
