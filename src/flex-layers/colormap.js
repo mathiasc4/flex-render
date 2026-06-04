@@ -180,10 +180,20 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
 
         // Read breaks through the same canonical accessor the coupling validator uses,
         // so validation cannot disagree with runtime coercion. Live drag updates pass
-        // their fresh values into syncColor() directly via the 'breaks' callback.
+        // their fresh values into syncColor() directly via the 'breaks' callback;
+        // other call sites (e.g. the connect toggle) get them from the slider's live
+        // state, which `params.breaks` lags behind once the user has dragged.
         const breaksOf = (override) => {
             if (Array.isArray(override)) {
                 return override.map(v => Number.parseFloat(v)).filter(v => Number.isFinite(v));
+            }
+            if (this.threshold && Array.isArray(this.threshold.raw)) {
+                const live = this.threshold.raw
+                    .map(v => Number.parseFloat(v))
+                    .filter(v => Number.isFinite(v) && v >= 0 && v <= 1);
+                if (live.length > 0) {
+                    return live;
+                }
             }
             return Configurator.resolveEffectiveBreaks(this.threshold && this.threshold.params);
         };

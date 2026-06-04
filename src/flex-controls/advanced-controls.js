@@ -557,7 +557,7 @@ $.FlexRenderer.UIControls.AdvancedSlider = class extends $.FlexRenderer.UIContro
                 { name: "max", type: "number", default: 1 },
                 { name: "minGap", type: "number", default: 0.05 },
                 { name: "step", type: "null|number", default: null },
-                { name: "pips", type: "object" }
+                { name: "pips", type: "object", description: "noUiSlider pips config. Extra field `labels` accepts an object map { value: 'text' } that overrides the displayed text for matching pip positions; unmatched pips keep the numeric format. When `labels` is present, pip text is rendered vertically." }
             ],
             glType: "float"
         };
@@ -638,6 +638,35 @@ return masked * bigger / actualLength;
             from: v => Number.parseFloat(v)
         };
 
+        // `pips.labels` is our extension over noUiSlider — a { value: "text" } map
+        // that overrides the displayed text for matching pip positions while leaving
+        // tooltips (which share `format`) numeric. Strip it from the object handed
+        // to noUiSlider so its config remains pure.
+        const pipsLabels = this.params.pips && typeof this.params.pips.labels === "object"
+            ? this.params.pips.labels : null;
+        let userPips = this.params.pips;
+        if (pipsLabels) {
+            userPips = $.extend({}, this.params.pips);
+            delete userPips.labels;
+        }
+        const pipsFormat = pipsLabels ? {
+            to: v => {
+                if (Object.prototype.hasOwnProperty.call(pipsLabels, v)) {
+                    return String(pipsLabels[v]);
+                }
+                if (Object.prototype.hasOwnProperty.call(pipsLabels, String(v))) {
+                    return String(pipsLabels[String(v)]);
+                }
+                for (const k of Object.keys(pipsLabels)) {
+                    if (Math.abs(Number(k) - v) < 1e-6) {
+                        return String(pipsLabels[k]);
+                    }
+                }
+                return format.to(v);
+            },
+            from: format.from
+        } : format;
+
         if (this.params.interactive) {
             const _this = this;
             let container = document.getElementById(this.id);
@@ -659,8 +688,12 @@ return masked * bigger / actualLength;
                 behaviour: 'drag',
                 tooltips: true,
                 format: format,
-                pips: $.extend({format: format}, this.params.pips)
+                pips: $.extend({format: pipsFormat}, userPips)
             });
+
+            if (pipsLabels) {
+                container.classList.add("er-slider--vertical-pips");
+            }
 
             if (this.params.pips) {
                 let pips = container.querySelectorAll('.noUi-value');
