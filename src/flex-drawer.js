@@ -1169,16 +1169,22 @@
         }
 
         /**
-         * Convert a DOM pointer/mouse event into renderer framebuffer pixels.
+         * Convert a client-space point ({clientX, clientY} from a DOM event,
+         * or any object with those fields) into renderer framebuffer pixels.
          *
-         * Returned coordinates use physical framebuffer pixels with bottom-left origin,
-         * directly comparable to `gl_FragCoord.xy`.
+         * Returned coordinates use physical framebuffer pixels with bottom-left
+         * origin, directly comparable to `gl_FragCoord.xy`. The conversion is
+         * devicePixelRatio-aware because `canvas.width / rect.width` already
+         * folds DPR into the scale factor.
          *
-         * @private
-         * @param {PointerEvent|MouseEvent} event
+         * Intended for application code that drives `inspector.centerPx` from
+         * a pointer event. Returns `{x:0, y:0}` when no canvas or event target
+         * is available.
+         *
+         * @param {{clientX: number, clientY: number}} point
          * @return {{x: number, y: number}}
          */
-        _getInteractionPositionPx(event) {
+        clientPointToFramebufferPx(point) {
             const canvas = this.renderer && this.renderer.getPresentationCanvas();
             const target = this._getInteractionEventTarget();
 
@@ -1191,9 +1197,20 @@
             const scaleY = rect.height ? canvas.height / rect.height : 1;
 
             return {
-                x: (event.clientX - rect.left) * scaleX,
-                y: (rect.bottom - event.clientY) * scaleY,
+                x: (point.clientX - rect.left) * scaleX,
+                y: (rect.bottom - point.clientY) * scaleY,
             };
+        }
+
+        /**
+         * Convert a DOM pointer/mouse event into renderer framebuffer pixels.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {{x: number, y: number}}
+         */
+        _getInteractionPositionPx(event) {
+            return this.clientPointToFramebufferPx(event);
         }
 
         /**
@@ -2385,6 +2402,7 @@
                     }
                 });
             this.renderer = new $.FlexRenderer(rendererOptions);
+            this.renderer.drawer = this;
 
             this.renderer.setDataBlendingEnabled(true); // enable alpha blending
             this.webGLVersion = this.renderer.webglVersion;

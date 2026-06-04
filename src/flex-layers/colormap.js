@@ -123,7 +123,9 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     construct(options, dataReferences) {
         super.construct(options, dataReferences);
         //delete unused controls if applicable after initialization
-        if (this.color.getName() !== "colormap") {
+        // Any ColorMap-family control (including custom_colormap) exposes setSteps and
+        // can therefore honour `connect`. Matching the name string excluded subclasses.
+        if (typeof this.color.setSteps !== "function") {
             this.removeControl("connect");
         }
     }

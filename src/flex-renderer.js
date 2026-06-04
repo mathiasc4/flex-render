@@ -772,6 +772,37 @@
         }
 
         /**
+         * Convert a client-space point ({clientX, clientY}) into renderer
+         * framebuffer pixels. Returned coordinates are physical pixels with
+         * bottom-left origin, directly comparable to `gl_FragCoord.xy`, and
+         * are devicePixelRatio-aware.
+         *
+         * Forwards to the attached drawer when available (the drawer owns the
+         * on-page event target). Falls back to using the presentation canvas
+         * as both the framebuffer source and the bounding-rect source, which
+         * is correct when the presentation canvas is the DOM-attached canvas.
+         *
+         * @param {{clientX: number, clientY: number}} point
+         * @return {{x: number, y: number}}
+         */
+        clientPointToFramebufferPx(point) {
+            if (this.drawer && typeof this.drawer.clientPointToFramebufferPx === "function") {
+                return this.drawer.clientPointToFramebufferPx(point);
+            }
+            const canvas = this.presentationCanvas;
+            if (!canvas || typeof canvas.getBoundingClientRect !== "function") {
+                return { x: 0, y: 0 };
+            }
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width ? canvas.width / rect.width : 1;
+            const scaleY = rect.height ? canvas.height / rect.height : 1;
+            return {
+                x: (point.clientX - rect.left) * scaleX,
+                y: (rect.bottom - point.clientY) * scaleY,
+            };
+        }
+
+        /**
          * Return whether this renderer is attached to a page-global shared WebGL context.
          *
          * @return {boolean}
@@ -3184,10 +3215,6 @@
 
         downloadTileStart(context) {
             return context.finish("_blank", undefined, "undefined");
-        }
-
-        getMetadata() {
-            return this;
         }
     }
 
