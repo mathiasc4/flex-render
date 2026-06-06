@@ -1937,6 +1937,210 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
                 return decoded;
             }
             return null;
+        },
+
+        renderIconToCanvas(spec = {}) {
+            const iconQuery = String(spec.icon || "").trim();
+            const iconSet = spec.iconSet || "fa-solid-common";
+            const size = Math.max(16, Number.parseInt(spec.size, 10) || 160);
+            const padding = Math.max(0, Number.parseInt(spec.padding, 10) || 0);
+            const color = spec.color || "#111111";
+            const backgroundColor = spec.backgroundColor || "#00000000";
+            const glyphFontFamily = spec.glyphFontFamily
+                || "'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif";
+            const glyphFontWeight = spec.glyphFontWeight || "400";
+
+            if (!iconQuery) {
+                return { canvas: null, cacheKey: null, ready: false, retry: false };
+            }
+
+            const resolved = this.resolveAnyIconSpec(iconQuery, iconSet);
+            if (!resolved) {
+                return { canvas: null, cacheKey: null, ready: false, retry: false };
+            }
+
+            const renderSpec = this._resolveRenderSpec(resolved, glyphFontFamily, glyphFontWeight);
+            if (!renderSpec || !renderSpec.text) {
+                // Class probe failed — Font Awesome CSS likely not loaded yet.
+                return { canvas: null, cacheKey: null, ready: false, retry: resolved.renderMode === "class" };
+            }
+
+            const canvas = this._renderIconCanvas(renderSpec, {
+                size,
+                padding,
+                color,
+                backgroundColor,
+                glyphFontFamily
+            });
+
+            const cacheKey = JSON.stringify({
+                key: resolved.key,
+                text: renderSpec.text,
+                size,
+                padding,
+                color,
+                backgroundColor,
+                fontFamily: renderSpec.fontFamily,
+                fontWeight: renderSpec.fontWeight
+            });
+
+            return { canvas, cacheKey, ready: true, retry: false };
+        },
+
+        uploadToAtlas(atlas, canvasResult) {
+            if (!atlas || !canvasResult || !canvasResult.canvas) {
+                return -1;
+            }
+            const cacheKey = canvasResult.cacheKey;
+            atlas.__flexRendererCache = atlas.__flexRendererCache || {};
+            if (cacheKey && Number.isInteger(atlas.__flexRendererCache[cacheKey])) {
+                return atlas.__flexRendererCache[cacheKey];
+            }
+            const textureId = atlas.addImage(canvasResult.canvas, {
+                width: canvasResult.canvas.width,
+                height: canvasResult.canvas.height,
+                cacheKey
+            });
+            if (typeof atlas._commitUploads === "function") {
+                atlas._commitUploads();
+            }
+            if (cacheKey) {
+                atlas.__flexRendererCache[cacheKey] = textureId;
+            }
+            return textureId;
+        },
+
+        _resolveRenderSpec(resolved, glyphFontFamily, glyphFontWeight) {
+            if (resolved.renderMode === "glyph") {
+                return {
+                    text: resolved.glyph,
+                    fontFamily: resolved.fontFamily || glyphFontFamily,
+                    fontWeight: resolved.fontWeight || glyphFontWeight
+                };
+            }
+            if (resolved.renderMode === "class") {
+                return this._resolveFontClassRenderSpec(resolved.className, resolved, glyphFontWeight);
+            }
+            return null;
+        },
+
+        _resolveFontClassRenderSpec(className, resolved, glyphFontWeight) {
+            if (typeof document === "undefined") {
+                return null;
+            }
+
+            const probe = document.createElement("i");
+            probe.className = className;
+            probe.setAttribute("aria-hidden", "true");
+            probe.style.position = "absolute";
+            probe.style.left = "-10000px";
+            probe.style.top = "-10000px";
+            probe.style.fontSize = "34px";
+            document.body.appendChild(probe);
+
+            try {
+                const pseudo = window.getComputedStyle(probe, "::before");
+                let content = pseudo.getPropertyValue("content");
+                if (!content || content === "none" || content === "normal") {
+                    const base = window.getComputedStyle(probe);
+                    content = base.getPropertyValue("content");
+                }
+
+                const text = this._decodeCssContent(content);
+                if (!text) {
+                    return null;
+                }
+
+                return {
+                    text,
+                    fontFamily: pseudo.fontFamily || resolved.fontFamily,
+                    fontWeight: pseudo.fontWeight || resolved.fontWeight || glyphFontWeight || "900"
+                };
+            } finally {
+                probe.remove();
+            }
+        },
+
+        _decodeCssContent(content) {
+            if (!content || content === "none" || content === "normal") {
+                return null;
+            }
+
+            let value = String(content).trim();
+            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.slice(1, -1);
+            }
+
+            value = value.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_, hex) => {
+                try {
+                    return String.fromCodePoint(Number.parseInt(hex, 16));
+                } catch (_) {
+                    return "";
+                }
+            });
+
+            value = value.replace(/\\\\/g, "\\");
+            value = value.replace(/\\"/g, '"');
+            value = value.replace(/\\'/g, "'");
+
+            return value || null;
+        },
+
+        _renderIconCanvas(renderSpec, opts) {
+            const { size, padding, color, backgroundColor, glyphFontFamily } = opts;
+            const canvas = document.createElement("canvas");
+            canvas.width = size;
+            canvas.height = size;
+
+            const ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, size, size);
+
+            if (backgroundColor && backgroundColor !== "#00000000") {
+                ctx.fillStyle = backgroundColor;
+                ctx.fillRect(0, 0, size, size);
+            }
+
+            const availableSize = Math.max(8, size - (padding * 2));
+            const measureAt = (fontSize) => {
+                ctx.font = `${renderSpec.fontWeight || "400"} ${fontSize}px ${renderSpec.fontFamily || glyphFontFamily}`;
+                return ctx.measureText(renderSpec.text);
+            };
+
+            let metrics = measureAt(size);
+            const boundsWidth = Math.max(
+                1,
+                (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0),
+                metrics.width || 0
+            );
+            const boundsHeight = Math.max(
+                1,
+                (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
+                size * 0.7
+            );
+            const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight, 1.0);
+            const fontSize = Math.max(8, Math.floor(size * fitScale));
+            metrics = measureAt(fontSize);
+
+            ctx.fillStyle = color;
+            ctx.textAlign = "left";
+            ctx.textBaseline = "alphabetic";
+            ctx.lineJoin = "round";
+            ctx.miterLimit = 2;
+
+            const left = metrics.actualBoundingBoxLeft || 0;
+            const right = metrics.actualBoundingBoxRight || metrics.width || 0;
+            const ascent = metrics.actualBoundingBoxAscent || fontSize * 0.75;
+            const descent = metrics.actualBoundingBoxDescent || fontSize * 0.25;
+            const x = (size / 2) + ((left - right) / 2);
+            const y = (size / 2) + ((ascent - descent) / 2);
+
+            const strokeWidth = Math.max(1, fontSize * 0.035);
+            ctx.lineWidth = strokeWidth;
+            ctx.strokeStyle = color;
+            ctx.strokeText(renderSpec.text, x, y);
+            ctx.fillText(renderSpec.text, x, y);
+
+            return canvas;
         }
     };
 })();
@@ -2176,140 +2380,35 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     }
 
     _resolveRenderSpec(resolved) {
-        if (resolved.renderMode === "glyph") {
-            return {
-                text: resolved.glyph,
-                fontFamily: resolved.fontFamily || this.params.glyphFontFamily,
-                fontWeight: resolved.fontWeight || this.params.glyphFontWeight
-            };
-        }
-
-        if (resolved.renderMode === "class") {
-            return this._resolveFontClassRenderSpec(resolved.className, resolved);
-        }
-
-        return null;
+        return $.FlexRenderer.UIControls.IconLibrary._resolveRenderSpec(
+            resolved,
+            this.params.glyphFontFamily,
+            this.params.glyphFontWeight
+        );
     }
 
     _resolveFontClassRenderSpec(className, resolved) {
-        if (typeof document === "undefined") {
-            return null;
-        }
-
-        const probe = document.createElement("i");
-        probe.className = className;
-        probe.setAttribute("aria-hidden", "true");
-        probe.style.position = "absolute";
-        probe.style.left = "-10000px";
-        probe.style.top = "-10000px";
-        probe.style.fontSize = `${Math.max(16, Number.parseInt(this.params.previewSize, 10) || 34)}px`;
-        document.body.appendChild(probe);
-
-        try {
-            const pseudo = window.getComputedStyle(probe, "::before");
-            let content = pseudo.getPropertyValue("content");
-            if (!content || content === "none" || content === "normal") {
-                const base = window.getComputedStyle(probe);
-                content = base.getPropertyValue("content");
-            }
-
-            const text = this._decodeCssContent(content);
-            if (!text) {
-                return null;
-            }
-
-            return {
-                text,
-                fontFamily: pseudo.fontFamily || resolved.fontFamily,
-                fontWeight: pseudo.fontWeight || resolved.fontWeight || "900"
-            };
-        } finally {
-            probe.remove();
-        }
+        return $.FlexRenderer.UIControls.IconLibrary._resolveFontClassRenderSpec(
+            className,
+            resolved,
+            this.params.glyphFontWeight
+        );
     }
 
     _decodeCssContent(content) {
-        if (!content || content === "none" || content === "normal") {
-            return null;
-        }
-
-        let value = String(content).trim();
-        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            value = value.slice(1, -1);
-        }
-
-        value = value.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_, hex) => {
-            try {
-                return String.fromCodePoint(Number.parseInt(hex, 16));
-            } catch (_) {
-                return "";
-            }
-        });
-
-        value = value.replace(/\\\\/g, "\\");
-        value = value.replace(/\\"/g, '"');
-        value = value.replace(/\\'/g, "'");
-
-        return value || null;
+        return $.FlexRenderer.UIControls.IconLibrary._decodeCssContent(content);
     }
 
     _renderIconCanvas(renderSpec) {
         const size = Math.max(16, Number.parseInt(this.params.size, 10) || 160);
         const padding = Math.max(0, Number.parseInt(this.params.padding, 10) || 0);
-
-        const canvas = document.createElement("canvas");
-        canvas.width = size;
-        canvas.height = size;
-
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, size, size);
-
-        if (this.params.backgroundColor && this.params.backgroundColor !== "#00000000") {
-            ctx.fillStyle = this.params.backgroundColor;
-            ctx.fillRect(0, 0, size, size);
-        }
-
-        const availableSize = Math.max(8, size - (padding * 2));
-        const measureAt = (fontSize) => {
-            ctx.font = `${renderSpec.fontWeight || "400"} ${fontSize}px ${renderSpec.fontFamily || this.params.glyphFontFamily}`;
-            return ctx.measureText(renderSpec.text);
-        };
-
-        let metrics = measureAt(size);
-        let boundsWidth = Math.max(
-            1,
-            (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0),
-            metrics.width || 0
-        );
-        let boundsHeight = Math.max(
-            1,
-            (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
-            size * 0.7
-        );
-        const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight, 1.0);
-        const fontSize = Math.max(8, Math.floor(size * fitScale));
-        metrics = measureAt(fontSize);
-
-        ctx.fillStyle = this.currentColor;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "alphabetic";
-        ctx.lineJoin = "round";
-        ctx.miterLimit = 2;
-
-        const left = metrics.actualBoundingBoxLeft || 0;
-        const right = metrics.actualBoundingBoxRight || metrics.width || 0;
-        const ascent = metrics.actualBoundingBoxAscent || fontSize * 0.75;
-        const descent = metrics.actualBoundingBoxDescent || fontSize * 0.25;
-        const x = (size / 2) + ((left - right) / 2);
-        const y = (size / 2) + ((ascent - descent) / 2);
-
-        const strokeWidth = Math.max(1, fontSize * 0.035);
-        ctx.lineWidth = strokeWidth;
-        ctx.strokeStyle = this.currentColor;
-        ctx.strokeText(renderSpec.text, x, y);
-        ctx.fillText(renderSpec.text, x, y);
-
-        return canvas;
+        return $.FlexRenderer.UIControls.IconLibrary._renderIconCanvas(renderSpec, {
+            size,
+            padding,
+            color: this.currentColor,
+            backgroundColor: this.params.backgroundColor,
+            glyphFontFamily: this.params.glyphFontFamily
+        });
     }
 
     _renderIconPreview(node, query) {

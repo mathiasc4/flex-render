@@ -1,66 +1,52 @@
 (function ($) {
-/**
- * MVTTileJSONSource
- * ------------------
- * A TileSource that reads TileJSON metadata, fetches MVT (.mvt/.pbf) tiles,
- * decodes + tessellates them on a Web Worker, and returns FlexDrawer-compatible
- * caches using the `vector-mesh` format.
- *
- * Requirements:
- *  - flex-drawer.js patched to accept `vector-mesh` (see vector-mesh-support.patch)
- *  - flex-webgl2.js patched to draw geometry in first pass (see flex-webgl2-vector-pass.patch)
- *
- * Usage:
- *   const src = await OpenSeadragon.MVTTileJSONSource.from(
- *     'https://tiles.example.com/basemap.json',
- *     { style: defaultStyle() }
- *   );
- *   viewer.addTiledImage({ tileSource: src });
- *
- * Usage (local server for testing via docker):
- *     Download desired vector tiles from the server, and run:
- *       docker run -it --rm -p 8080:8080 -v /path/to/data:/data maptiler/tileserver-gl-light:latest
- *
- * Alternatives (not supported):
- *      PMTiles range queries
- *      Raw files: pip install mbutil && mb-util --image_format=pbf mytiles.mbtiles ./tiles
- *
- *
- * TODO OSD uses // eslint-disable-next-line compat/compat to disable URL warns for opera mini - what is the purpose of supporting it at all
- */
-$.MVTTileSource = class extends $.TileSource {
-    constructor({
-                    template,
-                    scheme = 'xyz',
-                    tileSize = 512,
-                    minLevel = 0,
-                    maxLevel = 14,
-                    width,
-                    height,
-                    extent = 4096,
-                    style,
-                    useNativeLines = false,
-                    httpAdapter = null
-                }) {
-        super({ width, height, tileSize, minLevel, maxLevel });
+// Shared MVT worker pipeline for concrete vector tile sources.
+class AbstractMVTTileSource extends $.TileSource {
+    constructor(options = {}) {
+        const normalizedOptions = {
+            tileSize: 512,
+            minLevel: 0,
+            maxLevel: 14,
+            ...options,
+        };
+
+        super(normalizedOptions);
+
+        if (normalizedOptions._isVector !== false) {
+            this._initVectorPipeline(normalizedOptions);
+        }
+    }
+
+    _initVectorPipeline({
+        template = null,
+        scheme = 'xyz',
+        extent = 4096,
+        style,
+        useNativeLines = false,
+        httpAdapter = null,
+    } = {}) {
         this.template = template;
         this.scheme = scheme;
         this.extent = extent;
         this.style = style || defaultStyle();
         this.useNativeLines = useNativeLines === true;
 
-        // Resolve adapter: explicit option wins, fall back to the drawer-level default.
+        // Shared worker HTTP bridge; also used by GeoJSONTileSource.
         this._httpAdapter = httpAdapter || ($.FlexDrawer && $.FlexDrawer._defaultHttpAdapter) || null;
-
         this._worker = makeWorker();
-        this._pending = new Map(); // key -> {resolve,reject}
+        this._pending = new Map();
 
-        // Install the HTTP bridge before any postMessage that may trigger fetches.
+        // Icon resolution state. Icons are font-rendered to canvases on the
+        // main thread (the worker can't touch DOM), uploaded into firstAtlas,
+        // and reported to the worker as a class -> textureId map.
+        this._iconResolutionState = 'pending';
+        this._iconMap = {};
+        this._iconRetryAttempts = 0;
+        this._iconRetryTimer = null;
+
         this._httpBridge = (this._httpAdapter && $.FlexDrawer && typeof $.FlexDrawer.installHttpBridge === 'function')
             ? $.FlexDrawer.installHttpBridge(this._worker, this._httpAdapter)
             : null;
 
-        // Wire worker responses
         this._worker.onmessage = (e) => {
             const msg = e.data;
             if (!msg || !msg.key) {
@@ -91,13 +77,239 @@ $.MVTTileSource = class extends $.TileSource {
             }
         };
 
-        // Send config once
         this._worker.postMessage({
             type: 'config',
             extent: this.extent,
             style: this.style,
-            useNativeLines: this.useNativeLines
+            useNativeLines: this.useNativeLines,
         });
+    }
+
+    downloadTileStart(context) {
+        const tile = context.tile;
+        const key = context.src;
+
+        if (this._iconResolutionState === 'pending') {
+            this._resolveIconsFromContext(context);
+        }
+
+        const list = this._pending.get(key);
+        if (list) {
+            list.push(context);
+            return;
+        }
+
+        this._pending.set(key, [context]);
+
+        this._worker.postMessage({
+            type: 'tile',
+            key: key,
+            z: tile.level,
+            x: tile.x,
+            y: tile.y,
+            url: context.src,
+        });
+    }
+
+    _resolveIconsFromContext(context) {
+        // Resolve the backend lazily — TileSources are constructed before any
+        // FlexDrawer/renderer exists, so we walk up from the tile on first use.
+        const tiledImage = context && context.tile && context.tile.tiledImage;
+        const backend = tiledImage
+            && tiledImage.viewer
+            && tiledImage.viewer.drawer
+            && tiledImage.viewer.drawer.renderer
+            && tiledImage.viewer.drawer.renderer.backend;
+        if (!backend || !backend.firstAtlas) {
+            // Not a Flex-backed viewer — skip icon resolution silently.
+            this._iconResolutionState = 'unavailable';
+            return;
+        }
+        this._tiledImage = tiledImage;
+        this._iconResolutionState = 'partial';
+        this._resolveIcons(backend);
+    }
+
+    _collectIconClassSpecs() {
+        const specs = [];
+        const layers = (this.style && this.style.layers) || {};
+        for (const layerName of Object.keys(layers)) {
+            const layer = layers[layerName];
+            if (!layer || layer.type !== 'icon' || !layer.classes) {
+                continue;
+            }
+            const iconSize = Number.isFinite(layer.iconSize) ? layer.iconSize : 256;
+            for (const className of Object.keys(layer.classes)) {
+                const cls = layer.classes[className] || {};
+                specs.push({
+                    layerName,
+                    className,
+                    spec: {
+                        icon: cls.icon,
+                        iconSet: cls.iconSet || 'fa-solid-common',
+                        size: Number.isFinite(cls.iconSize) ? cls.iconSize : iconSize,
+                        padding: Number.isFinite(cls.padding) ? cls.padding : 4,
+                        color: cls.color || '#111111',
+                        backgroundColor: cls.backgroundColor || '#00000000',
+                        glyphFontFamily: cls.glyphFontFamily,
+                        glyphFontWeight: cls.glyphFontWeight
+                    }
+                });
+            }
+        }
+        return specs;
+    }
+
+    _resolveIcons(backend) {
+        const lib = $.FlexRenderer && $.FlexRenderer.UIControls && $.FlexRenderer.UIControls.IconLibrary;
+        if (!lib || typeof lib.renderIconToCanvas !== 'function') {
+            this._iconResolutionState = 'unavailable';
+            return;
+        }
+
+        const all = this._collectIconClassSpecs();
+        if (!all.length) {
+            this._iconResolutionState = 'resolved';
+            return;
+        }
+
+        const stillPending = [];
+        let changed = false;
+
+        for (const entry of all) {
+            const existing = this._iconMap[entry.layerName] && this._iconMap[entry.layerName][entry.className];
+            if (Number.isInteger(existing) && existing >= 0) {
+                continue;
+            }
+            const result = lib.renderIconToCanvas(entry.spec);
+            if (result.ready) {
+                const textureId = lib.uploadToAtlas(backend.firstAtlas, result);
+                if (Number.isInteger(textureId) && textureId >= 0) {
+                    this._iconMap[entry.layerName] = this._iconMap[entry.layerName] || {};
+                    this._iconMap[entry.layerName][entry.className] = textureId;
+                    changed = true;
+                    continue;
+                }
+            }
+            if (result.retry) {
+                stillPending.push(entry);
+            }
+        }
+
+        if (changed) {
+            this._worker.postMessage({
+                type: 'icons',
+                iconMap: this._iconMap,
+            });
+            // Force already-decoded tiles to re-emit with the new textureIds.
+            if (this._tiledImage && typeof this._tiledImage.reset === 'function') {
+                try {
+                    this._tiledImage.reset();
+                } catch (_) {
+                    // noop
+                }
+            }
+        }
+
+        if (stillPending.length && this._iconRetryAttempts < 10) {
+            this._iconResolutionState = 'partial';
+            this._scheduleIconRetry(backend);
+        } else {
+            this._iconResolutionState = 'resolved';
+            if (this._iconRetryTimer) {
+                clearTimeout(this._iconRetryTimer);
+                this._iconRetryTimer = null;
+            }
+        }
+    }
+
+    /**
+     * Re-apply the current style after a runtime icon-mapping change. Resets
+     * the resolution state, reposts the config to the worker, and forces the
+     * tiled image to re-decode so the next pass picks up new textureIds.
+     */
+    refreshIcons() {
+        this._iconResolutionState = 'pending';
+        this._iconMap = {};
+        this._iconRetryAttempts = 0;
+        if (this._iconRetryTimer && this._iconRetryTimer !== -1) {
+            clearTimeout(this._iconRetryTimer);
+        }
+        this._iconRetryTimer = null;
+
+        this._worker.postMessage({
+            type: 'config',
+            extent: this.extent,
+            style: this.style,
+            useNativeLines: this.useNativeLines,
+        });
+        // Clear the worker's accumulated iconMap so removed classes drop out.
+        this._worker.postMessage({ type: 'icons', iconMap: {}, replace: true });
+
+        if (this._tiledImage && typeof this._tiledImage.reset === 'function') {
+            try {
+                this._tiledImage.reset();
+            } catch (_) {
+                // noop
+            }
+        }
+    }
+
+    _scheduleIconRetry(backend) {
+        if (this._iconRetryTimer) {
+            return;
+        }
+        this._iconRetryAttempts += 1;
+        const fonts = typeof document !== 'undefined' && document.fonts;
+        const retry = () => {
+            this._iconRetryTimer = null;
+            this._resolveIcons(backend);
+        };
+        if (this._iconRetryAttempts === 1 && fonts && typeof fonts.ready === 'object') {
+            // First retry: wait for the browser's font-loading promise when available.
+            fonts.ready.then(retry, retry);
+            this._iconRetryTimer = -1; // sentinel: pending via promise, not timer
+        } else {
+            this._iconRetryTimer = setTimeout(retry, 250);
+        }
+    }
+}
+
+// attach to flex renderer, since OSD treats all $.XXXTileSource named children as source candidates
+$.FlexRenderer.AbstractMVTTileSource = AbstractMVTTileSource;
+
+/**
+ * MVTTileJSONSource
+ * ------------------
+ * A TileSource that reads TileJSON metadata, fetches MVT (.mvt/.pbf) tiles,
+ * decodes + tessellates them on a Web Worker, and returns FlexDrawer-compatible
+ * caches using the `vector-mesh` format.
+ *
+ * Requirements:
+ *  - flex-drawer.js patched to accept `vector-mesh` (see vector-mesh-support.patch)
+ *  - flex-webgl2.js patched to draw geometry in first pass (see flex-webgl2-vector-pass.patch)
+ *
+ * Usage:
+ *   const src = await OpenSeadragon.MVTTileJSONSource.from(
+ *     'https://tiles.example.com/basemap.json',
+ *     { style: defaultStyle() }
+ *   );
+ *   viewer.addTiledImage({ tileSource: src });
+ *
+ * Usage (local server for testing via docker):
+ *     Download desired vector tiles from the server, and run:
+ *       docker run -it --rm -p 8080:8080 -v /path/to/data:/data maptiler/tileserver-gl-light:latest
+ *
+ * Alternatives (not supported):
+ *      PMTiles range queries
+ *      Raw files: pip install mbutil && mb-util --image_format=pbf mytiles.mbtiles ./tiles
+ *
+ *
+ * TODO OSD uses // eslint-disable-next-line compat/compat to disable URL warns for opera mini - what is the purpose of supporting it at all
+ */
+$.MVTTileSource = class extends $.FlexRenderer.AbstractMVTTileSource {
+    constructor(options) {
+        super(options);
     }
 
     /**
@@ -210,31 +422,6 @@ $.MVTTileSource = class extends $.TileSource {
     getTileHashKey(level, x, y) {
         return `mvt:${this.useNativeLines ? 'native-lines' : 'stroke-lines'}:${this.getTileUrl(level, x, y)}`;
     }
-
-    /**
-     * Return a FlexDrawer cache object directly (vector-mesh).
-     */
-    downloadTileStart(context) {
-        const tile = context.tile;
-        const key = context.src;
-
-        const list = this._pending.get(key);
-        if (list) {
-            list.push(context);
-            return;
-        }
-
-        this._pending.set(key, [ context ]);
-
-        this._worker.postMessage({
-            type: 'tile',
-            key: key,
-            z: tile.level,
-            x: tile.x,
-            y: tile.y,
-            url: context.src
-        });
-    }
 };
 
 // ---------- Helpers ----------
@@ -248,25 +435,6 @@ function packMesh(m) {
         lineWidth: Number.isFinite(m.lineWidth) && m.lineWidth > 0 ? m.lineWidth : undefined,
     };
 }
-
-// TODO: make icons dynamic
-// const iconMapping = {
-//     country: {
-//         textureId: 0,
-//         width: 256,
-//         height: 256,
-//     },
-//     city: {
-//         textureId: 1,
-//         width: 256,
-//         height: 256,
-//     },
-//     village: {
-//         textureId: 2,
-//         width: 256,
-//         height: 256,
-//     },
-// };
 
 function defaultStyle() {
     // Super-minimal style mapping; replace as needed.
@@ -285,12 +453,22 @@ function defaultStyle() {
             aeroway:        { type: 'fill', color: [0.10, 0.80, 0.60, 0.80] },
             poi:            { type: 'point', color: [0.00, 0.00, 0.00, 1.00], size: 10.0 },
             housenumber:    { type: 'point', color: [0.50, 0.00, 0.50, 1.00], size: 8.0 },
-            // place:          {
-            //     type: 'icon',
-            //     color: [0.80, 0.10, 0.10, 1.00],
-            //     size: 0.8,
-            //     iconMapping: iconMapping, // TODO: somehow pass a function instead?
-            // },
+            // Place labels from OpenMapTiles schema (country/city/village/...).
+            // Uses HTML-glyph icons so it works without external fonts; switch
+            // iconSet to "fa-solid-common" (etc.) to use Font Awesome.
+            place: {
+                type: 'icon',
+                size: 0.4,
+                iconSize: 256,
+                classes: {
+                    country: { icon: '⌖', iconSet: 'html-glyphs', color: '#0a3a0a' },
+                    state:   { icon: '◆', iconSet: 'html-glyphs', color: '#06366c' },
+                    city:    { icon: '●', iconSet: 'html-glyphs', color: '#c03030' },
+                    town:    { icon: '●', iconSet: 'html-glyphs', color: '#d06060' },
+                    village: { icon: '▲', iconSet: 'html-glyphs', color: '#946334' },
+                    hamlet:  { icon: '▴', iconSet: 'html-glyphs', color: '#946334' },
+                },
+            },
         },
         // Default if layer not listed
         fallback: { type: 'line', color: [0.50, 0.50, 0.50, 1.00], widthPx: 0.8, join: 'bevel', cap: 'butt' }
