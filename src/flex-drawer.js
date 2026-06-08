@@ -2445,6 +2445,54 @@
             }
         }
 
+        /**
+         * Override the image-smoothing flag for a single tiledImage. Falls back to the
+         * drawer-wide value when undefined.
+         *
+         * Note: the sampler filter is baked into prepared textures at upload time, and
+         * OpenSeadragon's tile cache is keyed by tile content, not tiledImage identity.
+         * If two tiledImages reference the same source tiles, they will share the
+         * cached prepared textures — the first uploader wins the filter. In the common
+         * case where the per-source flag matches the source's identity, this is fine;
+         * setInternalCacheNeedsRefresh() forces re-preparation when the flag flips.
+         *
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @param {Boolean|null|undefined} enabled true → gl.LINEAR, false → gl.NEAREST,
+         *     null/undefined → inherit drawer default
+         */
+        setTiledImageSmoothingEnabled(tiledImage, enabled){
+            if (!tiledImage) {
+                return;
+            }
+            const normalized = enabled === null || enabled === undefined ? undefined : !!enabled;
+            if (tiledImage.__flexImageSmoothingEnabled === normalized) {
+                return;
+            }
+            tiledImage.__flexImageSmoothingEnabled = normalized;
+            this.setInternalCacheNeedsRefresh();
+            if (typeof tiledImage.requestInvalidate === "function") {
+                tiledImage.requestInvalidate(true);
+            } else {
+                this.viewer.requestInvalidate(false);
+            }
+        }
+
+        /**
+         * Resolve the effective image-smoothing flag for a tiledImage, honoring the
+         * per-tiledImage override when present.
+         *
+         * @private
+         * @param {OpenSeadragon.TiledImage} [tiledImage]
+         * @returns {Boolean}
+         */
+        _resolveImageSmoothingEnabled(tiledImage){
+            const override = tiledImage && tiledImage.__flexImageSmoothingEnabled;
+            if (override === true || override === false) {
+                return override;
+            }
+            return !!this._imageSmoothingEnabled;
+        }
+
         internalCacheCreate(cache, tile) {
             const tiledImage = tile.tiledImage;
             const normalized = this._normalizeCacheData(cache);
@@ -2495,9 +2543,9 @@
          * @private
          * @returns {RasterTileTextureOptions}
          */
-        _getPreparedTileTextureOptions() {
+        _getPreparedTileTextureOptions(tiledImage) {
             return {
-                imageSmoothingEnabled: !!this._imageSmoothingEnabled
+                imageSmoothingEnabled: this._resolveImageSmoothingEnabled(tiledImage)
             };
         }
 
@@ -2615,7 +2663,7 @@
             if (isGpuTextureSet) {
                 const result = await this.renderer.prepareGpuTextureTile({
                     data: data,
-                    textureOptions: this._getPreparedTileTextureOptions()
+                    textureOptions: this._getPreparedTileTextureOptions(tiledImage)
                 });
 
                 if (!result.ok) {
@@ -2644,7 +2692,7 @@
 
             const result = await this.renderer.prepareBitmapTile({
                 data: data,
-                textureOptions: this._getPreparedTileTextureOptions()
+                textureOptions: this._getPreparedTileTextureOptions(tiledImage)
             });
 
             if (!result.ok) {
