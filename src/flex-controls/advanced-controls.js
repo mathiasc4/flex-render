@@ -1685,7 +1685,11 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
     const sets = {
         "html-glyphs": {
             kind: "glyph",
-            fontFamily: "'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif",
+            // Color emoji fonts first so the browser renders glyphs
+            // present in those fonts (most emoji) in their native colors.
+            // Symbol fonts (monochrome) catch shapes the emoji fonts
+            // don't have (★, ♥, geometric symbols, etc.).
+            fontFamily: "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif",
             fontWeight: "400",
             items: htmlGlyphs
         },
@@ -1944,10 +1948,10 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
             const iconSet = spec.iconSet || "fa-solid-common";
             const size = Math.max(16, Number.parseInt(spec.size, 10) || 160);
             const padding = Math.max(0, Number.parseInt(spec.padding, 10) || 0);
-            const color = spec.color || "#111111";
+            const color = spec.color || "#ff0000";
             const backgroundColor = spec.backgroundColor || "#00000000";
             const glyphFontFamily = spec.glyphFontFamily
-                || "'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif";
+                || "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif";
             const glyphFontWeight = spec.glyphFontWeight || "400";
 
             if (!iconQuery) {
@@ -1984,7 +1988,8 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
                 fontWeight: renderSpec.fontWeight
             });
 
-            return { canvas, cacheKey, ready: true, retry: false };
+            const colored = this.isIconColored(renderSpec, glyphFontFamily);
+            return { canvas, cacheKey, ready: true, retry: false, colored };
         },
 
         uploadToAtlas(atlas, canvasResult) {
@@ -2088,59 +2093,138 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
 
         _renderIconCanvas(renderSpec, opts) {
             const { size, padding, color, backgroundColor, glyphFontFamily } = opts;
-            const canvas = document.createElement("canvas");
-            canvas.width = size;
-            canvas.height = size;
+            const text = renderSpec.text;
+            const fontFamily = renderSpec.fontFamily || glyphFontFamily;
+            const fontWeight = renderSpec.fontWeight || "400";
 
-            const ctx = canvas.getContext("2d");
-            ctx.clearRect(0, 0, size, size);
+            // Detection cache: whether the browser draws this glyph via
+            // its own color tables (color emoji) vs. honoring fillStyle
+            // (monochrome). Determined purely by text+font, not color/size.
+            this._coloredCache = this._coloredCache || {};
+            const detectKey = `${text}::${fontFamily}::${fontWeight}`;
+            let colored = this._coloredCache[detectKey];
 
-            if (backgroundColor && backgroundColor !== "#00000000") {
-                ctx.fillStyle = backgroundColor;
-                ctx.fillRect(0, 0, size, size);
-            }
+            const draw = (fillColor, withStroke) => {
+                const canvas = document.createElement("canvas");
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext("2d");
+                ctx.clearRect(0, 0, size, size);
 
-            const availableSize = Math.max(8, size - (padding * 2));
-            const measureAt = (fontSize) => {
-                ctx.font = `${renderSpec.fontWeight || "400"} ${fontSize}px ${renderSpec.fontFamily || glyphFontFamily}`;
-                return ctx.measureText(renderSpec.text);
+                if (backgroundColor && backgroundColor !== "#00000000") {
+                    ctx.fillStyle = backgroundColor;
+                    ctx.fillRect(0, 0, size, size);
+                }
+
+                const availableSize = Math.max(8, size - (padding * 2));
+                const measureAt = (fontSize) => {
+                    ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+                    return ctx.measureText(text);
+                };
+
+                let metrics = measureAt(size);
+                const boundsWidth = Math.max(
+                    1,
+                    (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0),
+                    metrics.width || 0
+                );
+                const boundsHeight = Math.max(
+                    1,
+                    (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
+                    size * 0.7
+                );
+                const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight, 1.0);
+                const fontSize = Math.max(8, Math.floor(size * fitScale));
+                metrics = measureAt(fontSize);
+
+                ctx.fillStyle = fillColor;
+                ctx.textAlign = "left";
+                ctx.textBaseline = "alphabetic";
+                ctx.lineJoin = "round";
+                ctx.miterLimit = 2;
+
+                const left = metrics.actualBoundingBoxLeft || 0;
+                const right = metrics.actualBoundingBoxRight || metrics.width || 0;
+                const ascent = metrics.actualBoundingBoxAscent || fontSize * 0.75;
+                const descent = metrics.actualBoundingBoxDescent || fontSize * 0.25;
+                const x = (size / 2) + ((left - right) / 2);
+                const y = (size / 2) + ((ascent - descent) / 2);
+
+                if (withStroke) {
+                    const strokeWidth = Math.max(1, fontSize * 0.035);
+                    ctx.lineWidth = strokeWidth;
+                    ctx.strokeStyle = fillColor;
+                    ctx.strokeText(text, x, y);
+                }
+                ctx.fillText(text, x, y);
+                return canvas;
             };
 
-            let metrics = measureAt(size);
-            const boundsWidth = Math.max(
-                1,
-                (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0),
-                metrics.width || 0
-            );
-            const boundsHeight = Math.max(
-                1,
-                (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
-                size * 0.7
-            );
-            const fitScale = Math.min(availableSize / boundsWidth, availableSize / boundsHeight, 1.0);
-            const fontSize = Math.max(8, Math.floor(size * fitScale));
-            metrics = measureAt(fontSize);
+            if (colored === undefined) {
+                // Probe-render with neutral color; color emoji ignore
+                // fillStyle and reveal themselves via non-zero RGB pixels.
+                const probe = draw("#000000", false);
+                colored = this._detectColoredCanvas(probe);
+                this._coloredCache[detectKey] = colored;
 
-            ctx.fillStyle = color;
-            ctx.textAlign = "left";
-            ctx.textBaseline = "alphabetic";
-            ctx.lineJoin = "round";
-            ctx.miterLimit = 2;
+                if (colored) {
+                    this._applyTint(probe, color);
+                    return probe;
+                }
+                return draw(color, true);
+            }
 
-            const left = metrics.actualBoundingBoxLeft || 0;
-            const right = metrics.actualBoundingBoxRight || metrics.width || 0;
-            const ascent = metrics.actualBoundingBoxAscent || fontSize * 0.75;
-            const descent = metrics.actualBoundingBoxDescent || fontSize * 0.25;
-            const x = (size / 2) + ((left - right) / 2);
-            const y = (size / 2) + ((ascent - descent) / 2);
+            if (colored) {
+                const c = draw("#000000", false);
+                this._applyTint(c, color);
+                return c;
+            }
+            return draw(color, true);
+        },
 
-            const strokeWidth = Math.max(1, fontSize * 0.035);
-            ctx.lineWidth = strokeWidth;
-            ctx.strokeStyle = color;
-            ctx.strokeText(renderSpec.text, x, y);
-            ctx.fillText(renderSpec.text, x, y);
+        // Sample non-transparent pixels; any non-zero RGB component means
+        // the browser drew its own colors instead of honoring fillStyle.
+        _detectColoredCanvas(canvas) {
+            let imageData;
+            try {
+                imageData = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
+            } catch (_) {
+                return false;
+            }
+            const data = imageData.data;
+            const len = data.length;
+            for (let i = 0; i < len; i += 4) {
+                if (data[i + 3] < 8) {
+                    continue;
+                }
+                if (data[i] > 8 || data[i + 1] > 8 || data[i + 2] > 8) {
+                    return true;
+                }
+            }
+            return false;
+        },
 
-            return canvas;
+        // source-atop fills only existing pixels, preserving the glyph's
+        // alpha mask. Alpha 0.5 keeps the original hues recognizable.
+        _applyTint(canvas, tintColor, alpha = 0.5) {
+            const ctx = canvas.getContext("2d");
+            ctx.save();
+            ctx.globalCompositeOperation = "source-atop";
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = tintColor;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+        },
+
+        isIconColored(renderSpec, glyphFontFamily) {
+            if (!renderSpec || !renderSpec.text) {
+                return false;
+            }
+            this._coloredCache = this._coloredCache || {};
+            const fontFamily = renderSpec.fontFamily || glyphFontFamily || "";
+            const fontWeight = renderSpec.fontWeight || "400";
+            const detectKey = `${renderSpec.text}::${fontFamily}::${fontWeight}`;
+            return Boolean(this._coloredCache[detectKey]);
         }
     };
 })();
@@ -2159,11 +2243,11 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
                 { name: "iconSet", type: "string", default: "fa-solid-common", allowedValues: $.FlexRenderer.UIControls.IconLibrary.getSetNames() },
                 { name: "size", type: "number", default: 160 },
                 { name: "padding", type: "number", default: 4 },
-                { name: "color", type: "string", default: "#111111" },
+                { name: "color", type: "string", default: "#ff0000" },
                 { name: "backgroundColor", type: "string", default: "#00000000" },
-                { name: "previewSize", type: "number", default: 34 },
+                { name: "previewSize", type: "number", default: 27 },
                 { name: "maxResults", type: "number", default: 120 },
-                { name: "glyphFontFamily", type: "string", default: "'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif" },
+                { name: "glyphFontFamily", type: "string", default: "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif" },
                 { name: "glyphFontWeight", type: "string", default: "400" }
             ],
             glType: "vec4"
@@ -2172,7 +2256,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
 
     init() {
         this.selectedSet = this.load(this.params.iconSet || "fa-solid-common", "set") || (this.params.iconSet || "fa-solid-common");
-        this.currentColor = this.params.color || "#111111";
+        this.currentColor = this.params.color || "#ff0000";
         this.encodedValue = this.load(this.params.default);
         this.textureId = -1;
 
@@ -2201,7 +2285,10 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
                 const decoded = this._decodeStoredValue(this.encodedValue || "");
                 this._renderIconResults(results, queryInput ? queryInput.value : decoded.icon);
                 if (queryInput) {
-                    queryInput.focus();
+                    // preventScroll: input lives inside the side-menu's
+                    // overflow-y:auto ancestor; default focus would
+                    // scroll-into-view the scroller and jump the menu.
+                    queryInput.focus({ preventScroll: true });
                     queryInput.select();
                 }
             });
@@ -2228,8 +2315,14 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
 
         if (colorInput) {
             colorInput.value = this.currentColor;
+            // "input" fires continuously during color-picker drag. Each
+            // _applyUiState call uploads a fresh atlas entry per color
+            // value, so dragging alone can exhaust the 256-slot atlas.
+            // During drag we only re-render the visual preview; the
+            // atlas commit + invalidate runs once on "change" (release).
             colorInput.addEventListener("input", () => {
-                this._applyUiState(queryInput ? queryInput.value : "", colorInput.value, preview, false);
+                this.currentColor = this._normalizeColor(colorInput.value);
+                this._renderIconPreview(preview, queryInput ? queryInput.value : "");
             });
             colorInput.addEventListener("change", () => {
                 this._applyUiState(queryInput ? queryInput.value : "", colorInput.value, preview, true);
@@ -2322,7 +2415,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     }
 
     _decodeStoredValue(encodedValue) {
-        const fallbackColor = this._normalizeColor(this.currentColor || this.params.color || "#111111");
+        const fallbackColor = this._normalizeColor(this.currentColor || this.params.color || "#ff0000");
         if (encodedValue && typeof encodedValue === "object") {
             return {
                 icon: String(encodedValue.icon || encodedValue.default || ""),
@@ -2355,7 +2448,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     _encodeStoredValue(iconValue, colorValue) {
         return JSON.stringify({
             icon: String(iconValue || ""),
-            color: this._normalizeColor(colorValue || this.currentColor || this.params.color || "#111111")
+            color: this._normalizeColor(colorValue || this.currentColor || this.params.color || "#ff0000")
         });
     }
 
@@ -2367,7 +2460,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         if (/^#[0-9a-f]{3}$/i.test(raw)) {
             return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
         }
-        return String(this.params.color || "#111111").toLowerCase();
+        return String(this.params.color || "#ff0000").toLowerCase();
     }
 
     _applyUiState(iconQuery, colorValue, preview, invalidate) {
@@ -2422,29 +2515,80 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         if (!resolved) {
             node.textContent = "?";
             node.title = "Unknown icon";
+            this._updateColorMode(false);
             return;
         }
 
         node.title = `${resolved.label} (${resolved.set})`;
 
-        if (resolved.renderMode === "class") {
-            const icon = document.createElement("i");
-            icon.className = resolved.className;
-            icon.setAttribute("aria-hidden", "true");
-            icon.style.fontSize = `${Math.max(18, Number.parseInt(this.params.previewSize, 10) || 34)}px`;
-            icon.style.color = this.currentColor;
-            node.appendChild(icon);
-            return;
+        const previewSize = Math.max(18, Number.parseInt(this.params.previewSize, 10) || 27);
+        const result = this._buildIconVisual(query, resolved.set, resolved, previewSize);
+        if (result && result.node) {
+            node.appendChild(result.node);
+        }
+        this._updateColorMode(Boolean(result && result.colored));
+    }
+
+    _updateColorMode(colored) {
+        const badge = document.getElementById(`${this.id}_color_mode`);
+        if (badge) {
+            badge.classList.toggle("hidden", !colored);
+        }
+        const colorInput = document.getElementById(`${this.id}_color`);
+        if (colorInput) {
+            colorInput.title = colored ? "Tint color (applied over original colors)" : "Icon color";
+        }
+    }
+
+    // Render through the same canvas pipeline the texture uses, so the
+    // picker / trigger preview never diverge from the rendered output.
+    // Returns { node, colored }. Falls back to DOM-glyph/CSS-class
+    // rendering only if the canvas pipeline isn't ready (e.g. Font
+    // Awesome CSS still loading); fallback assumes monochrome.
+    _buildIconVisual(iconName, iconSet, resolved, previewSize) {
+        const canvasResult = $.FlexRenderer.UIControls.IconLibrary.renderIconToCanvas({
+            icon: iconName,
+            iconSet: iconSet || this.selectedSet,
+            size: 64,
+            padding: 4,
+            color: this.currentColor,
+            backgroundColor: "#00000000",
+            glyphFontFamily: this.params.glyphFontFamily,
+            glyphFontWeight: this.params.glyphFontWeight
+        });
+
+        if (canvasResult && canvasResult.canvas) {
+            const canvas = canvasResult.canvas;
+            canvas.style.width = `${previewSize}px`;
+            canvas.style.height = `${previewSize}px`;
+            // inline-block + middle alignment mirrors the original <i>/<span>
+            // glyph behavior so icons flow inline alongside siblings.
+            canvas.style.display = "inline-block";
+            canvas.style.verticalAlign = "middle";
+            return { node: canvas, colored: Boolean(canvasResult.colored) };
         }
 
-        const span = document.createElement("span");
-        span.textContent = resolved.glyph;
-        span.style.fontFamily = resolved.fontFamily || this.params.glyphFontFamily;
-        span.style.fontWeight = resolved.fontWeight || this.params.glyphFontWeight;
-        span.style.fontSize = `${Math.max(18, Number.parseInt(this.params.previewSize, 10) || 34)}px`;
-        span.style.lineHeight = "1";
-        span.style.color = this.currentColor;
-        node.appendChild(span);
+        if (resolved && resolved.renderMode === "class" && resolved.className) {
+            const i = document.createElement("i");
+            i.className = resolved.className;
+            i.setAttribute("aria-hidden", "true");
+            i.style.fontSize = `${previewSize}px`;
+            i.style.color = this.currentColor;
+            return { node: i, colored: false };
+        }
+
+        if (resolved && resolved.glyph) {
+            const span = document.createElement("span");
+            span.textContent = resolved.glyph;
+            span.style.fontFamily = resolved.fontFamily || this.params.glyphFontFamily;
+            span.style.fontWeight = resolved.fontWeight || this.params.glyphFontWeight;
+            span.style.fontSize = `${previewSize}px`;
+            span.style.lineHeight = "1";
+            span.style.color = this.currentColor;
+            return { node: span, colored: false };
+        }
+
+        return null;
     }
 
     _renderIconResults(node, query) {
@@ -2454,36 +2598,36 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
 
         const maxResults = Math.max(20, Number.parseInt(this.params.maxResults, 10) || 120);
         const icons = $.FlexRenderer.UIControls.IconLibrary.searchAll(query, maxResults);
+        const previewSize = Math.max(18, Number.parseInt(this.params.previewSize, 10) || 27);
 
-        node.innerHTML = icons.map(icon => {
-            const previewHtml = icon.className
-                ? `<i class="${icon.className} text-2xl" aria-hidden="true"></i>`
-                : `<span class="text-2xl leading-none">${icon.glyph}</span>`;
+        node.innerHTML = "";
 
-            return `
-<button type="button"
-    class="icon-search-result btn btn-ghost h-auto py-2 flex flex-col items-center gap-1 normal-case font-normal"
-    data-icon-name="${icon.name}"
-    data-icon-set="${icon.set || ""}"
-    title="${icon.name}">
-<span class="inline-flex items-center justify-center w-8 h-8">${previewHtml}</span>
-<span class="text-xs text-center leading-tight truncate max-w-full">${icon.name}</span>
-<span class="text-[11px] text-center leading-tight opacity-60">${icon.set || ""}</span>
-</button>`;
-        }).join("");
+        icons.forEach(icon => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "icon-search-result btn btn-ghost btn-sm p-1 min-h-0 h-auto";
+            button.dataset.iconName = icon.name;
+            button.dataset.iconSet = icon.set || "";
+            button.title = icon.set ? `${icon.name} (${icon.set})` : icon.name;
 
-        node.querySelectorAll("[data-icon-name]").forEach(button => {
+            const visual = this._buildIconVisual(icon.name, icon.set, icon, previewSize);
+            if (visual && visual.node) {
+                button.appendChild(visual.node);
+            }
+
             button.addEventListener("click", () => {
                 const queryInput = document.getElementById(`${this.id}_query`);
                 const preview = document.getElementById(`${this.id}_preview`);
                 const popup = document.getElementById(`${this.id}_popup`);
 
                 if (queryInput) {
-                    queryInput.value = button.dataset.iconName;
+                    queryInput.value = icon.name;
                 }
 
-                this._applyIconSelection(button.dataset.iconName, preview, popup, button.dataset.iconSet || undefined);
+                this._applyIconSelection(icon.name, preview, popup, icon.set || undefined);
             });
+
+            node.appendChild(button);
         });
     }
 
@@ -2515,7 +2659,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     </button>
 </div>
 <div id="${this.id}_popup" class="er-control__popup er-control__popup--icon card card-compact bg-base-100 border border-base-300 shadow-lg"
-     style="display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: min(420px, 90vw);">
+     style="display: none; position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30; max-width: 100%;">
     <div class="card-body p-3">
         <div class="er-control__popup-header er-control__popup-header--icon flex justify-between items-center mb-2">
             <span class="font-medium text-sm">Icon picker</span>
@@ -2523,9 +2667,12 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         </div>
         <div class="er-control__search er-control__search--icon flex items-center gap-2 mb-2">
             <input type="text" id="${this.id}_query" class="er-control__input er-control__input--icon-query input input-bordered input-sm flex-1" placeholder="Search icons, aliases, glyphs" ${disabled}>
-            <input type="color" id="${this.id}_color" class="er-control__input er-control__input--icon-color w-10 h-10 rounded cursor-pointer" value="${decodedColor}" title="Icon color" ${disabled}>
+            <div class="relative">
+                <input type="color" id="${this.id}_color" class="er-control__input er-control__input--icon-color w-10 h-10 rounded cursor-pointer" value="${decodedColor}" title="Icon color" ${disabled}>
+                <span id="${this.id}_color_mode" class="er-control__color-mode badge badge-xs absolute -top-1 -right-1 hidden">tint</span>
+            </div>
         </div>
-        <div id="${this.id}_results" class="er-control__results er-control__results--icon grid grid-cols-3 gap-2 max-h-[360px] overflow-auto"></div>
+        <div id="${this.id}_results" class="er-control__results er-control__results--icon flex flex-wrap gap-1 max-h-[360px] overflow-auto"></div>
     </div>
 </div>
 </div>`;
@@ -2544,11 +2691,11 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
             iconSet: "fa-solid-common",
             size: 160,
             padding: 4,
-            color: "#111111",
+            color: "#ff0000",
             backgroundColor: "#00000000",
-            previewSize: 34,
+            previewSize: 27,
             maxResults: 120,
-            glyphFontFamily: "'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif",
+            glyphFontFamily: "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif",
             glyphFontWeight: "400"
         };
     }
