@@ -382,6 +382,12 @@
          */
         rebuild() {
             if (this.options.handleNavigator) {
+                // Callers like UTILITIES.changeModeOfLayer, setFilterOfLayer, the
+                // shaderSideMenu visibility toggle, and shader-order reorders mutate
+                // only the main shader's config/params and then call rebuild().
+                // Mirror that state into the navigator's shader instances first so
+                // its rebuild doesn't re-emit the previous (stale) configuration.
+                this._syncNavigatorShaderState();
                 this.viewer.navigator.drawer.rebuild();
             }
             return this._requestRebuild();
@@ -445,6 +451,137 @@
             }
             this.viewer.forceRedraw();
             return $.Promise.resolve();
+        }
+
+        /**
+         * Mirror control state (encodedValue) from the main drawer's shaders into
+         * the navigator drawer's shader instances. Required because shader-internal
+         * UI controls (color picker, range sliders, etc.) mutate the main shader's
+         * controls directly via `owner.invalidate()` and never reach the navigator,
+         * whose shader instances are separate and have no DOM-bound handlers.
+         *
+         * Without this, fast control-driven changes leave the navigator's render
+         * with stale uniforms/params until something else (e.g. _applyShaderConfigMutationRequest)
+         * resyncs it. Visualization-change events from nav-side `set()` calls are
+         * suppressed so consumers don't see duplicates.
+         */
+        _syncNavigatorShaderState() {
+            const nav = this.viewer.navigator;
+            if (!nav || !nav.drawer || !nav.drawer.renderer) {
+                return;
+            }
+
+            // Mirror non-control state that bypasses _controls entirely:
+            //   - config.visible (layer checkbox in shaderSideMenu)
+            //   - config.params.use_mode / use_blend (UTILITIES.changeModeOfLayer, onChangeBlend)
+            //   - config.params.use_<filter>         (UTILITIES.setFilterOfLayer)
+            // For mode/blend we re-run resetMode on the nav shader; for filters, resetFilters.
+            // Both are idempotent and read directly from the params object.
+            const syncConfig = (mainShader, navShader) => {
+                const mainConfig = typeof mainShader.getConfig === "function" ? mainShader.getConfig() : null;
+                const navConfig = typeof navShader.getConfig === "function" ? navShader.getConfig() : null;
+                if (!mainConfig || !navConfig || mainConfig === navConfig) {
+                    return;
+                }
+
+                if (navConfig.visible !== mainConfig.visible) {
+                    navConfig.visible = mainConfig.visible;
+                }
+
+                const mainParams = mainConfig.params;
+                if (!mainParams) {
+                    return;
+                }
+                navConfig.params = navConfig.params || {};
+                const navParams = navConfig.params;
+
+                let modeOrBlendChanged = false;
+                let filterChanged = false;
+                for (const key in mainParams) {
+                    if (!key.startsWith("use_")) {
+                        continue;
+                    }
+                    if (navParams[key] === mainParams[key]) {
+                        continue;
+                    }
+                    navParams[key] = mainParams[key];
+                    if (key === "use_mode" || key === "use_blend") {
+                        modeOrBlendChanged = true;
+                    } else {
+                        filterChanged = true;
+                    }
+                }
+
+                if (modeOrBlendChanged && typeof navShader.resetMode === "function") {
+                    try {
+                        navShader.resetMode(navParams, true, false);
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetMode failed", mainShader.id, e);
+                    }
+                }
+                if (filterChanged && typeof navShader.resetFilters === "function") {
+                    try {
+                        navShader.resetFilters(navParams, true, false);
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetFilters failed", mainShader.id, e);
+                    }
+                }
+            };
+
+            const syncControls = (mainShader, navShader) => {
+                if (!mainShader || !navShader || !mainShader._controls || !navShader._controls) {
+                    return;
+                }
+                for (const controlName in mainShader._controls) {
+                    const mainControl = mainShader._controls[controlName];
+                    const navControl = navShader._controls[controlName];
+                    if (!navControl || typeof navControl.set !== "function" || !mainControl) {
+                        continue;
+                    }
+                    if (mainControl.encodedValue === undefined) {
+                        continue;
+                    }
+                    if (navControl.encodedValue === mainControl.encodedValue) {
+                        continue;
+                    }
+
+                    const prevSuppress = navControl._suppressVisualizationChanged;
+                    navControl._suppressVisualizationChanged = true;
+                    try {
+                        navControl.set(mainControl.encodedValue);
+                    } catch (e) {
+                        $.console.warn(
+                            "FlexDrawer: failed to sync navigator control state",
+                            mainShader.id, controlName, e
+                        );
+                    } finally {
+                        navControl._suppressVisualizationChanged = prevSuppress;
+                    }
+                }
+            };
+
+            // Group shaders (e.g. flex-layers/group.js) hold nested children under
+            // shader.shaderLayers (same map shape, keyed by sanitized id). renderer.getAllShaders()
+            // only returns the top-level map, so we walk recursively.
+            const walk = (mainMap, navMap) => {
+                if (!mainMap || !navMap) {
+                    return;
+                }
+                for (const id in mainMap) {
+                    const mainShader = mainMap[id];
+                    const navShader = navMap[id];
+                    if (!mainShader || !navShader) {
+                        continue;
+                    }
+                    syncConfig(mainShader, navShader);
+                    syncControls(mainShader, navShader);
+                    if (mainShader.shaderLayers && navShader.shaderLayers) {
+                        walk(mainShader.shaderLayers, navShader.shaderLayers);
+                    }
+                }
+            };
+
+            walk(this.renderer.getAllShaders(), nav.drawer.renderer.getAllShaders());
         }
 
         _handleRefetchRequest(request = undefined) {
@@ -2388,7 +2525,21 @@
                 this.options,
                 // Required
                 {
-                    redrawCallback: () => this.viewer.forceRedraw(),
+                    redrawCallback: () => {
+                        // Shader-internal UI controls (color picker, sliders, opacity, etc.)
+                        // mutate this drawer's shader instances directly and route the redraw
+                        // through here. The navigator's drawer has its own shader instances
+                        // with their own state, so we mirror the change AND kick the navigator's
+                        // own animation loop — without nav.forceRedraw(), glDrawing() never runs
+                        // on the nav controls and the _needsLoad=true left by .set() never flushes.
+                        // Gated on the (opt-in, default-true) handleNavigator option; skipped on
+                        // the navigator drawer itself which has handleNavigator forced to false.
+                        if (this.options.handleNavigator && this.viewer.navigator) {
+                            this._syncNavigatorShaderState();
+                            this.viewer.navigator.forceRedraw();
+                        }
+                        this.viewer.forceRedraw();
+                    },
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,
                     sharedContextKey: this.options.sharedContextKey,
