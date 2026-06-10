@@ -1350,12 +1350,11 @@
             program._webGLProgram = webglProgram;
             program._justCreated = true;
 
-            // TODO inner control type udpates are not checked here
-            for (let shaderId in this._shaders) {
-                const shader = this._shaders[shaderId];
+            // TODO inner control type udpates are not checked here (this todo comment might be outdated, verify)
+            const reinstantiateIfTypeChanged = (shaderId, shader, parent) => {
                 const config = shader.getConfig();
-                // Check explicitly type of the config, if updated, recreate shader
-                if (shader.constructor.type() !== config.type) {
+                let current = shader;
+                if (current.constructor.type() !== config.type) {
                     const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
                     if (NewShader) {
                         // Drop orphan params from the previous shader type before re-instantiation,
@@ -1363,8 +1362,33 @@
                         // ride along and trigger parseChannel warnings or sample()-time incompatibilities.
                         this._sanitizeShaderParams(config, NewShader);
                     }
-                    this.createShaderLayer(shaderId, config, false);
+                    if (parent) {
+                        const previous = parent.shaderLayers[shaderId];
+                        current = parent.createShaderLayer(shaderId, config);
+                        parent.shaderLayers[shaderId] = current;
+                        if (previous && previous !== current) {
+                            try {
+                                previous.destroy();
+                            } catch (e) {
+                                $.console.warn(`Shader ${shaderId} destroy() during type change failed.`, e);
+                            }
+                        }
+                    } else {
+                        this.createShaderLayer(shaderId, config, false);
+                        current = this._shaders[shaderId];
+                    }
                 }
+                if (current && current.shaderLayers && current.shaderLayerOrder) {
+                    for (const childId of current.shaderLayerOrder) {
+                        const child = current.shaderLayers[childId];
+                        if (child) {
+                            reinstantiateIfTypeChanged(childId, child, current);
+                        }
+                    }
+                }
+            };
+            for (let shaderId in this._shaders) {
+                reinstantiateIfTypeChanged(shaderId, this._shaders[shaderId], null);
             }
             // Needs reference early
             this._programImplementations[key] = program;
@@ -1597,7 +1621,41 @@
 
         getShaderLayer(id) {
             id = $.FlexRenderer.sanitizeKey(id);
-            return this._shaders[id];
+            return this._shaders[id] || this._findNestedShaderLayer(id);
+        }
+
+        _findNestedShaderLayer(sanitizedId) {
+            const walk = (map) => {
+                if (!map) {
+                    return null;
+                }
+                for (const cid in map) {
+                    const s = map[cid];
+                    if (!s) {
+                        continue;
+                    }
+                    if (cid === sanitizedId) {
+                        return s;
+                    }
+                    if (s.shaderLayers) {
+                        const r = walk(s.shaderLayers);
+                        if (r) {
+                            return r;
+                        }
+                    }
+                }
+                return null;
+            };
+            for (const id in this._shaders) {
+                const s = this._shaders[id];
+                if (s && s.shaderLayers) {
+                    const r = walk(s.shaderLayers);
+                    if (r) {
+                        return r;
+                    }
+                }
+            }
+            return null;
         }
 
         getShaderLayerConfig(id) {
@@ -1618,7 +1676,7 @@
          */
         changeShaderType(layerId, newType) {
             const id = $.FlexRenderer.sanitizeKey(layerId);
-            const shader = this._shaders[id];
+            const shader = this._shaders[id] || this._findNestedShaderLayer(id);
             if (!shader) {
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
             }
