@@ -29,27 +29,6 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
 
     init() {
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
-
-        // TODO: make icons dynamic
-
-        const countryIcon = new Image();
-        countryIcon.src = "/icons/place/country-icon.png";
-        countryIcon.onload = () => {
-            this.firstAtlas.addImage(countryIcon);
-        };
-
-        const cityIcon = new Image();
-        cityIcon.src = "/icons/place/city-icon.png";
-        cityIcon.onload = () => {
-            this.firstAtlas.addImage(cityIcon);
-        };
-
-        const villageIcon = new Image();
-        villageIcon.src = "/icons/place/village-icon.png";
-        villageIcon.onload = () => {
-            this.firstAtlas.addImage(villageIcon);
-        };
-
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
         this._presentationTransferScratch = {

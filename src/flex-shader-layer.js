@@ -646,6 +646,10 @@
                     base = 0;
                 }
 
+                if (channel === undefined) {
+                    channel = def;
+                }
+
                 // 4) validate / normalize channel pattern as before
                 if (!channel || typeof channel !== "string" || channelPattern.exec(channel) === null) {
                     console.warn(`Invalid channel '${controlName}'. Will use channel '${def}'.`, channel, options);
