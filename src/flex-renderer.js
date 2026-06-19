@@ -1432,10 +1432,22 @@
                 program = this.getProgram(program);
             }
 
-            if (this._program) {
-                const reused = !program._justCreated;
+            if (!program || !program.webGLProgram) {
+                throw new Error("$.FlexRenderer::useProgram: invalid program.");
+            }
 
+            const reused = !program._justCreated;
+
+            if (this._program) {
                 if (this.running && this._program === program && reused) {
+                    // Do not trust renderer-local `_program` as proof that WebGL has this
+                    // program currently bound. In shared-context mode, another renderer may
+                    // have changed the context-global CURRENT_PROGRAM. `registerProgram()`
+                    // can also change CURRENT_PROGRAM without updating `_program`.
+                    //
+                    // We still return false so callers skip program.load(...), but we must
+                    // re-bind before any subsequent uniform uploads.
+                    this.gl.useProgram(program.webGLProgram);
                     return false;
                 }
 
