@@ -30,6 +30,62 @@ let viewer = OpenSeadragon({
 });
 ````
 
+### Shared WebGL Contexts
+
+Multiple `FlexDrawer` / `FlexRenderer` instances can share one WebGL context by using the same
+`sharedContextKey` string in the public drawer options. The application configures this only through
+`FlexDrawer`; callers do not create or pass WebGL contexts directly.
+
+````js
+const viewerA = OpenSeadragon({
+    id: 'viewer-a',
+    drawer: 'flex-renderer',
+    drawerOptions: {
+        'flex-renderer': {
+            sharedContextKey: 'main-shared-context'
+        }
+    },
+    // other viewer options...
+});
+
+const viewerB = OpenSeadragon({
+    id: 'viewer-b',
+    drawer: 'flex-renderer',
+    drawerOptions: {
+        'flex-renderer': {
+            sharedContextKey: 'main-shared-context'
+        }
+    },
+    // other viewer options...
+});
+````
+
+Sharing means that renderers with the same key use the same underlying `WebGLRenderingContext` /
+`WebGL2RenderingContext`. Each renderer still keeps its own shader configuration, callbacks,
+OpenSeadragon drawer state, render dimensions, renderer-local presentation canvas, and visible output.
+Calling `clear()` on one shared renderer clears only that renderer's presentation canvas; it must not
+clear another renderer's visible output.
+
+Important constraints:
+
+- all renderers using the same `sharedContextKey` must request the same WebGL version;
+- the first renderer that creates a shared key owns the WebGL context creation options;
+- later renderers using the same key but different `canvasOptions` attach to the existing context and emit a warning;
+- context loss is detected and reported in diagnostics, but automatic GPU resource restoration is not implemented;
+- shared-context presentation currently uses `readPixels` to copy the renderer-owned final color target into the renderer-local presentation canvas.
+
+For diagnostics, use:
+
+````js
+const status = OpenSeadragon.FlexRenderer.getSharedContextStatus();
+console.log(status);
+````
+
+The manual demo `test/demo/shared-context-validation.html` creates two shared viewers and one private
+viewer. With navigators disabled, the expected result is three `FlexRenderer` instances using two WebGL
+contexts: one context shared by viewers A and B, and one private context for the private viewer.
+
+
 Then, you can use one of built-in (or implement custom) visualization styles by
 configuring ``TiledImages`` via JSON `shader layers`. The configuration can happen in two ways:
 - handled internally: each Tiled Image will be automatically assigned ``identity`` rendering style,
@@ -315,6 +371,18 @@ to render transparent placeholder data at the position of the missing tile sourc
 ``toOpenIndex``is the index of failed image - advised is to open all images with explicit
 index using ``addTiledImage`` to know it in advance. E.g., call this snipplet in `error` handler
 of a parent ``addTiledImage`` call. You can access the error message later as `viewer.world.getItemAt(toOpenIndex).source.error`.
+
+### Per-TiledImage Image Smoothing
+OpenSeadragon's `setImageSmoothingEnabled(enabled)` is a drawer-wide flag — it forces the same texture filter on every tiled image.
+FlexDrawer keeps that behavior as the default, but also exposes a per-`TiledImage` override:
+````js
+viewer.drawer.setTiledImageSmoothingEnabled(tiledImage, false); // gl.NEAREST for this image only
+viewer.drawer.setTiledImageSmoothingEnabled(tiledImage, true);  // gl.LINEAR for this image only
+viewer.drawer.setTiledImageSmoothingEnabled(tiledImage, null);  // inherit the drawer-wide default
+````
+Useful when one source needs crisp nearest-neighbor sampling (segmentation masks, label maps) while others stay smooth.
+Note: the filter is baked in at texture upload time, and OSD's tile cache is keyed by tile content. If two tiled images share the
+exact same source tiles, they will share the cached prepared textures and the first uploader wins the filter.
 
 ### Processing OffScreen
 This drawer supports off-screen processing. You can either use the renderer directly, which is a bit harder,

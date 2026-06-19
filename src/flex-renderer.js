@@ -1,52 +1,15 @@
 (function($) {
     /**
-     * @typedef {Object} ShaderConfig
-     * @property {String} shaderConfig.id
-     * @property {String} shaderConfig.name
-     * @property {String} shaderConfig.type         equal to ShaderLayer.type(), e.g. "identity"
-     * @property {Number} shaderConfig.visible      1 = use for rendering, 0 = do not use for rendering
-     * @property {Boolean} shaderConfig.fixed
-     * @property {Object} shaderConfig.params          settings for the ShaderLayer
-     * @property {OpenSeadragon.TiledImage[]|number[]} tiledImages images that provide the data
-     * @property {Object} shaderConfig._controls       storage for the ShaderLayer's controls
-     * @property {Object} shaderConfig.cache          cache object used by the ShaderLayer's controls
-     */
-
-    /**
-     * @typedef {Object} FPRenderPackageItem
-     * @property {WebGLTexture[]} texture           [TEXTURE_2D]
-     * @property {Float32Array} textureCoords
-     * @property {Float32Array} transformMatrix
-     * //todo provide also opacity per tile?
-     */
-
-    /**
-     * @typedef {Object} FPRenderPackage
-     * @property {FPRenderPackageItem[]} tiles
-     * @property {Object[]} [vectors] - Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
-     * @property {Number[][]} stencilPolygons
-     */
-
-    /**
-     * @typedef {Object} SPRenderPackage
-     * @property {Number} zoom
-     * @property {Number} pixelsize
-     * @property {Number} opacity
-     * @property {ShaderLayer} shader
-     * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
-     */
-
-    /**
      * @typedef HTMLControlsHandler
      * Function that attaches HTML controls for ShaderLayer's controls to DOM.
      * @type function
      * @param {OpenSeadragon.FlexRenderer.ShaderLayer} [shaderLayer]
-     * @param {ShaderConfig} [shaderConfig]
+     * @param {ShaderLayerConfig} [shaderConfig]
      * @returns {String}
      */
 
     /**
-     * @typedef {Object} InspectorState
+     * @typedef {object} InspectorState
      * @property {boolean} enabled master switch for inspector logic
      * @property {"reveal-inside"|"reveal-outside"|"lens-zoom"} mode interaction mode
      * @property {{x: number, y: number}} centerPx inspector center in canvas pixel space
@@ -57,10 +20,39 @@
      */
 
     /**
-     * @typedef {Object} InspectorStateUpdateOptions
+     * @typedef {object} InspectorStateUpdateOptions
      * @property {boolean} [notify=true] emit the `inspector-change` event
      * @property {boolean} [redraw=true] request a redraw after the state change
      * @property {string} [reason="set-inspector-state"] semantic reason included in the emitted event
+     */
+
+    /**
+     * Renderer-owned interaction state exposed to generated GPU programs.
+     *
+     * Position fields use physical renderer framebuffer pixels with bottom-left origin,
+     * directly comparable to `gl_FragCoord.xy`.
+     *
+     * @typedef {object} InteractionState
+     * @property {boolean} enabled - Whether shader-visible interaction state is enabled.
+     * @property {boolean} pointerInside - Whether the pointer is currently inside the interaction target.
+     * @property {{x: number, y: number}} pointerPositionPx - Current pointer position.
+     * @property {number} activeButtons - Current MouseEvent.buttons-compatible button bitmask.
+     * @property {{x: number, y: number}} lastClickPositionPx - Last accepted click position.
+     * @property {number} lastClickButtons - MouseEvent.buttons-compatible bitmask for the last click.
+     * @property {number} clickSerial - Monotonic serial incremented for each accepted click.
+     * @property {boolean} dragActive - Whether a drag is currently active.
+     * @property {{x: number, y: number}} dragStartPositionPx - Start position of the current or last drag.
+     * @property {{x: number, y: number}} dragCurrentPositionPx - Current drag position.
+     * @property {{x: number, y: number}} dragEndPositionPx - End position of the last completed drag.
+     * @property {number} dragButtons - MouseEvent.buttons-compatible bitmask associated with the drag.
+     * @property {number} dragSerial - Monotonic serial incremented for each completed drag.
+     */
+
+    /**
+     * @typedef {Object} InteractionStateUpdateOptions
+     * @property {boolean} [notify=true] emit the `interaction-change` event
+     * @property {boolean} [redraw=true] request a redraw after the state change
+     * @property {string} [reason="set-interaction-state"] semantic reason included in the emitted event
      */
 
     /**
@@ -71,6 +63,220 @@
      * @property {number} [width] target width in physical pixels
      * @property {number} [height] target height in physical pixels
      * @property {number[]} [clearColor=[0, 0, 0, 0]] RGBA color used when rendering an empty second pass
+     */
+
+    /**
+     * Renderer-ready first-pass raster tile data.
+     *
+     * @typedef {object} FPRenderRasterTile
+     * @property {WebGLTexture[]} texture           [TEXTURE_2D]
+     * @property {Float32Array} textureCoords
+     * @property {Float32Array} transformMatrix
+     * //todo provide also opacity per tile?
+     */
+
+    /**
+     * Texture preparation options shared by renderer backends.
+     *
+     * These options are renderer-neutral. They must not expose OpenSeadragon
+     * objects or backend constants.
+     *
+     * @typedef {object} RasterTileTextureOptions
+     * @property {boolean} [imageSmoothingEnabled=false] - Whether prepared textures should use linear filtering when supported.
+     */
+
+    /**
+     * Renderer-neutral bitmap tile preparation options.
+     *
+     * `data` may be a browser image-like source such as a Blob, ImageBitmap,
+     * HTMLImageElement, HTMLCanvasElement, CanvasRenderingContext2D, or
+     * OffscreenCanvas. Backends decide which concrete source types they support.
+     *
+     * @typedef {object} PrepareBitmapTileOptions
+     * @property {*} data - Bitmap-like source data to prepare.
+     * @property {RasterTileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Typed array accepted as a GPU texture-set pack payload.
+     *
+     * @typedef {Uint8Array | Uint8ClampedArray | Uint16Array | Float32Array } GpuTextureSetPackData
+     */
+
+    /**
+     * One packed texture layer in a GPU texture-set tile payload.
+     *
+     * The current WebGL2 implementation supports `RGBA8` and `RGBA16F`.
+     * `RGBA8` data is uploaded as RGBA/UNSIGNED_BYTE. `RGBA16F` data is
+     * uploaded as RGBA/HALF_FLOAT.
+     *
+     * @typedef {object} GpuTextureSetPack
+     * @property {"RGBA8"|"RGBA16F"} [format="RGBA8"] - Pixel storage format for this pack.
+     * @property {GpuTextureSetPackData} data - Packed pixel data for one texture-array layer.
+     */
+
+    /**
+     * Packed GPU texture-set tile payload.
+     *
+     * This is not an OpenSeadragon-native data type. It is a FlexRenderer tile
+     * payload accepted through the `gpuTextureSet` cache format. Adapters may
+     * provide `getType()` for compatibility with FlexDrawer cache detection, but
+     * renderer preparation should validate the structural fields rather than
+     * require an OpenSeadragon-specific object instance.
+     *
+     * @typedef {object} GpuTextureSetTileData
+     * @property {function(): string} [getType] - Optional compatibility method returning `"gpuTextureSet"`.
+     * @property {number} width - Texture width in pixels.
+     * @property {number} height - Texture height in pixels.
+     * @property {GpuTextureSetPack[]} packs - Packed texture layers.
+     * @property {number} [channelCount] - Logical channel count represented by all packs.
+     */
+
+    /**
+     * Renderer-neutral GPU texture-set preparation options.
+     *
+     * `data` is a tile-source-provided packed texture payload. Backends decide
+     * which concrete payload shapes they support.
+     *
+     * @typedef {object} PrepareGpuTextureTileOptions
+     * @property {GpuTextureSetTileData} data - GPU texture-set payload to prepare.
+     * @property {RasterTileTextureOptions} [textureOptions] - Texture preparation options.
+     */
+
+    /**
+     * Successful prepared tile result.
+     *
+     * `resource` is backend-owned. Callers may store it, but must release it
+     * through `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * `texture` is a compatibility alias for the current WebGL first-pass path.
+     *
+     * @typedef {object} PreparedRasterTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared resource.
+     * @property {*} texture - Compatibility alias for the current WebGL texture resource.
+     * @property {number} width - Prepared source width in pixels.
+     * @property {number} height - Prepared source height in pixels.
+     * @property {number} textureDepth - Number of backend texture layers.
+     * @property {number} packCount - Number of source packs represented by the resource.
+     * @property {number} channelCount - Number of source channels represented by the resource.
+     */
+
+    /**
+     * Prepared tile result.
+     *
+     * @typedef {PreparedRasterTileSuccess | PreparedTileFailure} PreparedRasterTileResult
+     */
+
+    /**
+     * @typedef {object} FPRenderVectorTileBatch
+     * @property {WebGLBuffer} vboPos
+     * @property {WebGLBuffer} vboParam
+     * @property {WebGLBuffer} ibo
+     * @property {number} count
+     * @property {number} [lineWidth]
+     */
+
+    /**
+     * Renderer-ready first-pass vector tile data.
+     *
+     * Prepared vector tile batches, including fills, stroke-triangle lines, native line primitives with optional lineWidth, and points.
+     *
+     * @typedef {object} FPRenderVectorTile
+     * @property {FPRenderVectorTileBatch[]} [fills]
+     * @property {FPRenderVectorTileBatch[]} [lines]
+     * @property {FPRenderVectorTileBatch[]} [linePrimitives]
+     * @property {FPRenderVectorTileBatch[]} [points]
+     */
+
+    /**
+     * One raw vector mesh feature produced by a tile source.
+     *
+     * This is renderer-neutral source data. Backends prepare it into
+     * `FPRenderVectorTileBatch` objects.
+     *
+     * @typedef {object} VectorMeshFeature
+     * @property {Float32Array|number[]} vertices - Packed vertices as vec4(x, y, depth, textureId).
+     * @property {Uint32Array|number[]} indices - Indices into the vertex array.
+     * @property {number[]} [color] - Constant RGBA color used when parameters are absent.
+     * @property {Float32Array|number[]} [parameters] - Per-vertex payload. For icons: vec4(xStart, yStart, width, height).
+     * @property {number} [lineWidth=1] - Native line width in pixels. Used only for `linePrimitives`.
+     */
+
+    /**
+     * Renderer-neutral vector mesh tile payload.
+     *
+     * This is the raw tile-source payload. It does not contain backend resources.
+     *
+     * @typedef {object} VectorMeshTileData
+     * @property {VectorMeshFeature[]} [fills] - Polygon fill triangle meshes.
+     * @property {VectorMeshFeature[]} [lines] - Stroke triangle meshes rendered with triangles.
+     * @property {VectorMeshFeature[]} [linePrimitives] - Native line segment meshes rendered with backend line primitives.
+     * @property {VectorMeshFeature[]} [points] - Point marker and icon meshes.
+     */
+
+    /**
+     * Renderer-neutral vector tile preparation options.
+     *
+     * @typedef {object} PrepareVectorTileOptions
+     * @property {VectorMeshTileData} data - Vector mesh payload to prepare.
+     */
+
+    /**
+     * Successful prepared vector tile result.
+     *
+     * `resource` is backend-owned and must be released through
+     * `FlexRenderer#releasePreparedTileResource(...)`.
+     *
+     * @typedef {object} PreparedVectorTileSuccess
+     * @property {true} ok - Whether preparation succeeded.
+     * @property {*} resource - Backend-owned prepared vector resource.
+     * @property {FPRenderVectorTile} vectors - Renderer-ready vector batches.
+     */
+
+    /**
+     * Failed prepared tile result.
+     *
+     * @typedef {object} PreparedTileFailure
+     * @property {false} ok - Whether preparation succeeded.
+     * @property {"tainted-data" | "invalid-data" | "unsupported-data" | "webgl-upload-failed"} reason - Stable preparation failure reason.
+     * @property {*} [error] - Original backend/browser error, when available.
+     */
+
+    /**
+     * Prepared vector tile result.
+     *
+     * @typedef {PreparedVectorTileSuccess | PreparedTileFailure} PreparedVectorTileResult
+     */
+
+    /**
+     * Renderer-ready first-pass diagnostic tile data.
+     *
+     * Entries in `FPRenderPackage.diagnostics` represent tiles that could not
+     * be rendered as normal raster or vector data. The containing first-pass
+     * package supplies the target source and stencil layers.
+     *
+     * @typedef {object} FPRenderDiagnosticTile
+     * @property {string} [reason] - Optional machine-readable diagnostic reason.
+     * @property {Float32Array | number[]} transformMatrix - Region transform used by the first pass.
+     * @property {Float32Array | number[]} position - Region corner positions, matching raster tile geometry.
+     */
+
+    /**
+     * @typedef {object} FPRenderPackage
+     * @property {FPRenderRasterTile[]} tiles
+     * @property {FPRenderVectorTile[]} [vectors]
+     * @property {FPRenderDiagnosticTile[]} [diagnostics]
+     * @property {number[][]} stencilPolygons
+     */
+
+    /**
+     * @typedef {object} SPRenderPackage
+     * @property {number} zoom
+     * @property {number} pixelsize
+     * @property {number} opacity
+     * @property {ShaderLayer} shader
+     * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
      */
 
     /**
@@ -85,16 +291,14 @@
      * executes the render passes.
      *
      * @typedef {object} RenderFrame
-     * @memberof OpenSeadragon.FlexRenderer
-     * @property {Array<FPRenderPackage>} firstPass - First-pass render packages.
-     * @property {Array<SPRenderPackage>} secondPass - Second-pass render packages.
+     * @property {FPRenderPackage[]} firstPass - First-pass render packages.
+     * @property {SPRenderPackage[]} secondPass - Second-pass render packages.
      */
 
     /**
      * Options for `OpenSeadragon.FlexRenderer#render`.
      *
      * @typedef {object} RenderOptions
-     * @memberof OpenSeadragon.FlexRenderer
      * @property {object} [secondPassOptions] - Backend-specific options forwarded to `renderSecondPass(...)`.
      */
 
@@ -107,7 +311,6 @@
      * submitted render work and a valid no-op.
      *
      * @typedef {object} RenderOutput
-     * @memberof OpenSeadragon.FlexRenderer
      * @property {number} textureDepth - Number of color/intermediate texture layers exposed by this output.
      * @property {number} stencilDepth - Number of stencil/source-mask texture layers exposed by this output.
      * @property {WebGLTexture|undefined} [texture] - Backend-owned color/intermediate TEXTURE_2D_ARRAY texture, when exposed.
@@ -118,68 +321,85 @@
      */
 
     /**
+     * @typedef {object} FlexRendererOptions
+     *
+     * @property {string} uniqueId
+     *
+     * @property {string} webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
+     *
+     * @property {string} [sharedContextKey] optional page-global key used to share one WebGL context across renderer instances
+     *
+     * @property {"warn-skip"|"throw"} [sharedContextBusyPolicy="warn-skip"] internal policy used when a shared context is already rendering
+     *
+     * @property {boolean} debug                   debug mode on/off
+     *
+     * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
+     *
+     * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
+     *
+     * @property {boolean} interactive             if true (default), the layers are configured for interactive changes (not applied by default)
+     *
+     * @property {HTMLControlsHandler} htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
+     * @property {function} htmlReset              callback called when a program is reset - html needs to be cleaned
+     *
+     * @property {Function} redrawCallback          function called when user input changed; triggers re-render of the viewport
+     * @property {Function} refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
+     *
+     * @property {object} canvasOptions
+     * @property {boolean} canvasOptions.alpha
+     * @property {boolean} canvasOptions.premultipliedAlpha
+     * @property {boolean} canvasOptions.stencil
+     */
+
+    /**
      * WebGL Renderer for OpenSeadragon.
+     *
+     * Manages ShaderLayers, their controls, and a WebGL context to allow rendering using WebGL.
      *
      * Renders in two passes:
      *  1st pass joins tiles and creates masks where we should draw
      *  2nd pass draws the actual data using shaders
      *
      * @property {RegExp} idPattern
-     * @property {Object} BLEND_MODE
+     * @property {string[]} SUPPORTED_BLEND_MODES
      *
-     * @class OpenSeadragon.FlexRenderer
-     * @classdesc class that manages ShaderLayers, their controls, and WebGLContext to allow rendering using WebGL
      * @memberof OpenSeadragon
      */
-    $.FlexRenderer = class extends $.EventSource {
-
+    class FlexRenderer extends $.EventSource {
         /**
-         * @param {Object} incomingOptions
-         *
-         * @param {String} incomingOptions.uniqueId
-         *
-         * @param {String} incomingOptions.webGLPreferredVersion    prefered WebGL version, "1.0" or "2.0"
-         *
-         * @param {Function} incomingOptions.redrawCallback          function called when user input changed; triggers re-render of the viewport
-         * @param {Function} incomingOptions.refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
-         * @param {Boolean} incomingOptions.debug                   debug mode on/off
-         * @param {Boolean} incomingOptions.interactive             if true (default), the layers are configured for interactive changes (not applied by default)
-         * @param {HTMLControlsHandler} incomingOptions.htmlHandler function that ensures individual ShaderLayer's controls' HTML is properly present at DOM
-         * @param {function} incomingOptions.htmlReset              callback called when a program is reset - html needs to be cleaned
-         * @param {string|undefined} incomingOptions.backgroundColor #RGB or #RGBA hex, default undefined - transparent
-         *
-         * @param {Object} incomingOptions.canvasOptions
-         * @param {Boolean} incomingOptions.canvasOptions.alpha
-         * @param {Boolean} incomingOptions.canvasOptions.premultipliedAlpha
-         * @param {Boolean} incomingOptions.canvasOptions.stencil
-         *
-         *
-         * @constructor
-         * @memberof FlexRenderer
+         * @param {FlexRendererOptions} options
          */
-        constructor(incomingOptions) {
+        constructor(options) {
             super();
 
-            if (!this.constructor.idPattern.test(incomingOptions.uniqueId)) {
-                throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + incomingOptions.uniqueId);
+            if (!this.constructor.idPattern.test(options.uniqueId)) {
+                throw new Error("$.FlexRenderer::constructor: invalid ID! Id can contain only letters, numbers and underscore. ID: " + options.uniqueId);
             }
-            this.uniqueId = incomingOptions.uniqueId;
+            this.uniqueId = options.uniqueId;
+            this._rendererInstanceId = ++this.constructor._rendererInstanceIdSeed;
+            this._destroyed = false;
 
-            this.webGLPreferredVersion = incomingOptions.webGLPreferredVersion;
+            this.webGLPreferredVersion = options.webGLPreferredVersion;
 
-            this.redrawCallback = incomingOptions.redrawCallback;
-            this.refetchCallback = incomingOptions.refetchCallback;
-            this.debug = incomingOptions.debug;
-            this.interactive = incomingOptions.interactive === undefined ?
-                !!incomingOptions.htmlHandler : !!incomingOptions.interactive;
-            this.htmlHandler = this.interactive ? incomingOptions.htmlHandler : null;
-            this._background = incomingOptions.backgroundColor || '#00000000';
+            this.debug = options.debug;
+            this._sharedContextBusyPolicy = options.sharedContextBusyPolicy === "throw" ? "throw" : "warn-skip";
+            this._warningsEmitted = new Set();
+            this._warningCounts = {};
+
+            this._renderDiagnostics = options.renderDiagnostics !== false;
+
+            this._background = options.backgroundColor || "#00000000";
+
+            this.redrawCallback = options.redrawCallback;
+            this.refetchCallback = options.refetchCallback;
+            this.interactive = options.interactive === undefined ? !!options.htmlHandler : !!options.interactive;
+            this.htmlHandler = this.interactive ? options.htmlHandler : null;
 
             if (this.htmlHandler) {
-                if (!incomingOptions.htmlReset) {
+                if (!options.htmlReset) {
                     throw Error("$.FlexRenderer::constructor: htmlReset callback is required when htmlHandler is set!");
                 }
-                this.htmlReset = incomingOptions.htmlReset;
+                this.htmlReset = options.htmlReset;
             } else {
                 this.htmlReset = () => {};
             }
@@ -190,32 +410,196 @@
             this._shadersOrder = null;
             this._programImplementations = {};
             this.__firstPassResult = null;
+            this.__finalPassResult = null;
+            this._finalColorTarget = null;
+
+            this._renderX = 0;
+            this._renderY = 0;
+            this._renderWidth = 0;
+            this._renderHeight = 0;
+            this._renderLevels = 0;
+            this._renderTiledImageCount = 0;
+
             this._inspectorState = this.constructor.normalizeInspectorState();
+            this._interactionState = this.constructor.normalizeInteractionState();
 
-            this.canvasContextOptions = incomingOptions.canvasOptions;
-            const canvas = document.createElement("canvas");
-            const WebGLImplementation = this.constructor.determineBackend(this.webGLPreferredVersion);
-            const webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(canvas, this.webGLPreferredVersion, this.canvasContextOptions);
+            this.canvasContextOptions = this.constructor.normalizeCanvasOptions(options.canvasOptions);
+            this._sharedContextKey = this.constructor.normalizeSharedContextKey(options.sharedContextKey);
+            this._sharedContextEntry = null;
+            this._contextLost = false;
 
-            if (webGLRenderingContext) {
-                this.gl = webGLRenderingContext;                                            // WebGLRenderingContext|WebGL2RenderingContext
-                this.backend = new WebGLImplementation(this, webGLRenderingContext);   // $.FlexRenderer.WebGLImplementation
-                this.canvas = canvas;
+            let canvas = null;
+            let webGLRenderingContext = null;
+            const WebGLImplementationClass = this.constructor.determineBackend(this.webGLPreferredVersion);
 
-                // Should be last call of the constructor to make sure everything is initialized
-                this.backend.init();
+            if (this._sharedContextKey) {
+                let entry = this.constructor._sharedContexts.get(this._sharedContextKey);
+
+                if (entry) {
+                    if (entry.webGLPreferredVersion !== this.webGLPreferredVersion) {
+                        throw new Error(
+                            `$.FlexRenderer::constructor: shared context '${this._sharedContextKey}' already exists with ` +
+                            `WebGL version '${entry.webGLPreferredVersion}', but renderer '${this.uniqueId}' requested ` +
+                            `'${this.webGLPreferredVersion}'. Use the same webGLPreferredVersion or a different sharedContextKey.`
+                        );
+                    }
+
+                    const existingOptions = entry.canvasOptions || {};
+                    const requestedOptions = this.canvasContextOptions || {};
+                    const optionKeys = new Set(Object.keys(existingOptions).concat(Object.keys(requestedOptions)));
+                    let optionsMatch = true;
+
+                    for (const optionKey of optionKeys) {
+                        if (existingOptions[optionKey] !== requestedOptions[optionKey]) {
+                            optionsMatch = false;
+                            break;
+                        }
+                    }
+
+                    if (!optionsMatch) {
+                        entry.ignoredReconfigurationCount++;
+                        this._warningCounts["shared-context-options-ignored"] =
+                            (this._warningCounts["shared-context-options-ignored"] || 0) + 1;
+
+                        if (!this._warningsEmitted.has("shared-context-options-ignored")) {
+                            this._warningsEmitted.add("shared-context-options-ignored");
+                            $.console.warn(
+                                `FlexRenderer shared context '${this._sharedContextKey}' already exists. ` +
+                                `Ignoring canvasOptions requested by renderer '${this.uniqueId}'. First owner wins.`,
+                                {
+                                    existing: existingOptions,
+                                    requested: requestedOptions
+                                }
+                            );
+                        }
+                    }
+                } else {
+                    canvas = document.createElement("canvas");
+                    webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(
+                        canvas,
+                        this.webGLPreferredVersion,
+                        this.canvasContextOptions
+                    );
+
+                    if (webGLRenderingContext) {
+                        entry = {
+                            key: this._sharedContextKey,
+                            canvas: canvas,
+                            gl: webGLRenderingContext,
+                            webGLPreferredVersion: this.webGLPreferredVersion,
+                            canvasOptions: $.extend(true, {}, this.canvasContextOptions),
+                            refCount: 0,
+                            renderers: new Set(),
+                            lost: false,
+                            restored: false,
+                            busy: false,
+                            activeRenderer: null,
+                            ignoredReconfigurationCount: 0,
+                            busySkipCount: 0,
+                            contextLostSkipCount: 0
+                        };
+
+                        entry.handleContextLost = (event) => {
+                            if (event && typeof event.preventDefault === "function") {
+                                event.preventDefault();
+                            }
+
+                            entry.lost = true;
+                            entry.restored = false;
+
+                            for (const renderer of entry.renderers) {
+                                renderer._contextLost = true;
+                                renderer.__firstPassResult = null;
+                                renderer.__finalPassResult = null;
+
+                                renderer._warningCounts["shared-context-lost"] =
+                                    (renderer._warningCounts["shared-context-lost"] || 0) + 1;
+
+                                if (!renderer._warningsEmitted.has("shared-context-lost")) {
+                                    renderer._warningsEmitted.add("shared-context-lost");
+                                    $.console.warn(
+                                        `FlexRenderer shared context '${entry.key}' was lost. ` +
+                                        `Automatic restoration is not supported yet.`
+                                    );
+                                }
+                            }
+                        };
+
+                        entry.handleContextRestored = () => {
+                            entry.restored = true;
+
+                            for (const renderer of entry.renderers) {
+                                renderer._warningCounts["shared-context-restored"] =
+                                    (renderer._warningCounts["shared-context-restored"] || 0) + 1;
+
+                                if (!renderer._warningsEmitted.has("shared-context-restored")) {
+                                    renderer._warningsEmitted.add("shared-context-restored");
+                                    $.console.warn(
+                                        `FlexRenderer shared context '${entry.key}' was restored by the browser, ` +
+                                        `but automatic GPU resource rebuild is not supported yet. Recreate the renderer/viewer.`
+                                    );
+                                }
+                            }
+                        };
+
+                        canvas.addEventListener("webglcontextlost", entry.handleContextLost, false);
+                        canvas.addEventListener("webglcontextrestored", entry.handleContextRestored, false);
+
+                        this.constructor._sharedContexts.set(this._sharedContextKey, entry);
+                    }
+                }
+
+                if (entry) {
+                    entry.refCount++;
+                    entry.renderers.add(this);
+
+                    this._sharedContextEntry = entry;
+                    this.canvasContextOptions = entry.canvasOptions;
+
+                    canvas = entry.canvas;
+                    webGLRenderingContext = entry.gl;
+                }
             } else {
+                canvas = document.createElement("canvas");
+                webGLRenderingContext = $.FlexRenderer.WebGLImplementation.createWebglContext(
+                    canvas,
+                    this.webGLPreferredVersion,
+                    this.canvasContextOptions
+                );
+            }
+
+            if (!webGLRenderingContext) {
                 throw new Error("$.FlexRenderer::constructor: Could not create WebGLRenderingContext!");
             }
+
+            const presentationCanvas = this._sharedContextEntry ? document.createElement("canvas") : canvas;
+
+            /**
+             * @type {WebGLRenderingContext | WebGL2RenderingContext}
+             */
+            this.gl = webGLRenderingContext;
+
+            /**
+             * @type {WebGLImplementation}
+             */
+            this.backend = new WebGLImplementationClass(this, webGLRenderingContext);
+
+            this.webGLCanvas = canvas;
+            this.presentationCanvas = presentationCanvas;
+            this._renderWidth = presentationCanvas.width;
+            this._renderHeight = presentationCanvas.height;
+
+            this.canvas = this.presentationCanvas;
+
+            // Should be last call of the constructor to make sure everything is initialized
+            this.backend.init();
         }
 
         /**
          * Search through all FlexRenderer properties to find one that extends WebGLImplementation and its getVersion() method returns <version> input parameter.
-         * @param {String} version WebGL version, "1.0" or "2.0"
-         * @returns {WebGLImplementation}
          *
-         * @instance
-         * @memberof FlexRenderer
+         * @param {String} version WebGL version, "1.0" or "2.0"
+         * @returns {typeof WebGLImplementation}
          */
         static determineBackend(version) {
             const namespace = $.FlexRenderer;
@@ -234,10 +618,83 @@
         }
 
         /**
+         * Normalize a shared WebGL context key.
+         *
+         * Empty, null, undefined, and false values disable shared-context mode.
+         *
+         * @param {*} value
+         * @return {string|null}
+         */
+        static normalizeSharedContextKey(value) {
+            if (value === undefined || value === null || value === false) {
+                return null;
+            }
+
+            const key = String(value).trim();
+            return key || null;
+        }
+
+        /**
+         * Normalize WebGL context creation options.
+         *
+         * These defaults mirror WebGLImplementation.createWebglContext(...), but are
+         * normalized before shared-context comparison so omitted default values compare
+         * consistently.
+         *
+         * @param {object|undefined} options
+         * @return {object}
+         */
+        static normalizeCanvasOptions(options = undefined) {
+            const normalized = $.extend(true, {}, options || {});
+
+            normalized.alpha = true;
+            normalized.premultipliedAlpha = true;
+            normalized.preserveDrawingBuffer = true;
+
+            return normalized;
+        }
+
+        /**
+         * Return JSON-safe diagnostic information for page-global shared WebGL contexts.
+         *
+         * This does not expose WebGL contexts, canvases, textures, framebuffers, backend
+         * instances, or mutable registry entries.
+         *
+         * @return {object[]}
+         */
+        static getSharedContextStatus() {
+            return Array.from(this._sharedContexts.values()).map(entry => ({
+                key: entry.key,
+                webGLPreferredVersion: entry.webGLPreferredVersion,
+                canvasOptions: $.extend(true, {}, entry.canvasOptions),
+                refCount: entry.refCount,
+                lost: !!entry.lost,
+                restored: !!entry.restored,
+                busy: !!entry.busy,
+                activeRendererInstanceId: entry.activeRenderer ? entry.activeRenderer._rendererInstanceId : null,
+                width: entry.canvas ? entry.canvas.width : 0,
+                height: entry.canvas ? entry.canvas.height : 0,
+                ignoredReconfigurationCount: entry.ignoredReconfigurationCount || 0,
+                busySkipCount: entry.busySkipCount || 0,
+                contextLostSkipCount: entry.contextLostSkipCount || 0,
+                renderers: Array.from(entry.renderers || []).map(renderer => {
+                    const viewer = renderer.viewer;
+                    const viewerId = viewer && viewer.element && viewer.element.id ? viewer.element.id : null;
+
+                    return {
+                        instanceId: renderer._rendererInstanceId,
+                        uniqueId: renderer.uniqueId || null,
+                        viewerId: viewerId,
+                    };
+                })
+            }));
+        }
+
+        /**
          * Pre-compilation shader configuration cleanup
-         * @param {ShaderConfig} config
+         * @param {ShaderLayerConfig} config
          * @param {NormalizationContext} context
-         * @return {ShaderConfig}
+         * @return {ShaderLayerConfig}
          */
         static normalizeShaderConfig(config, context = {}) {
             if (!config || typeof config !== "object") {
@@ -245,7 +702,7 @@
             }
 
             let normalized = config;
-            const Shader = normalized.type ? $.FlexRenderer.ShaderMediator.getClass(normalized.type) : null;
+            const Shader = normalized.type ? $.FlexRenderer.ShaderLayerRegistry.get(normalized.type) : null;
 
             if (Shader && typeof Shader.normalizeConfig === "function") {
                 const next = Shader.normalizeConfig(normalized, context);
@@ -266,9 +723,9 @@
 
         /**
          * Normalize shader configuration map - all shaders at once.
-         * @param {Record<string, ShaderConfig>} shaderMap
+         * @param {Record<string, ShaderLayerConfig>} shaderMap
          * @param {NormalizationContext} context
-         * @return {Record<string, ShaderConfig>}
+         * @return {Record<string, ShaderLayerConfig>}
          */
         static normalizeShaderMap(shaderMap, context = {}) {
             if (!shaderMap || typeof shaderMap !== "object" || Array.isArray(shaderMap)) {
@@ -295,6 +752,82 @@
         }
 
         /**
+         * Return the backing canvas that owns the active WebGL context.
+         *
+         * @return {HTMLCanvasElement}
+         */
+        getWebGLCanvas() {
+            return this.webGLCanvas;
+        }
+
+        /**
+         * Return the renderer-local canvas that represents the latest presentable output.
+         *
+         * In private-context mode this is the same canvas as the WebGL backing canvas.
+         *
+         * @return {HTMLCanvasElement}
+         */
+        getPresentationCanvas() {
+            return this.presentationCanvas;
+        }
+
+        /**
+         * Convert a client-space point ({clientX, clientY}) into renderer
+         * framebuffer pixels. Returned coordinates are physical pixels with
+         * bottom-left origin, directly comparable to `gl_FragCoord.xy`, and
+         * are devicePixelRatio-aware.
+         *
+         * Forwards to the attached drawer when available (the drawer owns the
+         * on-page event target). Falls back to using the presentation canvas
+         * as both the framebuffer source and the bounding-rect source, which
+         * is correct when the presentation canvas is the DOM-attached canvas.
+         *
+         * @param {{clientX: number, clientY: number}} point
+         * @return {{x: number, y: number}}
+         */
+        clientPointToFramebufferPx(point) {
+            if (this.drawer && typeof this.drawer.clientPointToFramebufferPx === "function") {
+                return this.drawer.clientPointToFramebufferPx(point);
+            }
+            const canvas = this.presentationCanvas;
+            if (!canvas || typeof canvas.getBoundingClientRect !== "function") {
+                return { x: 0, y: 0 };
+            }
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width ? canvas.width / rect.width : 1;
+            const scaleY = rect.height ? canvas.height / rect.height : 1;
+            return {
+                x: (point.clientX - rect.left) * scaleX,
+                y: (rect.bottom - point.clientY) * scaleY,
+            };
+        }
+
+        /**
+         * Return whether this renderer is attached to a page-global shared WebGL context.
+         *
+         * @return {boolean}
+         */
+        isSharedContext() {
+            return !!this._sharedContextEntry;
+        }
+
+        /**
+         * Return the last configured render dimensions in physical framebuffer pixels.
+         *
+         * @return {{x: number, y: number, width: number, height: number, levels: number, tiledImageCount: number}}
+         */
+        getRenderDimensions() {
+            return {
+                x: this._renderX || 0,
+                y: this._renderY || 0,
+                width: this._renderWidth || 0,
+                height: this._renderHeight || 0,
+                levels: this._renderLevels || 0,
+                tiledImageCount: this._renderTiledImageCount || 0,
+            };
+        }
+
+        /**
          * Set viewport dimensions.
          * @param {Number} x
          * @param {Number} y
@@ -306,8 +839,37 @@
          * @memberof FlexRenderer
          */
         setDimensions(x, y, width, height, levels, tiledImageCount) {
-            this.canvas.width = width;
-            this.canvas.height = height;
+            this._renderX = x || 0;
+            this._renderY = y || 0;
+            this._renderWidth = width || 0;
+            this._renderHeight = height || 0;
+            this._renderLevels = levels || 0;
+            this._renderTiledImageCount = tiledImageCount || 0;
+
+            const webGLCanvas = this.getWebGLCanvas();
+            const presentationCanvas = this.getPresentationCanvas();
+
+            if (this._sharedContextEntry) {
+                const requiredWidth = Math.max(0, Math.ceil(Number(width) || 0));
+                const requiredHeight = Math.max(0, Math.ceil(Number(height) || 0));
+
+                if (webGLCanvas.width < requiredWidth) {
+                    webGLCanvas.width = requiredWidth;
+                }
+
+                if (webGLCanvas.height < requiredHeight) {
+                    webGLCanvas.height = requiredHeight;
+                }
+            } else {
+                webGLCanvas.width = width;
+                webGLCanvas.height = height;
+            }
+
+            if (presentationCanvas !== webGLCanvas) {
+                presentationCanvas.width = width;
+                presentationCanvas.height = height;
+            }
+
             this.gl.viewport(x, y, width, height);
             this.backend.setDimensions(x, y, width, height, levels, tiledImageCount);
         }
@@ -331,6 +893,126 @@
          */
         supportsHtmlControls() {
             return typeof this.htmlHandler === "function";
+        }
+
+        /**
+         * Enable or disable rendering of first-pass diagnostic tiles.
+         *
+         * This controls only whether provided diagnostic tiles are drawn. It does
+         * not change first-pass package construction and does not rebuild WebGL
+         * programs.
+         *
+         * @param {boolean} enabled
+         * @param {object} [options={}]
+         * @param {boolean} [options.redraw=true] request a redraw after changing the setting
+         * @return {boolean} Current diagnostic rendering state.
+         */
+        setRenderDiagnostics(enabled, options = {}) {
+            const current = enabled !== false;
+
+            if (this._renderDiagnostics === current) {
+                return this.getRenderDiagnostics();
+            }
+
+            this._renderDiagnostics = current;
+
+            if (options.redraw !== false && typeof this.redrawCallback === "function") {
+                this.redrawCallback();
+            }
+
+            return this.getRenderDiagnostics();
+        }
+
+        /**
+         * Return whether first-pass diagnostic tiles should be rendered when provided.
+         *
+         * @return {boolean}
+         */
+        getRenderDiagnostics() {
+            return this._renderDiagnostics !== false;
+        }
+
+        /**
+         * Prepare bitmap-like tile data as a backend-owned render resource.
+         *
+         * This method is renderer-neutral and does not inspect OpenSeadragon
+         * tiles, TiledImages, viewports, or tile caches. Concrete upload,
+         * decode, taint/security classification, and cleanup behavior are owned
+         * by the active backend.
+         *
+         * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+         */
+        async prepareBitmapTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareBitmapTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support bitmap tile preparation.")
+                };
+            }
+
+            return this.backend.prepareBitmapTile(options);
+        }
+
+        /**
+         * Prepare GPU texture-set tile data as a backend-owned render resource.
+         *
+         * This method is renderer-neutral and delegates concrete payload
+         * validation, upload, and cleanup behavior to the active backend.
+         *
+         * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+         */
+        async prepareGpuTextureTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareGpuTextureTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support GPU texture tile preparation.")
+                };
+            }
+
+            return this.backend.prepareGpuTextureTile(options);
+        }
+
+        /**
+         * Prepare vector mesh tile data as backend-owned render resources.
+         *
+         * This method is renderer-neutral and delegates concrete buffer/resource
+         * creation to the active backend.
+         *
+         * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+         * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+         */
+        async prepareVectorTile(options = {}) {
+            if (!this.backend || typeof this.backend.prepareVectorTile !== "function") {
+                return {
+                    ok: false,
+                    reason: "unsupported-data",
+                    error: new Error("Active backend does not support vector tile preparation.")
+                };
+            }
+
+            return this.backend.prepareVectorTile(options);
+        }
+
+        /**
+         * Release a backend-owned prepared tile resource.
+         *
+         * Callers that store resources returned by `prepareBitmapTile(...)`,
+         * `prepareGpuTextureTile(...)`, or `prepareVectorTile(...)` must release
+         * them through this method rather than touching backend internals directly.
+         *
+         * @param {*} resource - Backend-owned prepared tile resource.
+         * @returns {void}
+         */
+        releasePreparedTileResource(resource) {
+            if (!resource || !this.backend || typeof this.backend.releasePreparedTileResource !== "function") {
+                return;
+            }
+
+            this.backend.releasePreparedTileResource(resource);
         }
 
         /**
@@ -489,13 +1171,117 @@
                 throw new TypeError("$.FlexRenderer::render: frame.secondPass must be an array.");
             }
 
-            this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
-            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+            const sharedEntry = this._sharedContextEntry;
 
-            this.renderFirstPass(frame.firstPass);
-            this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+            if (!sharedEntry) {
+                this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
-            this.gl.finish();
+                this.renderFirstPass(frame.firstPass);
+                this.__finalPassResult = this.renderSecondPass(frame.secondPass, options.secondPassOptions);
+
+                this.gl.finish();
+                return;
+            }
+
+            if (sharedEntry.lost || this._contextLost) {
+                sharedEntry.contextLostSkipCount++;
+                this._warningCounts["shared-context-lost-render-skip"] =
+                    (this._warningCounts["shared-context-lost-render-skip"] || 0) + 1;
+
+                if (!this._warningsEmitted.has("shared-context-lost-render-skip")) {
+                    this._warningsEmitted.add("shared-context-lost-render-skip");
+                    $.console.warn(
+                        `FlexRenderer shared context '${sharedEntry.key}' is lost; skipping renderer '${this.uniqueId}'.`
+                    );
+                }
+
+                this.__firstPassResult = null;
+                this.__finalPassResult = null;
+                return;
+            }
+
+            if (sharedEntry.busy) {
+                sharedEntry.busySkipCount++;
+                this._warningCounts["shared-context-busy-render-skip"] =
+                    (this._warningCounts["shared-context-busy-render-skip"] || 0) + 1;
+
+                const activeRenderer = sharedEntry.activeRenderer;
+                const message =
+                    `FlexRenderer shared context '${sharedEntry.key}' is already rendering ` +
+                    `'${activeRenderer ? activeRenderer.uniqueId : "unknown"}'; skipping renderer '${this.uniqueId}'.`;
+
+                if (this.debug || this._sharedContextBusyPolicy === "throw") {
+                    throw new Error(message);
+                }
+
+                if (!this._warningsEmitted.has("shared-context-busy-render-skip")) {
+                    this._warningsEmitted.add("shared-context-busy-render-skip");
+                    $.console.warn(message);
+                }
+
+                return;
+            }
+
+            sharedEntry.busy = true;
+            sharedEntry.activeRenderer = this;
+
+            try {
+                const width = Math.max(1, this._renderWidth || this.getPresentationCanvas().width || 1);
+                const height = Math.max(1, this._renderHeight || this.getPresentationCanvas().height || 1);
+
+                if (!this.backend || typeof this.backend.ensureColorTarget !== "function") {
+                    throw new Error("$.FlexRenderer::render: active backend does not support shared-context final color targets.");
+                }
+
+                if (!this.backend || typeof this.backend.presentColorTargetToCanvas !== "function") {
+                    throw new Error("$.FlexRenderer::render: active backend does not support shared-context presentation transfer.");
+                }
+
+                this._finalColorTarget = this.backend.ensureColorTarget(
+                    this._finalColorTarget,
+                    width,
+                    height,
+                    { filter: this.gl.LINEAR }
+                );
+
+                this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+                this.gl.viewport(this._renderX, this._renderY, width, height);
+                this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+
+                this.renderFirstPass(frame.firstPass);
+
+                if (typeof this.backend.clearColorTarget === "function") {
+                    this.backend.clearColorTarget(this._finalColorTarget, [0, 0, 0, 0]);
+                }
+
+                if (frame.secondPass.length) {
+                    this.renderSecondPass(frame.secondPass, $.extend(true, {}, options.secondPassOptions || {}, {
+                        framebuffer: this._finalColorTarget.framebuffer,
+                        width: width,
+                        height: height
+                    }));
+                }
+
+                this.__finalPassResult = this._finalColorTarget;
+
+                this.backend.presentColorTargetToCanvas(
+                    this._finalColorTarget,
+                    this.getPresentationCanvas(),
+                );
+
+                this.gl.finish();
+            } finally {
+                this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+
+                if (this.webglVersion === "2.0" && typeof this.gl.bindVertexArray === "function") {
+                    this.gl.bindVertexArray(null);
+                }
+
+                sharedEntry.activeRenderer = null;
+                sharedEntry.busy = false;
+            }
         }
 
         /**
@@ -508,17 +1294,35 @@
          * @returns {void}
          */
         clear() {
-            if (!this.gl || !this.canvas || !this.canvas.width || !this.canvas.height) {
+            this.__firstPassResult = null;
+            this.__finalPassResult = null;
+
+            if (this._sharedContextEntry) {
+                const canvas = this.getPresentationCanvas();
+
+                if (!canvas || !canvas.width || !canvas.height) {
+                    return;
+                }
+
+                const context = canvas.getContext("2d");
+                if (context) {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                }
+
+                return;
+            }
+
+            const canvas = this.getWebGLCanvas();
+
+            if (!this.gl || !canvas || !canvas.width || !canvas.height) {
                 return;
             }
 
             this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
-            this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+            this.gl.viewport(0, 0, canvas.width, canvas.height);
             this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
             this.gl.clear(this.gl.COLOR_BUFFER_BIT);
             this.gl.finish();
-
-            this.__firstPassResult = null;
         }
 
         /**
@@ -546,21 +1350,45 @@
             program._webGLProgram = webglProgram;
             program._justCreated = true;
 
-            // TODO inner control type udpates are not checked here
-            for (let shaderId in this._shaders) {
-                const shader = this._shaders[shaderId];
+            // TODO inner control type udpates are not checked here (this todo comment might be outdated, verify)
+            const reinstantiateIfTypeChanged = (shaderId, shader, parent) => {
                 const config = shader.getConfig();
-                // Check explicitly type of the config, if updated, recreate shader
-                if (shader.constructor.type() !== config.type) {
-                    const NewShader = $.FlexRenderer.ShaderMediator.getClass(config.type);
+                let current = shader;
+                if (current.constructor.type() !== config.type) {
+                    const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
                     if (NewShader) {
                         // Drop orphan params from the previous shader type before re-instantiation,
                         // otherwise stale keys (color, threshold, connect, incompatible use_channelN, ...)
                         // ride along and trigger parseChannel warnings or sample()-time incompatibilities.
                         this._sanitizeShaderParams(config, NewShader);
                     }
-                    this.createShaderLayer(shaderId, config, false);
+                    if (parent) {
+                        const previous = parent.shaderLayers[shaderId];
+                        current = parent.createShaderLayer(shaderId, config);
+                        parent.shaderLayers[shaderId] = current;
+                        if (previous && previous !== current) {
+                            try {
+                                previous.destroy();
+                            } catch (e) {
+                                $.console.warn(`Shader ${shaderId} destroy() during type change failed.`, e);
+                            }
+                        }
+                    } else {
+                        this.createShaderLayer(shaderId, config, false);
+                        current = this._shaders[shaderId];
+                    }
                 }
+                if (current && current.shaderLayers && current.shaderLayerOrder) {
+                    for (const childId of current.shaderLayerOrder) {
+                        const child = current.shaderLayers[childId];
+                        if (child) {
+                            reinstantiateIfTypeChanged(childId, child, current);
+                        }
+                    }
+                }
+            };
+            for (let shaderId in this._shaders) {
+                reinstantiateIfTypeChanged(shaderId, this._shaders[shaderId], null);
             }
             // Needs reference early
             this._programImplementations[key] = program;
@@ -582,9 +1410,11 @@
                 webglProgram, this.gl, program, $.console.error, this.debug
             )) {
                 this.gl.useProgram(webglProgram);
-                program.created(this.canvas.width, this.canvas.height);
+                const canvas = this.getWebGLCanvas();
+                program.created(canvas.width, canvas.height);
                 return key;
             }
+
             // else todo consider some cleanup
             return undefined;
         }
@@ -602,10 +1432,22 @@
                 program = this.getProgram(program);
             }
 
-            if (this._program) {
-                const reused = !program._justCreated;
+            if (!program || !program.webGLProgram) {
+                throw new Error("$.FlexRenderer::useProgram: invalid program.");
+            }
 
+            const reused = !program._justCreated;
+
+            if (this._program) {
                 if (this.running && this._program === program && reused) {
+                    // Do not trust renderer-local `_program` as proof that WebGL has this
+                    // program currently bound. In shared-context mode, another renderer may
+                    // have changed the context-global CURRENT_PROGRAM. `registerProgram()`
+                    // can also change CURRENT_PROGRAM without updating `_program`.
+                    //
+                    // We still return false so callers skip program.load(...), but we must
+                    // re-bind before any subsequent uniform uploads.
+                    this.gl.useProgram(program.webGLProgram);
                     return false;
                 }
 
@@ -707,25 +1549,24 @@
             implementation.destroy();
             this.gl.deleteProgram(implementation._webGLProgram);
             this.__firstPassResult = null;
+            this.__finalPassResult = null;
             this._programImplementations[key] = null;
         }
 
         /**
          * Create and initialize new ShaderLayer instance and its controls.
-         * @param id
-         * @param {ShaderConfig} shaderConfig object bound to a concrete ShaderLayer instance
-         * @param {boolean} [copyConfig=false] if true, deep copy of the config is used to avoid modification of the parameter
-         * @returns {ShaderLayer} instance of the created shaderLayer
          *
-         * @instance
-         * @memberof FlexRenderer
+         * @param id
+         * @param {ShaderLayerConfig} config - object bound to a concrete ShaderLayer instance
+         * @param {boolean} [copyConfig=false] - if true, deep copy of the config is used to avoid modification of the parameter
+         * @returns {ShaderLayer} A new ShaderLayer instance.
          */
-        createShaderLayer(id, shaderConfig, copyConfig = false) {
+        createShaderLayer(id, config, copyConfig = false) {
             id = $.FlexRenderer.sanitizeKey(id);
 
-            const Shader = $.FlexRenderer.ShaderMediator.getClass(shaderConfig.type);
-            if (!Shader) {
-                throw new Error(`$.FlexRenderer::createShaderLayer: Unknown shader type '${shaderConfig.type}'!`);
+            const ShaderLayerClass = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
+            if (!ShaderLayerClass) {
+                throw new Error(`$.FlexRenderer::createShaderLayer: Unknown shader type '${config.type}'!`);
             }
 
             const defaultConfig = {
@@ -733,19 +1574,19 @@
                 name: "Layer",
                 type: "identity",
                 visible: 1,
-                fixed: false,
                 tiledImages: [],
                 params: {},
                 cache: {},
             };
+
             if (copyConfig) {
                 // Deep copy to avoid modification propagation
-                shaderConfig = $.extend(true, defaultConfig, shaderConfig);
+                config = $.extend(true, defaultConfig, config);
             } else {
                 // Ensure we keep references where possible -> this will make shader object within drawers (e.g. navigator VS main)
                 for (let propName in defaultConfig) {
-                    if (shaderConfig[propName] === undefined) {
-                        shaderConfig[propName] = defaultConfig[propName];
+                    if (config[propName] === undefined) {
+                        config[propName] = defaultConfig[propName];
                     }
                 }
             }
@@ -755,10 +1596,10 @@
             }
 
             // TODO a bit dirty approach, make the program key usable from outside
-            const shader = new Shader(id, {
-                shaderConfig: shaderConfig,
+            const shader = new ShaderLayerClass(id, {
+                shaderConfig: config,
                 backend: this.backend,
-                params: shaderConfig.params,
+                params: config.params,
                 interactive: this.interactive,
 
                 // callback to re-render the viewport
@@ -781,7 +1622,7 @@
                 return shader;
             } catch (e) {
                 delete this._shaders[id];
-                console.error(`Failed to construct shader '${id}' (${shaderConfig.type}).`, e, shaderConfig);
+                console.error(`Failed to construct shader '${id}' (${config.type}).`, e, config);
                 return undefined;
             }
         }
@@ -792,7 +1633,41 @@
 
         getShaderLayer(id) {
             id = $.FlexRenderer.sanitizeKey(id);
-            return this._shaders[id];
+            return this._shaders[id] || this._findNestedShaderLayer(id);
+        }
+
+        _findNestedShaderLayer(sanitizedId) {
+            const walk = (map) => {
+                if (!map) {
+                    return null;
+                }
+                for (const cid in map) {
+                    const s = map[cid];
+                    if (!s) {
+                        continue;
+                    }
+                    if (cid === sanitizedId) {
+                        return s;
+                    }
+                    if (s.shaderLayers) {
+                        const r = walk(s.shaderLayers);
+                        if (r) {
+                            return r;
+                        }
+                    }
+                }
+                return null;
+            };
+            for (const id in this._shaders) {
+                const s = this._shaders[id];
+                if (s && s.shaderLayers) {
+                    const r = walk(s.shaderLayers);
+                    if (r) {
+                        return r;
+                    }
+                }
+            }
+            return null;
         }
 
         getShaderLayerConfig(id) {
@@ -813,12 +1688,12 @@
          */
         changeShaderType(layerId, newType) {
             const id = $.FlexRenderer.sanitizeKey(layerId);
-            const shader = this._shaders[id];
+            const shader = this._shaders[id] || this._findNestedShaderLayer(id);
             if (!shader) {
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
             }
 
-            const NewShader = $.FlexRenderer.ShaderMediator.getClass(newType);
+            const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(newType);
             if (!NewShader) {
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown shader type '${newType}'.`);
             }
@@ -830,7 +1705,7 @@
             config.type = newType;
             config.error = false;
             this._sanitizeShaderParams(config, NewShader);
-            this.registerProgram(null, this.webglContext.secondPassProgramKey);
+            this.registerProgram(null, this.backend.secondPassProgramKey);
         }
 
         /**
@@ -840,7 +1715,7 @@
          * channel values would otherwise cause parseChannel warnings or sample()-time
          * GLSL incompatibilities once the new shader is constructed.
          *
-         * @param {ShaderConfig} shaderConfig    config whose .params object will be mutated
+         * @param {ShaderLayerConfig} shaderConfig    config whose .params object will be mutated
          * @param {Function}     NewShaderClass  the target shader class
          * @private
          */
@@ -1063,6 +1938,10 @@
             for (let sId in this._shaders) {
                 this.removeShader(sId);
             }
+            // _shadersOrder is a separate view over the same set; without this,
+            // getShaderLayerOrder() returns stale ids whose ShaderLayer instances
+            // were just destroyed, and consumers crash on shaderMap[id].getConfig().
+            this._shadersOrder = null;
         }
 
         /**
@@ -1089,7 +1968,7 @@
          *
          * @returns {{
          *   order: string[],
-         *   shaders: Object<string, ShaderConfig>
+         *   shaders: Object<string, ShaderLayerConfig>
          * }}
          */
         getVisualizationSnapshot() {
@@ -1109,7 +1988,7 @@
 
         /**
          * Alias that makes intent explicit when used by application code.
-         * @returns {{order: string[], shaders: Object<string, ShaderConfig>}}
+         * @returns {{order: string[], shaders: Object<string, ShaderLayerConfig>}}
          */
         exportVisualization() {
             return this.getVisualizationSnapshot();
@@ -1226,6 +2105,197 @@
         }
 
         /**
+         * Normalize a non-negative integer value used by interaction state.
+         *
+         * @private
+         * @param {*} value
+         * @return {number}
+         */
+        static _normalizeInteractionInteger(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
+        }
+
+        /**
+         * Normalize an interaction position object.
+         *
+         * @private
+         * @param {*} position
+         * @return {{x: number, y: number}}
+         */
+        static _normalizeInteractionPosition(position) {
+            position = position || {};
+
+            return {
+                x: Number.isFinite(position.x) ? position.x : 0,
+                y: Number.isFinite(position.y) ? position.y : 0,
+            };
+        }
+
+        /**
+         * Check whether two normalized interaction position objects are equal.
+         *
+         * @private
+         * @param {{x: number, y: number}} a
+         * @param {{x: number, y: number}} b
+         * @return {boolean}
+         */
+        static _interactionPositionsEqual(a, b) {
+            return a.x === b.x && a.y === b.y;
+        }
+
+        /**
+         * Check whether two normalized interaction states are equal.
+         *
+         * @private
+         * @param {InteractionState} a
+         * @param {InteractionState} b
+         * @return {boolean}
+         */
+        static _interactionStatesEqual(a, b) {
+            return a.enabled === b.enabled &&
+                a.pointerInside === b.pointerInside &&
+                this._interactionPositionsEqual(a.pointerPositionPx, b.pointerPositionPx) &&
+                a.activeButtons === b.activeButtons &&
+                this._interactionPositionsEqual(a.lastClickPositionPx, b.lastClickPositionPx) &&
+                a.lastClickButtons === b.lastClickButtons &&
+                a.clickSerial === b.clickSerial &&
+                a.dragActive === b.dragActive &&
+                this._interactionPositionsEqual(a.dragStartPositionPx, b.dragStartPositionPx) &&
+                this._interactionPositionsEqual(a.dragCurrentPositionPx, b.dragCurrentPositionPx) &&
+                this._interactionPositionsEqual(a.dragEndPositionPx, b.dragEndPositionPx) &&
+                a.dragButtons === b.dragButtons &&
+                a.dragSerial === b.dragSerial;
+        }
+
+        /**
+         * Normalize interaction state to the canonical backend-agnostic shape.
+         *
+         * Missing fields are filled with defaults. Position fields preserve floating-point
+         * framebuffer pixels and use bottom-left origin, directly comparable to `gl_FragCoord.xy`.
+         *
+         * @param {Partial<InteractionState>|undefined} state
+         * @return {InteractionState}
+         */
+        static normalizeInteractionState(state = undefined) {
+            const defaults = {
+                enabled: false,
+                pointerInside: false,
+                pointerPositionPx: { x: 0, y: 0 },
+                activeButtons: 0,
+                lastClickPositionPx: { x: 0, y: 0 },
+                lastClickButtons: 0,
+                clickSerial: 0,
+                dragActive: false,
+                dragStartPositionPx: { x: 0, y: 0 },
+                dragCurrentPositionPx: { x: 0, y: 0 },
+                dragEndPositionPx: { x: 0, y: 0 },
+                dragButtons: 0,
+                dragSerial: 0,
+            };
+
+            const merged = state && typeof state === "object" ?
+                $.extend(true, {}, defaults, state) :
+                $.extend(true, {}, defaults);
+
+            return {
+                enabled: !!merged.enabled,
+                pointerInside: !!merged.pointerInside,
+                pointerPositionPx: this._normalizeInteractionPosition(merged.pointerPositionPx),
+                activeButtons: this._normalizeInteractionInteger(merged.activeButtons),
+                lastClickPositionPx: this._normalizeInteractionPosition(merged.lastClickPositionPx),
+                lastClickButtons: this._normalizeInteractionInteger(merged.lastClickButtons),
+                clickSerial: this._normalizeInteractionInteger(merged.clickSerial),
+                dragActive: !!merged.dragActive,
+                dragStartPositionPx: this._normalizeInteractionPosition(merged.dragStartPositionPx),
+                dragCurrentPositionPx: this._normalizeInteractionPosition(merged.dragCurrentPositionPx),
+                dragEndPositionPx: this._normalizeInteractionPosition(merged.dragEndPositionPx),
+                dragButtons: this._normalizeInteractionInteger(merged.dragButtons),
+                dragSerial: this._normalizeInteractionInteger(merged.dragSerial),
+            };
+        }
+
+        /**
+         * Patch-update the renderer-owned interaction state.
+         *
+         * This method stores normalized state, optionally emits `interaction-change`,
+         * and optionally requests a redraw so the active backend can consume the new
+         * state during the next second pass.
+         *
+         * @param {Partial<InteractionState>|undefined} state
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        setInteractionState(state = undefined, options = {}) {
+            const previous = this.getInteractionState();
+            const patch = state && typeof state === "object" ? state : {};
+            const current = this.constructor.normalizeInteractionState($.extend(true, {}, previous, patch));
+            const changed = !this.constructor._interactionStatesEqual(previous, current);
+
+            if (changed) {
+                this._interactionState = current;
+            }
+
+            if (options.notify !== false) {
+                this.raiseEvent('interaction-change', {
+                    previous: previous,
+                    current: this.getInteractionState(),
+                    reason: options.reason || 'set-interaction-state',
+                    changed: changed
+                });
+            }
+
+            if (changed && options.redraw !== false && typeof this.redrawCallback === 'function') {
+                this.redrawCallback();
+            }
+
+            return this.getInteractionState();
+        }
+
+        /**
+         * Return a defensive copy of the current canonical interaction state.
+         * Backends should read interaction state through this method instead of caching mutable references.
+         *
+         * @return {InteractionState}
+         */
+        getInteractionState() {
+            return $.extend(true, {}, this._interactionState || this.constructor.normalizeInteractionState());
+        }
+
+        /**
+         * Reset interaction state to the normalized disabled state.
+         *
+         * Unlike `setInteractionState(...)`, this is a full reset rather than a patch update.
+         *
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        clearInteractionState(options = {}) {
+            const previous = this.getInteractionState();
+            const current = this.constructor.normalizeInteractionState();
+            const changed = !this.constructor._interactionStatesEqual(previous, current);
+
+            if (changed) {
+                this._interactionState = current;
+            }
+
+            if (options.notify !== false) {
+                this.raiseEvent('interaction-change', {
+                    previous: previous,
+                    current: this.getInteractionState(),
+                    reason: options.reason || 'clear-interaction-state',
+                    changed: changed
+                });
+            }
+
+            if (changed && options.redraw !== false && typeof this.redrawCallback === 'function') {
+                this.redrawCallback();
+            }
+
+            return this.getInteractionState();
+        }
+
+        /**
          * Reuse the current first-pass result and render the second pass into an offscreen target.
          *
          * This is the public contract used by features that need a texture copy of the composed
@@ -1243,25 +2313,75 @@
         }
 
         destroy() {
-            this.htmlReset();
-            this.deleteShaders();
-            for (let pId in this._programImplementations) {
-                this.deleteProgram(pId);
+            if (this._destroyed) {
+                return;
             }
-            if (this._extractionFB) {
-                this.gl.deleteFramebuffer(this._extractionFB);
-                this._extractionFB = null;
+
+            this._destroyed = true;
+
+            try {
+                this.htmlReset();
+                this.deleteShaders();
+
+                for (let pId in this._programImplementations) {
+                    this.deleteProgram(pId);
+                }
+
+                if (this._extractionFB) {
+                    this.gl.deleteFramebuffer(this._extractionFB);
+                    this._extractionFB = null;
+                }
+
+                if (this._debugPreviewFB) {
+                    this.gl.deleteFramebuffer(this._debugPreviewFB);
+                    this._debugPreviewFB = null;
+                }
+
+                if (this._debugPreviewColorRB) {
+                    this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
+                    this._debugPreviewColorRB = null;
+                }
+
+                if (this._finalColorTarget && this.backend && typeof this.backend.destroyColorTarget === "function") {
+                    this.backend.destroyColorTarget(this._finalColorTarget);
+                    this._finalColorTarget = null;
+                }
+
+                this.backend.destroy();
+                this._programImplementations = {};
+            } finally {
+                const entry = this._sharedContextEntry;
+
+                if (entry) {
+                    entry.renderers.delete(this);
+                    entry.refCount = Math.max(0, entry.refCount - 1);
+
+                    if (entry.activeRenderer === this) {
+                        entry.activeRenderer = null;
+                        entry.busy = false;
+                    }
+
+                    if (entry.refCount === 0) {
+                        if (entry.canvas && entry.handleContextLost) {
+                            entry.canvas.removeEventListener("webglcontextlost", entry.handleContextLost, false);
+                        }
+
+                        if (entry.canvas && entry.handleContextRestored) {
+                            entry.canvas.removeEventListener("webglcontextrestored", entry.handleContextRestored, false);
+                        }
+
+                        const ext = entry.gl.getExtension('WEBGL_lose_context');
+                        if (ext) {
+                            ext.loseContext();
+                        }
+
+                        this.constructor._sharedContexts.delete(entry.key);
+                    }
+                }
+
+                this._sharedContextEntry = null;
+                this._sharedContextKey = null;
             }
-            if (this._debugPreviewFB) {
-                this.gl.deleteFramebuffer(this._debugPreviewFB);
-                this._debugPreviewFB = null;
-            }
-            if (this._debugPreviewColorRB) {
-                this.gl.deleteRenderbuffer(this._debugPreviewColorRB);
-                this._debugPreviewColorRB = null;
-            }
-            this.backend.destroy();
-            this._programImplementations = {};
         }
 
         static sanitizeKey(key) {
@@ -1569,15 +2689,20 @@
             // Use provided width/height, or fall back to drawingBuffer/canvas
             if (!width || !height) {
                 // try drawingBufferSize first (more correct for FBOs)
+                const dimensions = this.getRenderDimensions();
+                const canvas = this.getWebGLCanvas();
+
                 width =
                     width ||
+                    dimensions.width ||
                     srcGL.drawingBufferWidth ||
-                    (this.canvas && this.canvas.width) ||
+                    (canvas && canvas.width) ||
                     0;
                 height =
                     height ||
+                    dimensions.height ||
                     srcGL.drawingBufferHeight ||
-                    (this.canvas && this.canvas.height) ||
+                    (canvas && canvas.height) ||
                     0;
             }
 
@@ -1713,8 +2838,9 @@
             const rawRows = Math.max(colorLayers, stencilLayers);
             const mappedRows = tiCount;
 
-            const width = Math.max(1, Math.floor(this.canvas.width));
-            const height = Math.max(1, Math.floor(this.canvas.height));
+            const dimensions = this.getRenderDimensions();
+            const width = Math.max(1, Math.floor(dimensions.width));
+            const height = Math.max(1, Math.floor(dimensions.height));
             const scaledCellW = Math.max(1, Math.floor(width * scale));
             const scaledCellH = Math.max(1, Math.floor(height * scale));
             const cellScale = Math.min(1, maxCellSize / Math.max(scaledCellW, scaledCellH));
@@ -1996,8 +3122,7 @@
             w.document.body.appendChild(cnv);
             w.__debugCtx = cnv.getContext('2d');
         }
-    };
-
+    }
 
     // STATIC PROPERTIES
     /**
@@ -2006,10 +3131,14 @@
      * @type {RegExp}
      * @memberof FlexRenderer
      */
-    $.FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
-    $.FlexRenderer.__runtimeSupportCache = null;
+    FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
 
-    $.FlexRenderer.BLEND_MODE = [
+    FlexRenderer.__runtimeSupportCache = null;
+
+    FlexRenderer._sharedContexts = new Map();
+    FlexRenderer._rendererInstanceIdSeed = 0;
+
+    FlexRenderer.SUPPORTED_BLEND_MODES = [
         'mask',
         'source-over',
         'source-in',
@@ -2038,7 +3167,7 @@
         'luminosity',
     ];
 
-    $.FlexRenderer.jsonReplacer = function (key, value) {
+    FlexRenderer.jsonReplacer = function (key, value) {
         return key.startsWith("_") || ["eventSource"].includes(key) ? undefined : value;
     };
 
@@ -2046,7 +3175,7 @@
      * Generic computational program interface
      * @type {{new(*): $.FlexRenderer.Program, context: *, _requiresLoad: boolean, prototype: Program}}
      */
-    $.FlexRenderer.Program = class {
+     class Program {
         constructor(context) {
             this.context = context;
             this._requiresLoad = true;
@@ -2124,38 +3253,41 @@
          * Destroy program. No arguments.
          */
         destroy() {}
-    };
+    }
+
+    FlexRenderer.Program = Program;
+
+    $.FlexRenderer = FlexRenderer;
+
 
     /**
      * Blank layer that takes almost no memory and current renderer skips it.
-     * @type {OpenSeadragon.BlankTileSource}
      */
-    $.BlankTileSource = class extends $.TileSource {
+     class BlankTileSource extends $.TileSource {
         supports(data, url) {
             return (data && data.type === "_blank") || (url && url.type === "_blank");
         }
-        configure(options, dataUrl, postData) {
+
+        configure(options, _dataUrl, _postData) {
             return $.extend(options, {
                 width: 512,
                 height: 512,
-                _tileWidth: 512,
-                _tileHeight: 512,
                 tileSize: 512,
                 tileOverlap: 0,
                 minLevel: 0,
                 maxLevel: 0,
-                dimensions: new $.Point(512, 512),
             });
         }
-        downloadTileStart(context) {
-            return context.finish("_blank", undefined, "undefined");
-        }
-        getMetadata() {
-            return this;
-        }
+
         getTileUrl(level, x, y) {
             return "_blank";
         }
-    };
+
+        downloadTileStart(context) {
+            return context.finish("_blank", undefined, "undefined");
+        }
+    }
+
+    $.BlankTileSource = BlankTileSource;
 
 })(OpenSeadragon);

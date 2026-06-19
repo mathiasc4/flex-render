@@ -1,6 +1,6 @@
 (function($) {
 
-$.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
+class WebGL2 extends $.FlexRenderer.WebGLImplementation {
     /**
      * Create a WebGL 2.0 rendering implementation.
      * @param {OpenSeadragon.FlexRenderer} renderer
@@ -9,7 +9,10 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
     constructor(renderer, gl) {
         // sets this.renderer, this.gl, this.webGLVersion
         super(renderer, gl, "2.0");
+
         $.console.info("WebGl 2.0 renderer.");
+
+        this._preparedTileResources = new Set();
     }
 
     get firstPassProgramKey() {
@@ -26,29 +29,15 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
 
     init() {
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
-
-        // TODO: make icons dynamic
-
-        const countryIcon = new Image();
-        countryIcon.src = "/icons/place/country-icon.png";
-        countryIcon.onload = () => {
-            this.firstAtlas.addImage(countryIcon);
-        };
-
-        const cityIcon = new Image();
-        cityIcon.src = "/icons/place/city-icon.png";
-        cityIcon.onload = () => {
-            this.firstAtlas.addImage(cityIcon);
-        };
-
-        const villageIcon = new Image();
-        villageIcon.src = "/icons/place/village-icon.png";
-        villageIcon.onload = () => {
-            this.firstAtlas.addImage(villageIcon);
-        };
-
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
+        this._presentationTransferScratch = {
+            canvas: null,
+            ctx: null,
+            pixels: null,
+            flippedPixels: null,
+            imageData: null
+        };
 
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.FirstPassProgram(this, this.gl, this.firstAtlas), "firstPass");
         this.renderer.registerProgram(new $.FlexRenderer.WebGL20.SecondPassProgram(this, this.gl, this.secondAtlas), "secondPass");
@@ -70,6 +59,344 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
 
     getTextureSize(index) {
         return `osd_texture_size(${index})`;
+    }
+
+    /**
+     * Return the backend-owned GLSL function name used to compute one ShaderLayer.
+     *
+     * This keeps generated layer execution functions namespaced to FlexRenderer
+     * while still preserving the stable shader uid suffix.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @returns {string}
+     */
+    getShaderLayerComputeName(shaderLayer) {
+        return `fr_compute_${shaderLayer.uid}`;
+    }
+
+    /**
+     * Return the backend-owned GLSL function name used to compute a ShaderLayer stack.
+     *
+     * Root stacks use a stable root name. Group stacks use the group layer uid,
+     * so nested stack functions remain deterministic without WebGL20 special-casing
+     * the group shader type.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer|null} [ownerShader=null]
+     * @returns {string}
+     */
+    getShaderLayerStackComputeName(ownerShader = null) {
+        return ownerShader ? `fr_compute_${ownerShader.uid}_stack` : "fr_compute_root_stack";
+    }
+
+    /**
+     * Emit a safe placeholder compute function for a disabled or failed ShaderLayer.
+     *
+     * Disabled layers are still represented by a valid compute function, but stack
+     * execution skips them. This prevents missing-function failures if future
+     * composition code accidentally references a disabled layer.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @param {string} reason
+     * @returns {string}
+     */
+    getShaderLayerPlaceholderDefinition(shaderLayer, reason) {
+        return `
+// ${shaderLayer.uid} - ${reason}
+vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
+    return vec4(0.0);
+}
+`;
+    }
+
+    /**
+     * Emit the GLSL definitions needed to compute one ShaderLayer.
+     *
+     * Invisible, "none", and error layers intentionally receive placeholder
+     * functions rather than full shader bodies. Their execution remains a no-op
+     * in stack composition.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @returns {string}
+     */
+    getShaderLayerComputeDefinition(shaderLayer) {
+        let shaderConfig = null;
+
+        try {
+            shaderConfig = shaderLayer.getConfig();
+        } catch (e) {
+            $.console.error(`Failed to read shader config for '${shaderLayer.id}'. Emitting placeholder.`, e);
+            return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Config read failed placeholder");
+        }
+
+        if (!shaderConfig || shaderConfig.type === "none" || shaderConfig.error || !shaderConfig.visible) {
+            return this.getShaderLayerPlaceholderDefinition(
+                shaderLayer,
+                "Disabled, hidden, or error placeholder"
+            );
+        }
+
+        try {
+            return `
+// ${shaderLayer.uid} - Definition
+${shaderLayer.getFragmentShaderDefinition()}
+
+// ${shaderLayer.uid} - Custom blending function for a given shader
+${shaderLayer.getCustomBlendFunction(shaderLayer.uid + "_blend_func")}
+
+// ${shaderLayer.uid} - Shader code execution
+vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
+${shaderLayer.getFragmentShaderExecution()}
+}
+`;
+        } catch (e) {
+            $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderConfig.type}). Emitting placeholder.`, e);
+            shaderConfig.error = true;
+            return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Assembly error placeholder");
+        }
+    }
+
+    /**
+     * Emit the stencil-pass setup code for a ShaderLayer.
+     *
+     * Layers without tiled-image sources are treated as always passing stencil.
+     *
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer} shaderLayer
+     * @returns {string}
+     */
+    getShaderLayerStencilPassCode(shaderLayer) {
+        const shaderConfig = shaderLayer.getConfig();
+        const hasSources = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length > 0;
+
+        if (!hasSources) {
+            return "    stencilPasses = true;";
+        }
+
+        return `    stencilPasses = osd_stencil_texture(${shaderLayer.__renderSlot}, 0, v_texture_coords).r > 0.995;`;
+    }
+
+    /**
+     * Emit GLSL definitions for a complete ShaderLayer stack, including:
+     * - one compute function for each child layer;
+     * - one named stack compute function returning the composed vec4.
+     *
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer|null} [options.ownerShader=null]
+     * @param {string} [options.stackName] explicit GLSL stack function name
+     * @param {string} [options.initialColor="vec4(0.0)"] initial stack color expression
+     * @param {boolean} [options.useInspectorAlpha=false] apply root inspector alpha to layer opacity
+     * @returns {string}
+     */
+    getShaderLayerStackDefinition(shaderMap, keyOrder, options = {}) {
+        let definition = "";
+
+        for (const shaderLayerId of keyOrder || []) {
+            const shaderLayer = shaderMap && shaderMap[shaderLayerId];
+            if (!shaderLayer) {
+                continue;
+            }
+
+            definition += this.getShaderLayerComputeDefinition(shaderLayer);
+        }
+
+        const stackName = options.stackName || this.getShaderLayerStackComputeName(options.ownerShader || null);
+
+        definition += `
+// ${stackName} - ShaderLayer stack composition
+vec4 ${stackName}() {
+${this._getShaderLayerStackFunctionBody(shaderMap, keyOrder, options)}
+}
+`;
+
+        return definition;
+    }
+
+    /**
+     * Return the GLSL expression that invokes a generated ShaderLayer stack.
+     *
+     * The stack body itself is emitted by getShaderLayerStackDefinition(...).
+     *
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @param {OpenSeadragon.FlexRenderer.ShaderLayer|null} [options.ownerShader=null]
+     * @param {string} [options.stackName] explicit GLSL stack function name
+     * @returns {string}
+     */
+    getShaderLayerStackExecution(shaderMap, keyOrder, options = {}) {
+        const stackName = options.stackName || this.getShaderLayerStackComputeName(options.ownerShader || null);
+        return `${stackName}()`;
+    }
+
+    /**
+     * Convenience wrapper returning both stack definition source and the stack call expression.
+     *
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @returns {{definition: string, execution: string}}
+     */
+    composeShaderLayerStack(shaderMap, keyOrder, options = {}) {
+        return {
+            definition: this.getShaderLayerStackDefinition(shaderMap, keyOrder, options),
+            execution: this.getShaderLayerStackExecution(shaderMap, keyOrder, options)
+        };
+    }
+
+    /**
+     * Emit the body of a named returning ShaderLayer stack function.
+     *
+     * This is the single source of truth for WebGL2 GLSL stack composition:
+     * hidden layers are no-ops, hidden non-clip layers break the clip target,
+     * and visible clip layers only affect the nearest visible non-clip target.
+     *
+     * @private
+     * @param {Object<string, OpenSeadragon.FlexRenderer.ShaderLayer>} shaderMap
+     * @param {string[]} keyOrder
+     * @param {Object} [options={}]
+     * @param {string} [options.initialColor="vec4(0.0)"]
+     * @param {boolean} [options.useInspectorAlpha=false]
+     * @returns {string}
+     */
+    _getShaderLayerStackFunctionBody(shaderMap, keyOrder, options = {}) {
+        const initialColor = options.initialColor || "vec4(0.0)";
+        const useInspectorAlpha = options.useInspectorAlpha === true;
+
+        let execution = `
+    vec4 intermediate_color = ${initialColor};
+    vec4 overall_color = intermediate_color;
+    vec4 clip_color = vec4(.0);
+    vec4 attrs;
+`;
+
+        let remainingBlendShader = null;
+        let clipTargetAvailable = false;
+
+        const getRemainingBlending = () => {
+            if (!remainingBlendShader) {
+                return "";
+            }
+
+            return `
+${this.getShaderLayerStencilPassCode(remainingBlendShader)}
+    overall_color = ${remainingBlendShader.mode === "show" ? "blend_source_over" : remainingBlendShader.uid + "_blend_func"}(intermediate_color, overall_color);
+`;
+        };
+
+        for (const shaderLayerId of keyOrder || []) {
+            const shaderLayer = shaderMap && shaderMap[shaderLayerId];
+            if (!shaderLayer) {
+                continue;
+            }
+
+            const executionSnapshot = execution;
+            const remainingBlendSnapshot = remainingBlendShader;
+            const clipTargetAvailableSnapshot = clipTargetAvailable;
+
+            let shaderLayerConfig = null;
+            let isClipLayer = false;
+
+            try {
+                shaderLayerConfig = shaderLayer.getConfig();
+                isClipLayer = shaderLayer._mode === "clip";
+
+                const slot = shaderLayer.__renderSlot;
+                const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
+                const opacityModifier = useInspectorAlpha ?
+                    `(${opacityModifierBase}) * inspector_layer_alpha(${slot})` :
+                    opacityModifierBase;
+
+                execution += `\n    // ${shaderLayer.uid}\n`;
+
+                if (!shaderLayerConfig || shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
+                    if (!isClipLayer) {
+                        // A hidden non-clip layer breaks the clip chain. Clip layers above it
+                        // must not accidentally modify the previous visible non-clip layer.
+                        clipTargetAvailable = false;
+                    }
+
+                    execution += `
+    // ${shaderLayer.uid} - Disabled (type none, error, or visible = false)
+    // Intentionally skipped. Disabled layers do not emit blending,
+    // clipping, or composition-boundary code.
+`;
+
+                    continue;
+                }
+
+                if (isClipLayer && !clipTargetAvailable) {
+                    execution += `
+    // ${shaderLayer.uid} - Clip skipped because there is no visible non-clip layer to clip.
+`;
+
+                    continue;
+                }
+
+                execution += `
+    instance_id = ${slot};
+${this.getShaderLayerStencilPassCode(shaderLayer)}
+    attrs = u_shaderVariables[${slot}];
+    opacity = attrs.x;
+    pixelSize = attrs.y;
+    imageOriginPx = attrs.zw;
+    zoom = u_zoom;
+`;
+
+                if (!isClipLayer) {
+                    execution += `${getRemainingBlending()}
+    // ${shaderLayer.uid} - blending
+    intermediate_color = ${this.getShaderLayerComputeName(shaderLayer)}();
+    intermediate_color.a = intermediate_color.a * ${opacityModifier};
+`;
+
+                    remainingBlendShader = shaderLayer;
+                    clipTargetAvailable = true;
+                } else {
+                    execution += `
+    // ${shaderLayer.uid} - clipping
+    clip_color = ${this.getShaderLayerComputeName(shaderLayer)}();
+    clip_color.a = clip_color.a * ${opacityModifier};
+    intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
+`;
+                }
+            } catch (e) {
+                $.console.error(
+                    `Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig ? shaderLayerConfig.type : "unknown"}). Hiding layer.`,
+                    e
+                );
+
+                if (shaderLayerConfig) {
+                    shaderLayerConfig.error = true;
+                }
+
+                execution = executionSnapshot;
+                remainingBlendShader = remainingBlendSnapshot;
+                clipTargetAvailable = clipTargetAvailableSnapshot;
+
+                if (!isClipLayer) {
+                    // Treat a failed non-clip layer like a hidden non-clip layer.
+                    // Following clip layers must not retarget the previous visible layer.
+                    clipTargetAvailable = false;
+                }
+
+                execution += `
+    // ${shaderLayer.uid} - Disabled after assembly error
+    // Intentionally skipped. Failed layers do not emit blending,
+    // clipping, or composition-boundary code.
+`;
+            }
+        }
+
+        if (remainingBlendShader) {
+            execution += getRemainingBlending();
+        }
+
+        execution += `
+    return overall_color;
+`;
+
+        return execution;
     }
 
     setDimensions(x, y, width, height, levels, tiledImageCount) {
@@ -104,14 +431,36 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
     }
 
     destroy() {
+        if (this._preparedTileResources) {
+            for (const resource of Array.from(this._preparedTileResources)) {
+                this.releasePreparedTileResource(resource);
+            }
+
+            this._preparedTileResources.clear();
+        }
+
         if (this._namedColorTargets) {
             for (const key of Object.keys(this._namedColorTargets)) {
                 this._destroyColorTarget(this._namedColorTargets[key]);
             }
+
             this._namedColorTargets = {};
         }
+
         this.firstAtlas.destroy();
         this.secondAtlas.destroy();
+
+        // clean all texture units; adapted from https://stackoverflow.com/a/23606581/1214731
+        const numTextureUnits = this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS);
+
+        for (let unit = 0; unit < numTextureUnits; ++unit) {
+            this.gl.activeTexture(this.gl.TEXTURE0 + unit);
+            this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+            this.gl.bindTexture(this.gl.TEXTURE_2D_ARRAY, null);
+        }
+
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     }
 
     _createColorTarget(width, height, options = {}) {
@@ -135,6 +484,11 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
         target.framebuffer = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.texture, 0);
+
+        // Make the single color attachment explicitly drawable. This matters for
+        // shared-context final targets because the second pass renders into this FBO,
+        // not into the WebGL default framebuffer.
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
 
         const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
         if (status !== gl.FRAMEBUFFER_COMPLETE) {
@@ -189,9 +543,129 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
         }
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
         gl.clearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * Ensure a renderer-owned color target.
+     *
+     * @param {object | null} target
+     * @param {number} width
+     * @param {number} height
+     * @param {object} [options={}]
+     * @returns {object}
+     */
+    ensureColorTarget(target, width, height, options = {}) {
+        return this._ensureColorTarget(target, width, height, options);
+    }
+
+    /**
+     * Clear a renderer-owned color target.
+     *
+     * @param {object} target
+     * @param {number[]} [rgba=[0, 0, 0, 0]]
+     * @returns {void}
+     */
+    clearColorTarget(target, rgba = [0, 0, 0, 0]) {
+        this._clearColorTarget(target, rgba);
+    }
+
+    /**
+     * Destroy a renderer-owned color target.
+     *
+     * @param {object|null} target
+     * @returns {void}
+     */
+    destroyColorTarget(target) {
+        this._destroyColorTarget(target);
+    }
+
+    /**
+     * Copy a color target into a renderer-local presentation canvas.
+     *
+     * Shared-context presentation uses readPixels because the WebGL default
+     * framebuffer is not a reliable intermediate transfer target across browsers
+     * and context configurations.
+     *
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @returns {string} Transfer mode used.
+     */
+    presentColorTargetToCanvas(target, canvas) {
+        if (!target || !target.framebuffer || !canvas) {
+            return "none";
+        }
+
+        return this._readColorTargetToCanvas(target, canvas);
+    }
+
+    /**
+     * Copy a color target into a presentation canvas through readPixels.
+     *
+     * @private
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @returns {string} Always "read-pixels".
+     */
+    _readColorTargetToCanvas(target, canvas) {
+        const gl = this.gl;
+        const targetWidth = target.width || 0;
+        const targetHeight = target.height || 0;
+        const canvasWidth = canvas.width || 0;
+        const canvasHeight = canvas.height || 0;
+        const width = Math.min(targetWidth, canvasWidth);
+        const height = Math.min(targetHeight, canvasHeight);
+        const scratch = this._presentationTransferScratch;
+
+        if (!width || !height) {
+            return "read-pixels";
+        }
+
+        const length = width * height * 4;
+        const rowLength = width * 4;
+
+        if (!scratch.pixels || scratch.pixels.length !== length) {
+            scratch.pixels = new Uint8Array(length);
+        }
+
+        if (!scratch.flippedPixels || scratch.flippedPixels.length !== length) {
+            scratch.flippedPixels = new Uint8ClampedArray(length);
+        }
+
+        const context = canvas.getContext("2d");
+
+        if (!context) {
+            return "read-pixels";
+        }
+
+        if (canvasWidth !== targetWidth || canvasHeight !== targetHeight) {
+            context.clearRect(0, 0, canvasWidth, canvasHeight);
+        }
+
+        if (!scratch.imageData || scratch.imageData.width !== width || scratch.imageData.height !== height) {
+            scratch.imageData = context.createImageData(width, height);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, scratch.pixels);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        for (let y = 0; y < height; y++) {
+            const srcStart = (height - 1 - y) * rowLength;
+            const dstStart = y * rowLength;
+            scratch.flippedPixels.set(
+                scratch.pixels.subarray(srcStart, srcStart + rowLength),
+                dstStart
+            );
+        }
+
+        scratch.imageData.data.set(scratch.flippedPixels);
+        context.putImageData(scratch.imageData, 0, 0);
+
+        return "read-pixels";
     }
 
     /**
@@ -200,8 +674,9 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
      * but into a reusable color target.
      */
     renderSecondPassToTexture(renderArray, options = {}) {
-        const width = options.width || this.renderer.canvas.width || this.gl.drawingBufferWidth;
-        const height = options.height || this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const dimensions = this.renderer.getRenderDimensions();
+        const width = options.width || dimensions.width || this.gl.drawingBufferWidth;
+        const height = options.height || dimensions.height || this.gl.drawingBufferHeight;
         const target = options.target ?
             this._ensureColorTarget(options.target, width, height, options) :
             this._ensureColorTarget(options.targetKey || '__second_pass_texture', width, height, options);
@@ -227,8 +702,9 @@ $.FlexRenderer.WebGL20 = class extends $.FlexRenderer.WebGLImplementation {
      * stays inside the normal second-pass shader.
      */
     processSecondPassWithInspector(renderArray, options = undefined) {
-        const width = this.renderer.canvas.width || this.gl.drawingBufferWidth;
-        const height = this.renderer.canvas.height || this.gl.drawingBufferHeight;
+        const dimensions = this.renderer.getRenderDimensions();
+        const width = dimensions.width || this.gl.drawingBufferWidth;
+        const height = dimensions.height || this.gl.drawingBufferHeight;
 
         const fullTarget = this._ensureColorTarget("__inspector_full", width, height, { filter: this.gl.LINEAR });
 
@@ -396,7 +872,650 @@ if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }[name];
     }
-};
+
+    /**
+     * Prepare bitmap-like tile data as a WebGL2 texture array resource.
+     *
+     * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+     * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+     */
+    async prepareBitmapTile(options = {}) {
+        const gl = this.gl;
+        const source = this._normalizeBitmapTileSource(options.data);
+        const textureOptions = options.textureOptions || {};
+
+        if (!source) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("Bitmap tile preparation requires bitmap-like source data.")
+            );
+        }
+
+        let bitmap = null;
+        let ownsBitmap = false;
+
+        try {
+            if (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) {
+                bitmap = source;
+            } else {
+                bitmap = await createImageBitmap(source);
+                ownsBitmap = true;
+            }
+        } catch (error) {
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "invalid-data"),
+                error
+            );
+        }
+
+        const width = (bitmap && Number(bitmap.width)) || 0;
+        const height = (bitmap && Number(bitmap.height)) || 0;
+
+        if (!width || !height) {
+            if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
+                bitmap.close();
+            }
+
+            return this._makePreparedTileFailure(
+                "invalid-data",
+                new Error("Bitmap tile preparation produced empty or invalid dimensions.")
+            );
+        }
+
+        let texture = null;
+
+        try {
+            texture = gl.createTexture();
+
+            if (!texture) {
+                throw new Error("WebGL2 failed to create a bitmap tile texture.");
+            }
+
+            this._clearWebGLErrors();
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 1);
+            gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, 1, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+
+            const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+            this._throwIfWebGLError("Bitmap tile texture upload");
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._preparedTileResources.add(texture);
+
+            return {
+                ok: true,
+                resource: texture,
+                texture: texture,
+                width: width,
+                height: height,
+                textureDepth: 1,
+                packCount: 1,
+                channelCount: 4
+            };
+        } catch (error) {
+            if (texture) {
+                gl.deleteTexture(texture);
+            }
+
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "webgl-upload-failed"),
+                error
+            );
+        } finally {
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
+                bitmap.close();
+            }
+        }
+    }
+
+    /**
+     * Prepare packed GPU texture-set tile data as a WebGL2 texture array resource.
+     *
+     * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+     * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+     */
+    async prepareGpuTextureTile(options = {}) {
+        const gl = this.gl;
+        const gpu = options.data;
+        const textureOptions = options.textureOptions || {};
+
+        if (!gpu || typeof gpu !== "object") {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("GPU texture tile preparation requires a texture-set object.")
+            );
+        }
+
+        const width = Number(gpu.width) || 0;
+        const height = Number(gpu.height) || 0;
+        const packs = Array.isArray(gpu.packs) ? gpu.packs : [];
+
+        if (!width || !height) {
+            return this._makePreparedTileFailure(
+                "invalid-data",
+                new Error("GPU texture tile preparation requires positive width and height.")
+            );
+        }
+
+        if (!packs.length) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new Error("GPU texture tile preparation requires at least one texture pack.")
+            );
+        }
+
+        const firstFormatName = (packs[0] && packs[0].format) || "RGBA8";
+
+        let formatInfo;
+        switch (firstFormatName) {
+            case "RGBA8":
+                formatInfo = {
+                    internalFormat: gl.RGBA8,
+                    format: gl.RGBA,
+                    type: gl.UNSIGNED_BYTE
+                };
+                break;
+
+            case "RGBA16F":
+                formatInfo = {
+                    internalFormat: gl.RGBA16F,
+                    format: gl.RGBA,
+                    type: gl.HALF_FLOAT
+                };
+                break;
+
+            default:
+                formatInfo = null;
+        }
+
+        if (!formatInfo) {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new Error(`Unsupported GPU texture pack format '${firstFormatName}'.`)
+            );
+        }
+
+        for (let layer = 0; layer < packs.length; layer++) {
+            const pack = packs[layer];
+            const packFormatName = (pack && pack.format) || firstFormatName;
+
+            if (!pack || !pack.data) {
+                return this._makePreparedTileFailure(
+                    "invalid-data",
+                    new Error(`GPU texture pack ${layer} is missing pixel data.`)
+                );
+            }
+
+            if (packFormatName !== firstFormatName) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new Error("Mixed GPU texture pack formats are not supported.")
+                );
+            }
+
+            if (!ArrayBuffer.isView(pack.data)) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new TypeError(`GPU texture pack ${layer} data must be a typed array.`)
+                );
+            }
+        }
+
+        const packCount = packs.length;
+        const channelCount = Number(gpu.channelCount) || packCount * 4;
+        let texture = null;
+
+        try {
+            texture = gl.createTexture();
+
+            if (!texture) {
+                throw new Error("WebGL2 failed to create a GPU texture-set tile texture.");
+            }
+
+            this._clearWebGLErrors();
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, formatInfo.internalFormat, width, height, packCount);
+
+            for (let layer = 0; layer < packCount; layer++) {
+                gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, width, height, 1, formatInfo.format, formatInfo.type, packs[layer].data);
+            }
+
+            const filter = textureOptions.imageSmoothingEnabled ? gl.LINEAR : gl.NEAREST;
+
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+            this._throwIfWebGLError("GPU texture-set tile upload");
+
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._preparedTileResources.add(texture);
+
+            return {
+                ok: true,
+                resource: texture,
+                texture: texture,
+                width: width,
+                height: height,
+                textureDepth: packCount,
+                packCount: packCount,
+                channelCount: channelCount
+            };
+        } catch (error) {
+            if (texture) {
+                gl.deleteTexture(texture);
+            }
+
+            return this._makePreparedTileFailure(
+                this._classifyTilePreparationError(error, "webgl-upload-failed"),
+                error
+            );
+        } finally {
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+        }
+    }
+
+    /**
+     * Prepare vector mesh tile data as WebGL2 buffer resources.
+     *
+     * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+     * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+     */
+    async prepareVectorTile(options = {}) {
+        const data = options.data;
+
+        if (!data || typeof data !== "object") {
+            return this._makePreparedTileFailure(
+                "unsupported-data",
+                new TypeError("Vector tile preparation requires a vector mesh object.")
+            );
+        }
+
+        const vectors = {};
+
+        try {
+            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
+            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
+
+            if (data.fills && data.fills.length) {
+                vectors.fills = this._prepareVectorTileBatch(data.fills);
+            }
+
+            if (hasMeshLines) {
+                vectors.lines = this._prepareVectorTileBatch(data.lines);
+            }
+
+            if (hasNativeLines) {
+                const linePrimitiveGroups = new Map();
+
+                for (const mesh of data.linePrimitives) {
+                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
+                        ? mesh.lineWidth
+                        : 1;
+                    const key = String(lineWidth);
+
+                    if (!linePrimitiveGroups.has(key)) {
+                        linePrimitiveGroups.set(key, []);
+                    }
+
+                    linePrimitiveGroups.get(key).push(mesh);
+                }
+
+                vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map((meshes) => {
+                    return this._prepareVectorTileBatch(meshes);
+                });
+            }
+
+            if (data.points && data.points.length) {
+                vectors.points = this._prepareVectorTileBatch(data.points);
+            }
+
+            this._preparedTileResources.add(vectors);
+
+            return {
+                ok: true,
+                resource: vectors,
+                vectors: vectors
+            };
+        } catch (error) {
+            this._releasePreparedVectorTileResource(vectors);
+
+            return this._makePreparedTileFailure(
+                "webgl-upload-failed",
+                error
+            );
+        }
+    }
+
+    _prepareVectorTileBatch(meshes) {
+        const gl = this.gl;
+
+        if (!Array.isArray(meshes) || !meshes.length) {
+            throw new TypeError("Vector tile batch requires at least one mesh.");
+        }
+
+        let vCount = 0;
+        let iCount = 0;
+
+        for (const mesh of meshes) {
+            if (!mesh || !mesh.vertices || !mesh.indices) {
+                throw new TypeError("Vector mesh requires vertices and indices.");
+            }
+
+            vCount += mesh.vertices.length / 4;
+            iCount += mesh.indices.length;
+        }
+
+        const positions = new Float32Array(vCount * 4);
+        const parameters = new Float32Array(vCount * 4);
+        const indices = new Uint32Array(iCount);
+
+        let vOfs = 0;
+        let iOfs = 0;
+        let baseVertex = 0;
+
+        for (const mesh of meshes) {
+            positions.set(mesh.vertices, vOfs * 4);
+
+            const rgba = mesh.color ? mesh.color : [0, 0, 0, 1];
+            const r = Math.max(0.0, Math.min(1.0, rgba[0]));
+            const g = Math.max(0.0, Math.min(1.0, rgba[1]));
+            const b = Math.max(0.0, Math.min(1.0, rgba[2]));
+            const a = Math.max(0.0, Math.min(1.0, rgba[3]));
+
+            for (let k = 0; k < mesh.vertices.length / 4; k++) {
+                const pOfs = (vOfs + k) * 4;
+                parameters[pOfs + 0] = r;
+                parameters[pOfs + 1] = g;
+                parameters[pOfs + 2] = b;
+                parameters[pOfs + 3] = a;
+            }
+
+            if (mesh.parameters) {
+                parameters.set(mesh.parameters, vOfs * 4);
+            }
+
+            for (let k = 0; k < mesh.indices.length; k++) {
+                indices[iOfs + k] = baseVertex + mesh.indices[k];
+            }
+
+            vOfs += mesh.vertices.length / 4;
+            iOfs += mesh.indices.length;
+            baseVertex += mesh.vertices.length / 4;
+        }
+
+        const batch = {
+            vboPos: null,
+            vboParam: null,
+            ibo: null,
+            count: indices.length,
+            lineWidth: 1
+        };
+
+        try {
+            batch.vboPos = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboPos);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+            batch.vboParam = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, batch.vboParam);
+            gl.bufferData(gl.ARRAY_BUFFER, parameters, gl.STATIC_DRAW);
+
+            batch.ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+            const firstMesh = meshes[0] || {};
+            batch.lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0
+                ? firstMesh.lineWidth
+                : 1;
+
+            return batch;
+        } catch (error) {
+            this._releasePreparedVectorTileBatch(batch);
+            throw error;
+        } finally {
+            gl.bindBuffer(gl.ARRAY_BUFFER, null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+    }
+
+    _isPreparedVectorTileResource(resource) {
+        return !!(
+            resource &&
+            typeof resource === "object" &&
+            (
+                resource.fills ||
+                resource.lines ||
+                resource.linePrimitives ||
+                resource.points
+            )
+        );
+    }
+
+    _releasePreparedVectorTileResource(resource) {
+        if (!resource || typeof resource !== "object") {
+            return;
+        }
+
+        if (resource.fills) {
+            this._releasePreparedVectorTileBatch(resource.fills);
+            resource.fills = null;
+        }
+
+        if (resource.lines) {
+            this._releasePreparedVectorTileBatch(resource.lines);
+            resource.lines = null;
+        }
+
+        if (Array.isArray(resource.linePrimitives)) {
+            for (const lineBatch of resource.linePrimitives) {
+                this._releasePreparedVectorTileBatch(lineBatch);
+            }
+            resource.linePrimitives = null;
+        }
+
+        if (resource.points) {
+            this._releasePreparedVectorTileBatch(resource.points);
+            resource.points = null;
+        }
+    }
+
+    _releasePreparedVectorTileBatch(batch) {
+        if (!batch) {
+            return;
+        }
+
+        const gl = this.gl;
+
+        if (batch.vboPos) {
+            gl.deleteBuffer(batch.vboPos);
+            batch.vboPos = null;
+        }
+
+        if (batch.vboParam) {
+            gl.deleteBuffer(batch.vboParam);
+            batch.vboParam = null;
+        }
+
+        if (batch.ibo) {
+            gl.deleteBuffer(batch.ibo);
+            batch.ibo = null;
+        }
+
+        batch.count = 0;
+    }
+
+    /**
+     * Release a WebGL2 prepared tile resource.
+     *
+     * @param {*} resource - Backend-owned resource returned by a preparation method.
+     * @returns {void}
+     */
+    releasePreparedTileResource(resource) {
+        if (!resource) {
+            return;
+        }
+
+        if (this._isPreparedVectorTileResource(resource)) {
+            this._releasePreparedVectorTileResource(resource);
+
+            if (this._preparedTileResources) {
+                this._preparedTileResources.delete(resource);
+            }
+
+            return;
+        }
+
+        const texture = resource && resource.texture ? resource.texture : resource;
+
+        if (!texture) {
+            return;
+        }
+
+        this.gl.deleteTexture(texture);
+
+        if (this._preparedTileResources) {
+            this._preparedTileResources.delete(texture);
+        }
+
+        if (resource && resource.texture) {
+            resource.texture = null;
+        }
+    }
+
+    _normalizeBitmapTileSource(data) {
+        if (!data) {
+            return null;
+        }
+
+        if (typeof CanvasRenderingContext2D !== "undefined" && data instanceof CanvasRenderingContext2D) {
+            return data.canvas || null;
+        }
+
+        return data;
+    }
+
+    _makePreparedTileFailure(reason, error) {
+        return {
+            ok: false,
+            reason: reason,
+            error: error
+        };
+    }
+
+    _classifyTilePreparationError(error, fallbackReason) {
+        if (this._isTaintOrSecurityError(error)) {
+            return "tainted-data";
+        }
+
+        return fallbackReason;
+    }
+
+    _isTaintOrSecurityError(error) {
+        if (!error) {
+            return false;
+        }
+
+        const name = error.name ? String(error.name) : "";
+        const code = Number(error.code);
+        const message = error.message ? String(error.message) : String(error);
+
+        if (name === "SecurityError") {
+            return true;
+        }
+
+        // DOMException.SECURITY_ERR is historically 18. Some browsers still expose
+        // numeric codes, though modern code should prefer .name.
+        if (code === 18) {
+            return true;
+        }
+
+        // Firefox/internal DOM security names may appear in some browser errors.
+        if (name === "NS_ERROR_DOM_SECURITY_ERR") {
+            return true;
+        }
+
+        return /tainted canvas|origin-clean|cross-origin|cross origin|cors/i.test(message);
+    }
+
+    _clearWebGLErrors() {
+        const gl = this.gl;
+
+        // cap the amount of errors to avoid an infinite loop
+        for (let i = 0; i < 16; i++) {
+            if (gl.getError() === gl.NO_ERROR) {
+                return;
+            }
+        }
+    }
+
+    _throwIfWebGLError(operation) {
+        const gl = this.gl;
+        const errors = [];
+
+        // cap the amount of errors to avoid an infinite loop
+        for (let i = 0; i < 16; i++) {
+            const error = gl.getError();
+
+            if (error === gl.NO_ERROR) {
+                break;
+            }
+
+            errors.push(error);
+        }
+
+        if (!errors.length) {
+            return;
+        }
+
+        const message = errors.map(error => this._formatWebGLError(error)).join(", ");
+
+        const uploadError = new Error(`${operation} failed with WebGL error(s): ${message}`);
+        uploadError.webglErrors = errors;
+        throw uploadError;
+    }
+
+    _formatWebGLError(error) {
+        const gl = this.gl;
+
+        if (error === gl.INVALID_ENUM) {
+            return "INVALID_ENUM";
+        }
+        if (error === gl.INVALID_VALUE) {
+            return "INVALID_VALUE";
+        }
+        if (error === gl.INVALID_OPERATION) {
+            return "INVALID_OPERATION";
+        }
+        if (error === gl.INVALID_FRAMEBUFFER_OPERATION) {
+            return "INVALID_FRAMEBUFFER_OPERATION";
+        }
+        if (error === gl.OUT_OF_MEMORY) {
+            return "OUT_OF_MEMORY";
+        }
+        if (error === gl.CONTEXT_LOST_WEBGL) {
+            return "CONTEXT_LOST_WEBGL";
+        }
+
+        return `0x${error.toString(16)}`;
+    }
+}
+
+$.FlexRenderer.WebGL20 = WebGL2;
 
 
 $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgram {
@@ -494,6 +1613,56 @@ uniform sampler2DArray u_stencilTextures;
 //   - 3 lens-zoom
 uniform vec4 u_inspectorA;
 uniform vec4 u_inspectorB;
+
+// Packed renderer-owned interaction state.
+//
+// u_interactionPointer:
+//   xy = pointerPositionPx
+//   zw = lastClickPositionPx
+//
+// u_interactionDragStartCurrent:
+//   xy = dragStartPositionPx
+//   zw = dragCurrentPositionPx
+//
+// u_interactionDragEnd:
+//   xy = dragEndPositionPx
+//   zw = reserved
+//
+// u_interactionState:
+//   x = enabled ? 1 : 0
+//   y = pointerInside ? 1 : 0
+//   z = activeButtons
+//   w = lastClickButtons
+//
+// u_interactionDragState:
+//   x = dragActive ? 1 : 0
+//   y = dragButtons
+//   z = clickSerial
+//   w = dragSerial
+//
+// Button fields use the browser MouseEvent.buttons / PointerEvent.buttons bitmask:
+//   0  = no button active
+//   1  = primary button, usually left mouse button
+//   2  = secondary button, usually right mouse button
+//   4  = auxiliary button, usually middle mouse button
+//   8  = fourth button, usually browser back
+//   16 = fifth button, usually browser forward
+//
+// Multiple pressed buttons are represented by bitwise OR, e.g.
+//   3 = primary | secondary
+//   5 = primary | auxiliary
+//
+// Test button state in GLSL through:
+//   fr_interaction_button_active(buttonMask)
+
+uniform vec4 u_interactionPointer;
+uniform vec4 u_interactionDragStartCurrent;
+uniform vec4 u_interactionDragEnd;
+uniform ivec4 u_interactionState;
+uniform ivec4 u_interactionDragState;
+
+
+// INPUT VARIABLES
 
 
 // INPUT VARIABLES
@@ -613,6 +1782,62 @@ float inspector_layer_alpha(int shaderSlot) {
     return mode == 1 ? mask : (1.0 - mask);
 }
 
+bool fr_interaction_enabled() {
+    return u_interactionState.x != 0;
+}
+
+bool fr_interaction_pointer_inside() {
+    return u_interactionState.y != 0;
+}
+
+vec2 fr_interaction_pointer_position_px() {
+    return u_interactionPointer.xy;
+}
+
+int fr_interaction_active_buttons() {
+    return u_interactionState.z;
+}
+
+bool fr_interaction_button_active(int buttonMask) {
+    return (fr_interaction_active_buttons() & buttonMask) != 0;
+}
+
+vec2 fr_interaction_last_click_position_px() {
+    return u_interactionPointer.zw;
+}
+
+int fr_interaction_last_click_buttons() {
+    return u_interactionState.w;
+}
+
+int fr_interaction_click_serial() {
+    return u_interactionDragState.z;
+}
+
+bool fr_interaction_drag_active() {
+    return u_interactionDragState.x != 0;
+}
+
+vec2 fr_interaction_drag_start_position_px() {
+    return u_interactionDragStartCurrent.xy;
+}
+
+vec2 fr_interaction_drag_current_position_px() {
+    return u_interactionDragStartCurrent.zw;
+}
+
+vec2 fr_interaction_drag_end_position_px() {
+    return u_interactionDragEnd.xy;
+}
+
+int fr_interaction_drag_buttons() {
+    return u_interactionDragState.y;
+}
+
+int fr_interaction_drag_serial() {
+    return u_interactionDragState.w;
+}
+
 
 // BLEND FUNCTIONS
 
@@ -671,153 +1896,19 @@ ${execution}
             flatShaders[slot].__renderSlot = slot;
         }
 
-        let definition = "";
-        let execution = `
-    vec4 intermediate_color = ${this._bgColor};
-    vec4 overall_color = intermediate_color;
-    vec4 clip_color = vec4(.0);
+        const stackSource = this.context.composeShaderLayerStack(shaderMap, keyOrder, {
+            ownerShader: null,
+            initialColor: this._bgColor,
+            useInspectorAlpha: true
+        });
 
-    vec4 attrs;
-`;
-        let customBlendFunctions = "";
-
-        const addShaderDefinition = shader => {
-            definition += `
-// ${shader.uid} - Definition
-${shader.getFragmentShaderDefinition()}
-
-// ${shader.uid} - Custom blending function for a given shader
-${shader.getCustomBlendFunction(shader.uid + "_blend_func")}
-
-// ${shader.uid} - Shader code execution
-vec4 ${shader.uid}_execution() {
-${shader.getFragmentShaderExecution()}
-}
-`;
-        };
-
-        const getStencilPassCode = shader => {
-            const shaderConfig = shader.getConfig();
-            const hasSources = Array.isArray(shaderConfig.tiledImages) && shaderConfig.tiledImages.length > 0;
-
-            if (!hasSources) {
-                return "    stencilPasses = true;";
-            }
-
-            return `    stencilPasses = osd_stencil_texture(${shader.__renderSlot}, 0, v_texture_coords).r > 0.995;`;
-        };
-
-        let remainingBlendShader = null;
-        const getRemainingBlending = () => {
-            if (!remainingBlendShader) {
-                return "";
-            }
-
-            return `
-${getStencilPassCode(remainingBlendShader)}
-    overall_color = ${remainingBlendShader.mode === "show" ? "blend_source_over" : remainingBlendShader.uid + "_blend_func"}(intermediate_color, overall_color);
-`;
-        };
-
-        for (const shaderLayerId of keyOrder) {
-            const shaderLayer = shaderMap[shaderLayerId];
-            const shaderLayerConfig = shaderLayer.getConfig();
-
-            // Snapshot mutable assembly state so a throw mid-iteration (e.g. an
-            // incompatible control's sample() throws from getFragmentShaderExecution)
-            // can be rolled back cleanly and the offending layer emitted as disabled
-            // instead of corrupting the GLSL source.
-            const definitionSnapshot = definition;
-            const executionSnapshot = execution;
-            const customBlendSnapshot = customBlendFunctions;
-            const remainingBlendSnapshot = remainingBlendShader;
-
-            try {
-                const slot = shaderLayer.__renderSlot;
-                const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
-                const opacityModifier = `(${opacityModifierBase}) * inspector_layer_alpha(${slot})`;
-
-            execution += `\n    // ${shaderLayer.uid}\n`;
-
-            if (shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
-                if (shaderLayer._mode !== "clip") {
-                    execution += `${getRemainingBlending()}
-    // ${shaderLayer.uid} - Disabled (error or visible = false)
-    intermediate_color = vec4(0.0);
-`;
-                    remainingBlendShader = shaderLayer;
-                } else {
-                    execution += `
-    // ${shaderLayer.uid} - Disabled with Clipmask (error or visible = false)
-    intermediate_color = ${shaderLayer.uid}_blend_func(vec4(0.0), intermediate_color);
-`;
-                }
-
-                continue;
-            }
-
-            addShaderDefinition(shaderLayer);
-
-            execution += `
-    instance_id = ${slot};
-${getStencilPassCode(shaderLayer)}
-    attrs = u_shaderVariables[${slot}];
-    opacity = attrs.x;
-    pixelSize = attrs.y;
-    imageOriginPx = attrs.zw;
-    zoom = u_zoom;
-`;
-
-            if (shaderLayer._mode !== "clip") {
-                execution += `${getRemainingBlending()}
-    // ${shaderLayer.uid} - blending
-    intermediate_color = ${shaderLayer.uid}_execution();
-    intermediate_color.a = intermediate_color.a * ${opacityModifier};
-`;
-                remainingBlendShader = shaderLayer;
-            } else {
-                execution += `
-    // ${shaderLayer.uid} - clipping
-    clip_color = ${shaderLayer.uid}_execution();
-    clip_color.a = clip_color.a * ${opacityModifier};
-    intermediate_color = ${shaderLayer.uid}_blend_func(clip_color, intermediate_color);
-`;
-                }
-            } catch (e) {
-                $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig.type}). Hiding layer.`, e);
-                shaderLayerConfig.error = true;
-                definition = definitionSnapshot;
-                execution = executionSnapshot;
-                customBlendFunctions = customBlendSnapshot;
-                remainingBlendShader = remainingBlendSnapshot;
-
-                execution += `\n    // ${shaderLayer.uid}\n`;
-                if (shaderLayer._mode !== "clip") {
-                    execution += `${getRemainingBlending()}
-    // ${shaderLayer.uid} - Disabled (assembly error)
-    intermediate_color = vec4(0.0);
-`;
-                    remainingBlendShader = shaderLayer;
-                } else {
-                    execution += `
-    // ${shaderLayer.uid} - Disabled with Clipmask (assembly error)
-    intermediate_color = vec4(0.0);
-`;
-                }
-            }
-        }
-
-        if (remainingBlendShader) {
-            execution += getRemainingBlending();
-        }
-
-        execution += "\n    final_color = overall_color;\n";
+        const execution = `final_color = ${stackSource.execution};`;
 
         this.vertexShader = this._getVertexShaderSource();
         this.fragmentShader = this._getFragmentShaderSource(
-            definition,
+            stackSource.definition,
             execution,
-            customBlendFunctions,
+            "",
             $.FlexRenderer.ShaderLayer.__globalIncludes
         );
     }
@@ -843,6 +1934,13 @@ ${getStencilPassCode(shaderLayer)}
         this._tiInfoLoc = gl.getUniformLocation(program, "u_tiInfo");
         this._inspectorALocation = gl.getUniformLocation(program, "u_inspectorA");
         this._inspectorBLocation = gl.getUniformLocation(program, "u_inspectorB");
+
+        this._interactionPointerLocation = gl.getUniformLocation(program, "u_interactionPointer");
+        this._interactionDragStartCurrentLocation = gl.getUniformLocation(program, "u_interactionDragStartCurrent");
+        this._interactionDragEndLocation = gl.getUniformLocation(program, "u_interactionDragEnd");
+        this._interactionStateLocation = gl.getUniformLocation(program, "u_interactionState");
+        this._interactionDragStateLocation = gl.getUniformLocation(program, "u_interactionDragState");
+
         this.vao = gl.createVertexArray();
 
         // TODO: is this refreshing logic necessary? if enableing this, delete the above refresh, not needed, will be done at use(...)
@@ -865,9 +1963,20 @@ ${getStencilPassCode(shaderLayer)}
     /**
      * Use program. Arbitrary arguments.
      */
-    use(renderOutput, renderArray, options) {
+    use(renderOutput, renderArray, options = undefined) {
         const gl = this.gl;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, options ? options.framebuffer : null);
+        const framebuffer = options && options.framebuffer !== undefined ? options.framebuffer : null;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+
+        if (framebuffer) {
+            gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        }
+
+        if (options && options.width && options.height) {
+            gl.viewport(0, 0, options.width, options.height);
+        }
+
         gl.bindVertexArray(this.vao);
 
         // TODO: is refreshing necessary here?
@@ -919,6 +2028,8 @@ ${getStencilPassCode(shaderLayer)}
             "lens-zoom": 3
         }[inspectorState.mode] || 0;
 
+        // TODO: Possibly send inspector and interaction data only on an actual change.
+
         gl.uniform4f(
             this._inspectorALocation,
             inspectorState.centerPx.x,
@@ -933,6 +2044,48 @@ ${getStencilPassCode(shaderLayer)}
             inspectorMode,
             inspectorState.shaderSplitIndex,
             inspectorState.lensZoom
+        );
+
+        const interactionState = this.context.renderer.getInteractionState();
+
+        gl.uniform4f(
+            this._interactionPointerLocation,
+            interactionState.pointerPositionPx.x,
+            interactionState.pointerPositionPx.y,
+            interactionState.lastClickPositionPx.x,
+            interactionState.lastClickPositionPx.y
+        );
+
+        gl.uniform4f(
+            this._interactionDragStartCurrentLocation,
+            interactionState.dragStartPositionPx.x,
+            interactionState.dragStartPositionPx.y,
+            interactionState.dragCurrentPositionPx.x,
+            interactionState.dragCurrentPositionPx.y
+        );
+
+        gl.uniform4f(
+            this._interactionDragEndLocation,
+            interactionState.dragEndPositionPx.x,
+            interactionState.dragEndPositionPx.y,
+            0,
+            0
+        );
+
+        gl.uniform4i(
+            this._interactionStateLocation,
+            interactionState.enabled ? 1 : 0,
+            interactionState.pointerInside ? 1 : 0,
+            interactionState.activeButtons,
+            interactionState.lastClickButtons
+        );
+
+        gl.uniform4i(
+            this._interactionDragStateLocation,
+            interactionState.dragActive ? 1 : 0,
+            interactionState.dragButtons,
+            interactionState.clickSerial,
+            interactionState.dragSerial
         );
 
         this.atlas.bind(gl.TEXTURE2, 2);
@@ -1184,7 +2337,7 @@ const vec3 viewport[4] = vec3[4] (
 );
 
 void main() {
-    if (u_renderClippingParams.y > 0.5) {
+    if (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) {  // true for vector rendering
         v_texture_coords = vec2((a_payload0.x - a_payload1.x) / a_payload1.z, (a_payload0.y - a_payload1.y) / a_payload1.w);
     } else {
         int vid = gl_VertexID & 3;
@@ -1193,11 +2346,9 @@ void main() {
                 (vid == 2) ? a_payload1.xy : a_payload1.zw;
     }
 
-    mat3 matrix = u_renderClippingParams.y > 0.5 ? u_geomMatrix : a_transform_matrix;
+    mat3 matrix = (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) ? u_geomMatrix : a_transform_matrix;  // true for vector rendering
 
-    vec3 space_2d = u_renderClippingParams.x > 0.5 ?
-        matrix * vec3(a_payload0.xy, 1.0) :
-        matrix * viewport[gl_VertexID];
+    vec3 space_2d = (u_renderClippingParams.x > 0.5) ? matrix * vec3(a_payload0.xy, 1.0) : matrix * viewport[gl_VertexID];  // true for vector and clip rendering
 
     v_vecDepth = a_payload0.z;
     v_textureId = int(a_payload0.w);
@@ -1207,6 +2358,7 @@ void main() {
     instance_id = gl_InstanceID;
 }
 `;
+
         this.fragmentShader = `#version 300 es
 precision mediump int;
 precision mediump float;
@@ -1229,8 +2381,41 @@ ${this.atlas.getFragmentShaderDefinition()}
 layout(location=0) out vec4 outputColor;
 layout(location=1) out vec4 outputStencil;
 
+float fr_segment_distance(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a;
+    vec2 ba = b - a;
+    float denom = max(dot(ba, ba), 0.000001);
+    float h = clamp(dot(pa, ba) / denom, 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+bool fr_diagnostic_pixel(vec2 p) {
+    const float border = 0.035;
+    const float lineWidth = 0.022;
+
+    bool borderPixel = p.x <= border || p.x >= 1.0 - border || p.y <= border || p.y >= 1.0 - border;
+
+    vec2 top = vec2(0.5, 0.76);
+    vec2 left = vec2(0.28, 0.31);
+    vec2 right = vec2(0.72, 0.31);
+
+    float triangleDistance = min(
+        fr_segment_distance(p, top, left),
+        min(
+            fr_segment_distance(p, left, right),
+            fr_segment_distance(p, right, top)
+        )
+    );
+
+    bool trianglePixel = triangleDistance <= lineWidth;
+    bool exclamationBar = abs(p.x - 0.5) <= 0.018 && p.y >= 0.43 && p.y <= 0.61;
+    bool exclamationDot = distance(p, vec2(0.5, 0.36)) <= 0.026;
+
+    return borderPixel || trianglePixel || exclamationBar || exclamationDot;
+}
+
 void main() {
-    if (u_renderClippingParams.x < 0.5) {
+    if (u_renderClippingParams.x < 0.5 && u_renderClippingParams.y == 0.0) {  // true for raster rendering
         for (int i = 0; i < ${this._maxTextures}; i++) {
             if (i == instance_id) {
                  switch (i) {
@@ -1244,7 +2429,7 @@ void main() {
 
         outputStencil = vec4(1.0);
         gl_FragDepth = gl_FragCoord.z;
-    } else if (u_renderClippingParams.y > 0.5) {
+    } else if (u_renderClippingParams.x > 0.5 && u_renderClippingParams.y > 0.0) {  // true for vector rendering
         // Vector geometry draw path (per-vertex color)
 
         vec4 stencil = vec4(1.0);
@@ -1264,8 +2449,22 @@ void main() {
 
         outputStencil = stencil;
         gl_FragDepth = depth;
+    } else if (u_renderClippingParams.x < 0.5 && u_renderClippingParams.y < 0.0) {  // true for diagnostic rendering mode
+        vec2 diagnosticCoords = clamp(v_texture_coords, vec2(0.0), vec2(1.0));
+        diagnosticCoords.y = 1.0 - diagnosticCoords.y;
+
+        if (!fr_diagnostic_pixel(diagnosticCoords)) {
+            discard;
+        }
+
+        outputColor = vec4(1.0, 0.74, 0.05, 1.0);
+        outputStencil = vec4(1.0);
+        gl_FragDepth = gl_FragCoord.z;
     } else {
-        // Pure clipping path: write only to stencil (color target value is undefined)
+        // Pure clipping path. Color writes are disabled during this draw,
+        // but keep outputs defined to avoid undefined MRT behavior if the
+        // path is reused incorrectly later.
+        outputColor = vec4(0.0);
         outputStencil = vec4(0.0);
         gl_FragDepth = 0.0;
     }
@@ -1429,6 +2628,8 @@ void main() {
 
         let wasClipping = true; // force first init (~ as if was clipping was true)
 
+        let diagnosticRegionCount = 0;
+
         for (const renderInfo of sourceArray) {
             const rasterTiles = renderInfo.tiles;
 
@@ -1465,7 +2666,6 @@ void main() {
                 gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
 
-                // Note: second param unused for now...
                 gl.uniform2f(this._renderClipping, 1, 0);
                 gl.bindVertexArray(this.firstPassVaoClip);
 
@@ -1629,6 +2829,47 @@ void main() {
 
                 gl.uniform2f(this._renderClipping, 0, 0);
             }
+
+            const diagnostics = renderInfo.diagnostics;
+            if (this.context.renderer.getRenderDiagnostics() && Array.isArray(diagnostics) && diagnostics.length) {
+                const gl = this.gl;
+
+                let currentIndex = 0;
+
+                gl.disable(gl.BLEND);
+                gl.uniform2f(this._renderClipping, 0, -1);
+                gl.bindVertexArray(this.firstPassVao);
+
+                while (currentIndex < diagnostics.length) {
+                    const batchSize = Math.min(this._maxTextures, diagnostics.length - currentIndex);
+
+                    for (let i = 0; i < batchSize; i++) {
+                        const diagnostic = diagnostics[currentIndex + i];
+
+                        this._tempMatrixData.set(diagnostic.transformMatrix, i * 9);
+                        this._tempTexCoords.set(diagnostic.position, i * 8);
+                    }
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordsBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._tempTexCoords.subarray(0, batchSize * 8));
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.matrixBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._tempMatrixData.subarray(0, batchSize * 9));
+
+                    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batchSize);
+                    currentIndex += batchSize;
+                }
+
+                gl.uniform2f(this._renderClipping, 0, 0);
+
+                diagnosticRegionCount += diagnostics.length;
+
+                isBlend = false;
+            }
+        }
+
+        if (this.context.renderer.debug && diagnosticRegionCount > 0) {
+            $.console.warn(`[flex-renderer] first-pass diagnostics: ${diagnosticRegionCount} invalid region(s)`);
         }
 
         gl.disable(gl.DEPTH_TEST);

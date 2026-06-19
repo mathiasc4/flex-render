@@ -1,11 +1,11 @@
 # Offscreen Rendering
 
-This renderer is also able to render offscreen data. Not too many renderers should be created,
-rather re-use existing ones.
+This renderer is also able to render offscreen data. Not too many renderers should be created;
+rather, re-use existing standalone drawers or renderers when possible.
 
 ````js
 let drawer;
-viewer.__ofscreenRender = (drawer = viewer.__ofscreenRender || OpenSeadragon.makeStandaloneFlexDrawer(viewer));
+viewer.__offscreenRender = (drawer = viewer.__offscreenRender || OpenSeadragon.makeStandaloneFlexDrawer(viewer));
 if (viewer.navigator) {
     viewer = viewer.navigator;
 }
@@ -28,6 +28,25 @@ the config and use the default rendering, in that case the order of tiled images
 is a catch: this offscreen rendering re-renders the actual viewport that is currently shown.
 If you need to download and render different parts of the viewer, you need to do a more complex
 setup.
+
+
+## Canvas and Shared-Context Notes
+
+Use `renderer.getPresentationCanvas()` when copying the visible result of a draw. In private-context
+mode this is the WebGL canvas. In shared-context mode it is a renderer-local 2D presentation canvas
+that receives the final rendered output from a renderer-owned color target.
+
+Do not copy from `renderer.getWebGLCanvas()` unless you explicitly need the backing WebGL canvas. In
+shared-context mode that canvas is shared scratch state and is not durable visible output for any one
+renderer.
+
+Standalone helpers inherit the drawer options from the source viewer. If the source drawer uses
+`sharedContextKey`, the standalone drawer may attach to the same shared context unless you override that
+option before constructing the standalone drawer. Prefer a private context for extraction workflows unless
+you intentionally need shared-context behavior.
+
+Shared-context presentation currently uses `readPixels` for the final transfer into the presentation
+canvas. This avoids using the shared default framebuffer as an intermediate output target.
 
 ## Rendering Different Parts of the Viewer
 

@@ -14,7 +14,7 @@
      *      2) fallback: config.channelIndex (legacy),
      *      3) fallback: 0.
      */
-    $.FlexRenderer.ShaderMediator.registerLayer(class SingleChannel extends $.FlexRenderer.ShaderLayer {
+    $.FlexRenderer.ShaderLayerRegistry.register(class SingleChannel extends $.FlexRenderer.ShaderLayer {
 
         static type() {
             return "single_channel";
@@ -52,7 +52,8 @@
                 }],
                 controls: [
                     { name: "use_channel0", default: "r", description: "Single-channel swizzle used for sampling." },
-                    { name: "color", ui: "color", valueType: "vec3", default: "#ff00ff" }
+                    { name: "color", ui: "color", valueType: "vec3", default: "#ff00ff" },
+                    { name: "threshold", ui: "range", valueType: "float", default: 0, min: 0, max: 1, step: 0.005, description: "Channel values below this threshold are clamped to zero." }
                 ]
             };
         }
@@ -81,6 +82,19 @@
                         title: "Color"
                     },
                     accepts: (type) => type === "vec3"
+                },
+
+                // Channel values below this threshold are clamped to zero
+                threshold: {
+                    default: {
+                        type: "range",
+                        default: 0,
+                        min: 0,
+                        max: 1,
+                        step: 0.005,
+                        title: "Threshold"
+                    },
+                    accepts: (type) => type === "float"
                 }
             };
         }
@@ -98,6 +112,9 @@
     }
 
     float fv = ${this.sampleChannel("v_texture_coords")};
+    if (fv < ${this.threshold.sample()}) {
+        fv = 0.0;
+    }
     vec3 col = fv * (${colorExpr});
     return vec4(col, fv);
 `;

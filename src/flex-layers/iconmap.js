@@ -106,7 +106,7 @@
                                 default: layer._getDefaultIconName(index),
                                 size: 384,
                                 padding: 10,
-                                previewSize: 40
+                                previewSize: 27
                             },
                             accepts: (type) => type === "vec4"
                         })
@@ -201,7 +201,7 @@
         }
 
         _getConfiguredThresholdBreaks() {
-            const configured = this._customControls && this._customControls.threshold;
+            const configured = this._params && this._params.threshold;
             if (!configured || typeof configured !== "object") {
                 return null;
             }
@@ -418,5 +418,5 @@ return vec4(icon.rgb, icon.a * visible * grid.z);
         }
     }
 
-    $.FlexRenderer.ShaderMediator.registerLayer(IconMapShader);
+    $.FlexRenderer.ShaderLayerRegistry.register(IconMapShader);
 })(OpenSeadragon);

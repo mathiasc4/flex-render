@@ -211,6 +211,54 @@
         }
 
         /**
+         * Ensure a reusable backend-owned color target.
+         *
+         * @param {object|null} target existing target slot, or null to allocate
+         * @param {number} width target width in physical pixels
+         * @param {number} height target height in physical pixels
+         * @param {object} [options={}]
+         * @return {object}
+         */
+        ensureColorTarget(target, width, height, options = {}) {
+            throw("$.FlexRenderer.WebGLImplementation::ensureColorTarget() must be implemented!");
+        }
+
+        /**
+         * Clear a backend-owned color target.
+         *
+         * @param {object} target
+         * @param {number[]} [rgba]
+         * @return {void}
+         */
+        clearColorTarget(target, rgba = [0, 0, 0, 0]) {
+            throw("$.FlexRenderer.WebGLImplementation::clearColorTarget() must be implemented!");
+        }
+
+        /**
+         * Destroy a backend-owned color target.
+         *
+         * @param {object|null} target
+         * @return {void}
+         */
+        destroyColorTarget(target) {
+            throw("$.FlexRenderer.WebGLImplementation::destroyColorTarget() must be implemented!");
+        }
+
+        /**
+         * Copy a backend-owned color target into a presentation canvas.
+         *
+         * The presentation canvas size is owned by FlexRenderer#setDimensions().
+         * Implementations must not resize it.
+         *
+         * @param {object} target
+         * @param {HTMLCanvasElement} canvas
+         * @returns {string} Transfer mode used.
+         */
+        presentColorTargetToCanvas(target, canvas) {
+            throw("$.FlexRenderer.WebGLImplementation::presentColorTargetToCanvas() must be implemented!");
+        }
+
+        /**
          * Execute the backend-specific inspector compositor path for modes that cannot be expressed
          * inline in the normal second pass.
          *
@@ -243,6 +291,69 @@
          */
         getBlendingFunction(name) {
             throw("$.FlexRenderer.WebGLImplementation::blendingFunction must be implemented!");
+        }
+
+        /**
+         * Prepare bitmap-like tile data as a backend-owned render resource.
+         *
+         * Concrete backends should override this method. The base implementation
+         * returns a structured unsupported result rather than throwing, because
+         * tile preparation failures are expected recoverable values.
+         *
+         * @param {PrepareBitmapTileOptions} options - Bitmap tile preparation options.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+         */
+        async prepareBitmapTile(options = {}) {
+            return {
+                ok: false,
+                reason: "unsupported-data",
+                error: new Error(`${this.constructor.name || "Backend"} does not support bitmap tile preparation.`)
+            };
+        }
+
+        /**
+         * Prepare GPU texture-set tile data as a backend-owned render resource.
+         *
+         * Concrete backends should override this method.
+         *
+         * @param {PrepareGpuTextureTileOptions} options - GPU texture-set preparation options.
+         * @returns {Promise<PreparedRasterTileResult>} Preparation result.
+         */
+        async prepareGpuTextureTile(options = {}) {
+            return {
+                ok: false,
+                reason: "unsupported-data",
+                error: new Error(`${this.constructor.name || "Backend"} does not support GPU texture tile preparation.`)
+            };
+        }
+
+        /**
+         * Prepare vector mesh tile data as backend-owned render resources.
+         *
+         * Concrete backends should override this method.
+         *
+         * @param {PrepareVectorTileOptions} options - Vector tile preparation options.
+         * @returns {Promise<PreparedVectorTileResult>} Preparation result.
+         */
+        async prepareVectorTile(options = {}) {
+            return {
+                ok: false,
+                reason: "unsupported-data",
+                error: new Error(`${this.constructor.name || "Backend"} does not support vector tile preparation.`)
+            };
+        }
+
+        /**
+         * Release a backend-owned prepared tile resource.
+         *
+         * Concrete backends should override this method when they return
+         * resources from preparation methods.
+         *
+         * @param {*} resource - Backend-owned prepared tile resource.
+         * @returns {void}
+         */
+        releasePreparedTileResource(resource) {
+            // no-op in the abstract backend
         }
     };
 

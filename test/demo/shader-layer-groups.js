@@ -601,8 +601,8 @@ function updateShaderConfigFromPath(element, update) {
 }
 
 function getAvailableNonGroupShaderTypes() {
-    return OpenSeadragon.FlexRenderer.ShaderMediator
-        .availableShaders()
+    return OpenSeadragon.FlexRenderer.ShaderLayerRegistry
+        .availableShaderLayers()
         .filter((Shader) => Shader.type() !== "group")
         .map((Shader) => ({
             type: Shader.type(),

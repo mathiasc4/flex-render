@@ -2,7 +2,7 @@
 /**
  * Identity shader
  */
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static get defaultControls() {
         return {

@@ -2,7 +2,7 @@
 /**
  * Shader that uses a texture via a texture atlas
  */
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
     static type() {
         return "texture";
     }

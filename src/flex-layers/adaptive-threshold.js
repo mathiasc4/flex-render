@@ -1,7 +1,6 @@
 (function($) {
 
-    $.FlexRenderer.ShaderMediator.registerLayer(class AdaptiveThreshold extends $.FlexRenderer.ShaderLayer {
-
+    $.FlexRenderer.ShaderLayerRegistry.register(class AdaptiveThreshold extends $.FlexRenderer.ShaderLayer {
         static type() {
             return "adaptive_threshold";
         }

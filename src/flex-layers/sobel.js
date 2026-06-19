@@ -2,7 +2,7 @@
 /**
  * Sobel shader
  */
-$.FlexRenderer.ShaderMediator.registerLayer(class extends $.FlexRenderer.ShaderLayer {
+$.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderLayer {
 
     static type() {
         return "sobel";

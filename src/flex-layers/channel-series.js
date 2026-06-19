@@ -1,6 +1,6 @@
 (function($) {
 
-    $.FlexRenderer.ShaderMediator.registerLayer(
+    $.FlexRenderer.ShaderLayerRegistry.register(
         class extends $.FlexRenderer.ShaderLayer {
             static type() {
                 return "channel-series";
@@ -127,7 +127,7 @@
                 if (delegateType === this.constructor.type()) {
                     throw new Error("channel-series cannot recursively render itself.");
                 }
-                if (!$.FlexRenderer.ShaderMediator.getClass(delegateType)) {
+                if (!$.FlexRenderer.ShaderLayerRegistry.get(delegateType)) {
                     throw new Error(`channel-series: unknown child shader type '${delegateType}'.`);
                 }
 
@@ -141,7 +141,7 @@
             _getDelegatedChannelPattern(settings = this._getDelegateSettings()) {
                 const params = settings.delegateConfig.params || {};
                 const controlName = `use_channel${settings.sourceIndex}`;
-                const predefined = $.FlexRenderer.ShaderMediator.getClass(settings.delegateType).defaultControls[controlName];
+                const predefined = $.FlexRenderer.ShaderLayerRegistry.get(settings.delegateType).defaultControls[controlName];
 
                 let pattern = params[controlName];
                 if (pattern == null && predefined) { // eslint-disable-line eqeqeq
@@ -217,7 +217,7 @@
 
                 const settings = this._getDelegateSettings();
                 const delegateConfig = this._buildDelegateShaderConfig(settings);
-                const DelegateShader = $.FlexRenderer.ShaderMediator.getClass(settings.delegateType);
+                const DelegateShader = $.FlexRenderer.ShaderLayerRegistry.get(settings.delegateType);
 
                 this._delegateShader = new DelegateShader(`${this.id}_delegate`, {
                     shaderConfig: delegateConfig,

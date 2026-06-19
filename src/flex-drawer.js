@@ -1,6 +1,4 @@
 (function( $ ){
-    const OpenSeadragon = $;
-
     /**
      * @typedef {Object} TiledImageInfo
      * @property {Number} TiledImageInfo.id
@@ -35,12 +33,29 @@
      */
 
     /**
+     * Host-supplied HTTP transport used by FlexDrawer-owned workers (MVT, GeoJSON).
+     *
+     * The adapter is a fetch-compatible shim: when supplied, every network request
+     * the library would otherwise issue with `fetch(url)` is routed through it.
+     * Implementations must support method, headers, body, signal, Range headers,
+     * and binary responses (.arrayBuffer / .blob / .body).
+     *
+     * Adapters are resolved in this order:
+     *   1. explicit `httpAdapter` constructor option on the tile source,
+     *   2. drawer-level `httpAdapter` captured into `FlexDrawer._defaultHttpAdapter`,
+     *   3. null — the library falls back to native `fetch`.
+     *
+     * @typedef {object} HttpAdapter
+     * @property {(url: string, init?: RequestInit) => Promise<Response>} fetch
+     */
+
+    /**
      * @property {Number} idGenerator unique ID getter
      *
      * @class OpenSeadragon.FlexDrawer
      * @classdesc implementation of WebGL renderer for an {@link OpenSeadragon.Viewer}
      */
-    OpenSeadragon.FlexDrawer = class extends OpenSeadragon.DrawerBase {
+    class FlexDrawer extends OpenSeadragon.DrawerBase {
         /**
          * @param {Object} options options for this Drawer
          * @param {OpenSeadragon.Viewer} options.viewer the Viewer that owns this Drawer
@@ -48,9 +63,6 @@
          * @param {HTMLElement} options.element parent element
          * @param {[String]} options.debugGridColor see debugGridColor in {@link OpenSeadragon.Options} for details
          * @param {Object} options.options optional
-         *
-         * @constructor
-         * @memberof OpenSeadragon.FlexDrawer
          */
         constructor(options){
             super(options);
@@ -64,9 +76,25 @@
             this._supportedFormats = ["rasterBlob", "context2d", "image", "vector-mesh", "gpuTextureSet", "undefined"];
             this.rebuildCounter = 0;
 
+            // Capture the host-supplied HttpAdapter as a process-wide fallback so tile sources
+            // instantiated outside the drawer (OSD-managed paths) can still pick it up.
+            // Explicit per-tile-source `httpAdapter` options take precedence.
+            if (this.options.httpAdapter) {
+                FlexDrawer._defaultHttpAdapter = this.options.httpAdapter;
+            }
+
             this._suspendRenderingDepth = 0;
             this._pendingRebuildRequest = null;
             this._drawReady = false;
+
+            this._interactionOptions = this._normalizeInteractionOptions(this.options.interaction);
+            this._interactionEnabled = false;
+            this._interactionListeners = null;
+            this._interactionDragActive = false;
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
+            this._interactionGestureSettingsCaptured = false;
+            this._interactionPreviousGestureSettings = null;
 
             // reject listening for the tile-drawing and tile-drawn events, which this drawer does not fire
             this.viewer.rejectEventHandler("tile-drawn", "The WebGLDrawer does not raise the tile-drawn event");
@@ -118,6 +146,9 @@
                 copyShaderConfig: false,
                 handleNavigator: true,
                 shaderSourceResolver: null,
+                httpAdapter: null,
+                sharedContextKey: null,
+                interaction: false,
                 // hex bg color, by default transparent
                 backgroundColor: undefined
             };
@@ -127,7 +158,7 @@
          * Override the default configuration: the renderer will use given shaders,
          * supplied with data from collection of TiledImages, to render.
          * TiledImages are treated only as data sources, the rendering outcome is fully in controls of the shader specs.
-         * @param {Object.<string, ShaderConfig>} shaders map of id -> shader config value
+         * @param {Object.<string, ShaderLayerConfig>} shaders map of id -> shader config value
          * @param {Array<string>} [shaderOrder=undefined] custom order of shader ids to render.
          * @param {Object} [options]
          * @param {Boolean} [options.immediate=false] if true, run the rebuild synchronously
@@ -188,7 +219,7 @@
          * Retrieve shader config by its key. Shader IDs are known only
          * when overrideConfigureAll() called
          * @param key
-         * @return {ShaderConfig|*|undefined}
+         * @return {ShaderLayerConfig|*|undefined}
          */
         getOverriddenShaderConfig(key) {
             const shaderLayer = this.renderer.getAllShaders()[key];
@@ -199,8 +230,8 @@
          * If shaders are managed internally, tiled image can be configured a single custom
          * shader if desired. This shader is ignored if overrideConfigureAll({...}) used.
          * @param {OpenSeadragon.TiledImage} tiledImage
-         * @param {ShaderConfig} shader
-         * @return {ShaderConfig} shader config used, a copy if options.copyShaderConfig is true, otherwise a modified argument
+         * @param {ShaderLayerConfig} shader
+         * @return {ShaderLayerConfig} shader config used, a copy if options.copyShaderConfig is true, otherwise a modified argument
          */
         configureTiledImage(tiledImage, shader) {
             if (this.options.copyShaderConfig) {
@@ -282,7 +313,12 @@
                     for (let i = 0; i < parent.world.getItemCount(); i++) {
                         const tiledImageParent = parent.world.getItemAt(i);
                         if (tiledImageParent.source === tiledImage.source) {
-                            config.id = tiledImageParent.__shaderConfig.id;
+                            // Parent's __shaderConfig may be missing during a reset window
+                            // (tiledImageCreated deletes it when _configuredExternally is true).
+                            // Fall through to idGenerator in that case.
+                            if (tiledImageParent.__shaderConfig) {
+                                config.id = tiledImageParent.__shaderConfig.id;
+                            }
                             break;
                         }
                     }
@@ -346,6 +382,12 @@
          */
         rebuild() {
             if (this.options.handleNavigator) {
+                // Callers like UTILITIES.changeModeOfLayer, setFilterOfLayer, the
+                // shaderSideMenu visibility toggle, and shader-order reorders mutate
+                // only the main shader's config/params and then call rebuild().
+                // Mirror that state into the navigator's shader instances first so
+                // its rebuild doesn't re-emit the previous (stale) configuration.
+                this._syncNavigatorShaderState();
                 this.viewer.navigator.drawer.rebuild();
             }
             return this._requestRebuild();
@@ -409,6 +451,137 @@
             }
             this.viewer.forceRedraw();
             return $.Promise.resolve();
+        }
+
+        /**
+         * Mirror control state (encodedValue) from the main drawer's shaders into
+         * the navigator drawer's shader instances. Required because shader-internal
+         * UI controls (color picker, range sliders, etc.) mutate the main shader's
+         * controls directly via `owner.invalidate()` and never reach the navigator,
+         * whose shader instances are separate and have no DOM-bound handlers.
+         *
+         * Without this, fast control-driven changes leave the navigator's render
+         * with stale uniforms/params until something else (e.g. _applyShaderConfigMutationRequest)
+         * resyncs it. Visualization-change events from nav-side `set()` calls are
+         * suppressed so consumers don't see duplicates.
+         */
+        _syncNavigatorShaderState() {
+            const nav = this.viewer.navigator;
+            if (!nav || !nav.drawer || !nav.drawer.renderer) {
+                return;
+            }
+
+            // Mirror non-control state that bypasses _controls entirely:
+            //   - config.visible (layer checkbox in shaderSideMenu)
+            //   - config.params.use_mode / use_blend (UTILITIES.changeModeOfLayer, onChangeBlend)
+            //   - config.params.use_<filter>         (UTILITIES.setFilterOfLayer)
+            // For mode/blend we re-run resetMode on the nav shader; for filters, resetFilters.
+            // Both are idempotent and read directly from the params object.
+            const syncConfig = (mainShader, navShader) => {
+                const mainConfig = typeof mainShader.getConfig === "function" ? mainShader.getConfig() : null;
+                const navConfig = typeof navShader.getConfig === "function" ? navShader.getConfig() : null;
+                if (!mainConfig || !navConfig || mainConfig === navConfig) {
+                    return;
+                }
+
+                if (navConfig.visible !== mainConfig.visible) {
+                    navConfig.visible = mainConfig.visible;
+                }
+
+                const mainParams = mainConfig.params;
+                if (!mainParams) {
+                    return;
+                }
+                navConfig.params = navConfig.params || {};
+                const navParams = navConfig.params;
+
+                let modeOrBlendChanged = false;
+                let filterChanged = false;
+                for (const key in mainParams) {
+                    if (!key.startsWith("use_")) {
+                        continue;
+                    }
+                    if (navParams[key] === mainParams[key]) {
+                        continue;
+                    }
+                    navParams[key] = mainParams[key];
+                    if (key === "use_mode" || key === "use_blend") {
+                        modeOrBlendChanged = true;
+                    } else {
+                        filterChanged = true;
+                    }
+                }
+
+                if (modeOrBlendChanged && typeof navShader.resetMode === "function") {
+                    try {
+                        navShader.resetMode(navParams, true, false);
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetMode failed", mainShader.id, e);
+                    }
+                }
+                if (filterChanged && typeof navShader.resetFilters === "function") {
+                    try {
+                        navShader.resetFilters(navParams, true, false);
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetFilters failed", mainShader.id, e);
+                    }
+                }
+            };
+
+            const syncControls = (mainShader, navShader) => {
+                if (!mainShader || !navShader || !mainShader._controls || !navShader._controls) {
+                    return;
+                }
+                for (const controlName in mainShader._controls) {
+                    const mainControl = mainShader._controls[controlName];
+                    const navControl = navShader._controls[controlName];
+                    if (!navControl || typeof navControl.set !== "function" || !mainControl) {
+                        continue;
+                    }
+                    if (mainControl.encodedValue === undefined) {
+                        continue;
+                    }
+                    if (navControl.encodedValue === mainControl.encodedValue) {
+                        continue;
+                    }
+
+                    const prevSuppress = navControl._suppressVisualizationChanged;
+                    navControl._suppressVisualizationChanged = true;
+                    try {
+                        navControl.set(mainControl.encodedValue);
+                    } catch (e) {
+                        $.console.warn(
+                            "FlexDrawer: failed to sync navigator control state",
+                            mainShader.id, controlName, e
+                        );
+                    } finally {
+                        navControl._suppressVisualizationChanged = prevSuppress;
+                    }
+                }
+            };
+
+            // Group shaders (e.g. flex-layers/group.js) hold nested children under
+            // shader.shaderLayers (same map shape, keyed by sanitized id). renderer.getAllShaders()
+            // only returns the top-level map, so we walk recursively.
+            const walk = (mainMap, navMap) => {
+                if (!mainMap || !navMap) {
+                    return;
+                }
+                for (const id in mainMap) {
+                    const mainShader = mainMap[id];
+                    const navShader = navMap[id];
+                    if (!mainShader || !navShader) {
+                        continue;
+                    }
+                    syncConfig(mainShader, navShader);
+                    syncControls(mainShader, navShader);
+                    if (mainShader.shaderLayers && navShader.shaderLayers) {
+                        walk(mainShader.shaderLayers, navShader.shaderLayers);
+                    }
+                }
+            };
+
+            walk(this.renderer.getAllShaders(), nav.drawer.renderer.getAllShaders());
         }
 
         _handleRefetchRequest(request = undefined) {
@@ -785,29 +958,22 @@
             if (this._destroyed) {
                 return;
             }
-            const gl = this._gl;
 
-            // clean all texture units; adapted from https://stackoverflow.com/a/23606581/1214731
-            var numTextureUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
-            for (let unit = 0; unit < numTextureUnits; ++unit) {
-                gl.activeTexture(gl.TEXTURE0 + unit);
-                gl.bindTexture(gl.TEXTURE_2D, null);
-
-                if (this.webGLVersion === "2.0") {
-                    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
-                }
+            if (this._interactionEnabled) {
+                this.setInteractionOptions({
+                    enabled: false
+                }, {
+                    notify: false,
+                    redraw: false,
+                    reason: "drawer-destroy"
+                });
+            } else {
+                this._detachInteractionListeners();
+                this._resetInteractionTracking();
+                this._releaseInteractionViewerInputCapture();
             }
-            gl.bindBuffer(gl.ARRAY_BUFFER, null);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-
-            // this._renderingCanvas = null;
-            let ext = gl.getExtension('WEBGL_lose_context');
-            if (ext) {
-                ext.loseContext();
-            }
-            // set our webgl context reference to null to enable garbage collection
-            this._gl = null;
+            // WebGL resource cleanup is owned by FlexRenderer and the active backend.
 
             // unbind our event listeners from the viewer
             this.viewer.removeHandler("resize", this._resizeHandler);
@@ -817,6 +983,11 @@
                 if (this.viewer.drawer === this){
                     this.viewer.drawer = null;
                 }
+            }
+
+            if (this._rebuildHandle) {
+                clearTimeout(this._rebuildHandle);
+                this._rebuildHandle = null;
             }
 
             this.renderer.destroy();
@@ -924,6 +1095,9 @@
 
                 if (!immediate) {
                     setTimeout(() => {
+                        if (this._destroyed) {
+                            return;
+                        }
                         if (!this._isRenderingSuspended()) {
                             this.viewer.forceRedraw();
                         }
@@ -980,6 +1154,7 @@
                 this._size = viewportSize;
                 this._refreshDrawReadyState();
             };
+
             this.viewer.addHandler("resize", this._resizeHandler);
         }
 
@@ -1054,6 +1229,825 @@
          */
         clearInspectorState() {
             return this.setInspectorState(undefined);
+        }
+
+        /**
+         * Drawer-level interaction observer configuration.
+         *
+         * This controls whether `FlexDrawer` observes pointer/mouse events and how it
+         * forwards those events to the renderer-owned interaction state. These options
+         * are drawer configuration options, not `FlexRenderer` interaction-state update
+         * options.
+         *
+         * @typedef {Object} FlexDrawerInteractionOptions
+         * @property {boolean} [enabled=false] - Whether FlexDrawer observes pointer/mouse events and forwards interaction state.
+         * @property {boolean} [preventContextMenu=false] - Prevent the browser context menu on interaction right-click/contextmenu events.
+         * @property {boolean} [notifyOnMove=false] - Emit `interaction-change` notifications for high-frequency pointermove updates.
+         * @property {"all"|"drag"|"none"} [viewerInputCaptureMode="none"] - Viewer input suppression mode. `"none"` leaves OpenSeadragon viewer input unchanged. `"all"` disables OpenSeadragon mouse navigation. `"drag"` disables drag/click/flick gestures but leaves wheel zoom enabled.
+         */
+
+        /**
+         * Normalize viewer input capture mode.
+         *
+         * @private
+         * @param {*} mode
+         * @return {"all"|"drag"|"none"}
+         */
+        _normalizeViewerInputCaptureMode(mode) {
+            return mode === "all" || mode === "drag" ? mode : "none";
+        }
+
+        /**
+         * Normalize drawer-level interaction configuration.
+         *
+         * @private
+         * @param {boolean|Partial<FlexDrawerInteractionOptions>|undefined} interaction
+         * @return {FlexDrawerInteractionOptions}
+         */
+        _normalizeInteractionOptions(interaction = false) {
+            if (interaction === true) {
+                return {
+                    enabled: true,
+                    preventContextMenu: false,
+                    notifyOnMove: false,
+                    viewerInputCaptureMode: "none",
+                };
+            }
+
+            if (!interaction || typeof interaction !== "object") {
+                return {
+                    enabled: false,
+                    preventContextMenu: false,
+                    notifyOnMove: false,
+                    viewerInputCaptureMode: "none",
+                };
+            }
+
+            const viewerInputCaptureMode = this._normalizeViewerInputCaptureMode(
+                interaction.viewerInputCaptureMode
+            );
+
+            return {
+                enabled: !!interaction.enabled,
+                preventContextMenu: !!interaction.preventContextMenu,
+                notifyOnMove: !!interaction.notifyOnMove,
+                viewerInputCaptureMode: viewerInputCaptureMode,
+            };
+        }
+
+        /**
+         * Return the DOM element used for interaction event observation.
+         *
+         * @private
+         * @return {HTMLElement|HTMLCanvasElement|null}
+         */
+        _getInteractionEventTarget() {
+            return this.canvas || this.container || this.element || (this.viewer && this.viewer.element) || null;
+        }
+
+        /**
+         * Convert a client-space point ({clientX, clientY} from a DOM event,
+         * or any object with those fields) into renderer framebuffer pixels.
+         *
+         * Returned coordinates use physical framebuffer pixels with bottom-left
+         * origin, directly comparable to `gl_FragCoord.xy`. The conversion is
+         * devicePixelRatio-aware because `canvas.width / rect.width` already
+         * folds DPR into the scale factor.
+         *
+         * Intended for application code that drives `inspector.centerPx` from
+         * a pointer event. Returns `{x:0, y:0}` when no canvas or event target
+         * is available.
+         *
+         * @param {{clientX: number, clientY: number}} point
+         * @return {{x: number, y: number}}
+         */
+        clientPointToFramebufferPx(point) {
+            const canvas = this.renderer && this.renderer.getPresentationCanvas();
+            const target = this._getInteractionEventTarget();
+
+            if (!canvas || !target || typeof target.getBoundingClientRect !== "function") {
+                return { x: 0, y: 0 };
+            }
+
+            const rect = target.getBoundingClientRect();
+            const scaleX = rect.width ? canvas.width / rect.width : 1;
+            const scaleY = rect.height ? canvas.height / rect.height : 1;
+
+            return {
+                x: (point.clientX - rect.left) * scaleX,
+                y: (rect.bottom - point.clientY) * scaleY,
+            };
+        }
+
+        /**
+         * Convert a DOM pointer/mouse event into renderer framebuffer pixels.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {{x: number, y: number}}
+         */
+        _getInteractionPositionPx(event) {
+            return this.clientPointToFramebufferPx(event);
+        }
+
+        /**
+         * Convert a MouseEvent.button value into a MouseEvent.buttons-compatible bitmask.
+         *
+         * @private
+         * @param {number} button
+         * @return {number}
+         */
+        _buttonToButtonsMask(button) {
+            if (button === 0) {
+                return 1;
+            }
+            if (button === 1) {
+                return 4;
+            }
+            if (button === 2) {
+                return 2;
+            }
+            if (button === 3) {
+                return 8;
+            }
+            if (button === 4) {
+                return 16;
+            }
+            return 0;
+        }
+
+        /**
+         * Return the current button bitmask from an interaction event.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {number}
+         */
+        _getInteractionButtons(event) {
+            if (typeof event.buttons === "number") {
+                return event.buttons;
+            }
+
+            return this._buttonToButtonsMask(event.button);
+        }
+
+        /**
+         * Return whether this event should be ignored by the initial mouse-focused implementation.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {boolean}
+         */
+        _shouldIgnoreInteractionEvent(event) {
+            if (!this._interactionEnabled) {
+                return true;
+            }
+
+            return !!(event.pointerType && event.pointerType !== "mouse");
+        }
+
+        /**
+         * Reset drawer-local interaction tracking fields.
+         *
+         * @private
+         * @return {void}
+         */
+        _resetInteractionTracking() {
+            this._interactionDragActive = false;
+        }
+
+        /**
+         * Attach pointer or mouse observers used to forward interaction state to FlexRenderer.
+         *
+         * @private
+         * @return {void}
+         */
+        _attachInteractionListeners() {
+            if (this._interactionListeners) {
+                return;
+            }
+
+            const target = this._getInteractionEventTarget();
+            if (!target) {
+                return;
+            }
+
+            const supportsPointerEvents = typeof window !== "undefined" && !!window.PointerEvent;
+            const listeners = [];
+
+            const add = (type, handler) => {
+                target.addEventListener(type, handler, false);
+                listeners.push({ type, handler });
+            };
+
+            const handleEnter = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: this._getInteractionPositionPx(event),
+                    activeButtons: this._getInteractionButtons(event),
+                }, {
+                    notify: true,
+                    reason: "drawer-pointerenter"
+                });
+            };
+
+            const handleMove = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+                const patch = {
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    activeButtons: this._getInteractionButtons(event),
+                };
+
+                if (this._interactionDragActive) {
+                    patch.dragCurrentPositionPx = pointerPositionPx;
+                }
+
+                this.setInteractionState(patch, {
+                    notify: this._interactionOptions.notifyOnMove,
+                    reason: "drawer-pointermove"
+                });
+            };
+
+            const handleDown = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+                const activeButtons = this._getInteractionButtons(event);
+
+                this._interactionDragActive = true;
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    activeButtons: activeButtons,
+                    dragActive: true,
+                    dragStartPositionPx: pointerPositionPx,
+                    dragCurrentPositionPx: pointerPositionPx,
+                    dragButtons: activeButtons,
+                }, {
+                    notify: true,
+                    reason: "drawer-pointerdown"
+                });
+            };
+
+            const handleUp = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const previous = this.getInteractionState();
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+                const activeButtons = this._getInteractionButtons(event);
+                const completedDrag = this._interactionDragActive || previous.dragActive;
+
+                this._resetInteractionTracking();
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    activeButtons: activeButtons,
+                    dragActive: false,
+                    dragCurrentPositionPx: pointerPositionPx,
+                    dragEndPositionPx: pointerPositionPx,
+                    dragSerial: completedDrag ? previous.dragSerial + 1 : previous.dragSerial,
+                }, {
+                    notify: true,
+                    reason: completedDrag ? "drawer-drag-end" : "drawer-pointerup"
+                });
+            };
+
+            const handleLeave = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                this._resetInteractionTracking();
+
+                this.setInteractionState({
+                    pointerInside: false,
+                    activeButtons: 0,
+                    dragActive: false,
+                }, {
+                    notify: true,
+                    reason: "drawer-pointerleave"
+                });
+            };
+
+            const handleCancel = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                this._resetInteractionTracking();
+
+                this.setInteractionState({
+                    pointerInside: false,
+                    activeButtons: 0,
+                    dragActive: false,
+                }, {
+                    notify: true,
+                    reason: "drawer-pointercancel"
+                });
+            };
+
+            const handleClick = (event) => {
+                if (this._shouldIgnoreInteractionEvent(event)) {
+                    return;
+                }
+
+                const previous = this.getInteractionState();
+                const pointerPositionPx = this._getInteractionPositionPx(event);
+
+                this.setInteractionState({
+                    enabled: true,
+                    pointerInside: true,
+                    pointerPositionPx: pointerPositionPx,
+                    lastClickPositionPx: pointerPositionPx,
+                    lastClickButtons: this._buttonToButtonsMask(event.button),
+                    clickSerial: previous.clickSerial + 1,
+                }, {
+                    notify: true,
+                    reason: "drawer-click"
+                });
+            };
+
+            const handleContextMenu = (event) => {
+                if (this._interactionEnabled && this._interactionOptions.preventContextMenu) {
+                    event.preventDefault();
+                }
+            };
+
+            if (supportsPointerEvents) {
+                add("pointerenter", handleEnter);
+                add("pointermove", handleMove);
+                add("pointerdown", handleDown);
+                add("pointerup", handleUp);
+                add("pointercancel", handleCancel);
+                add("pointerleave", handleLeave);
+                add("click", handleClick);
+            } else {
+                add("mouseenter", handleEnter);
+                add("mousemove", handleMove);
+                add("mousedown", handleDown);
+                add("mouseup", handleUp);
+                add("mouseleave", handleLeave);
+                add("click", handleClick);
+            }
+
+            add("contextmenu", handleContextMenu);
+
+            this._interactionListeners = {
+                target,
+                listeners
+            };
+        }
+
+        /**
+         * Detach pointer or mouse observers used for interaction forwarding.
+         *
+         * @private
+         * @return {void}
+         */
+        _detachInteractionListeners() {
+            if (!this._interactionListeners) {
+                return;
+            }
+
+            const target = this._interactionListeners.target;
+            for (const listener of this._interactionListeners.listeners) {
+                target.removeEventListener(listener.type, listener.handler, false);
+            }
+
+            this._interactionListeners = null;
+        }
+
+        /**
+         * Return whether OpenSeadragon mouse navigation is currently enabled.
+         *
+         * @private
+         * @return {boolean}
+         */
+        _getViewerMouseNavEnabled() {
+            if (!this.viewer) {
+                return true;
+            }
+
+            if (
+                this.viewer.innerTracker &&
+                typeof this.viewer.innerTracker.isTracking === "function"
+            ) {
+                const tracking = this.viewer.innerTracker.isTracking();
+
+                if (typeof tracking === "boolean") {
+                    return tracking;
+                }
+            }
+
+            if (typeof this.viewer.isMouseNavEnabled === "function") {
+                const enabled = this.viewer.isMouseNavEnabled();
+
+                if (typeof enabled === "boolean") {
+                    return enabled;
+                }
+            }
+
+            if (typeof this.viewer.mouseNavEnabled === "boolean") {
+                return this.viewer.mouseNavEnabled;
+            }
+
+            return true;
+        }
+
+        /**
+         * Disable OpenSeadragon mouse navigation while interaction forwarding is active.
+         *
+         * This is the `"all"` capture mode. It disables the OpenSeadragon mouse
+         * tracker as a whole and restores its previous tracking state on release.
+         *
+         * @private
+         * @return {void}
+         */
+        _captureInteractionMouseNavigation() {
+            if (this._interactionMouseNavCaptured || !this.viewer) {
+                return;
+            }
+
+            // Mark as captured before mutating OpenSeadragon state. This prevents a
+            // synchronous re-entrant capture path from overwriting the saved previous
+            // value after setMouseNavEnabled(false) has already disabled navigation.
+            this._interactionPreviousMouseNavEnabled = this._getViewerMouseNavEnabled();
+            this._interactionMouseNavCaptured = true;
+
+            if (typeof this.viewer.setMouseNavEnabled === "function") {
+                this.viewer.setMouseNavEnabled(false);
+                return;
+            }
+
+            if (typeof this.viewer.mouseNavEnabled === "boolean") {
+                this.viewer.mouseNavEnabled = false;
+                return;
+            }
+
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
+        }
+
+        /**
+         * Restore OpenSeadragon mouse navigation after `"all"` input capture.
+         *
+         * @private
+         * @param {boolean} [force=false] - Attempt restoration even if the local capture flag is stale.
+         * @param {boolean|null} [forceEnabled=null] - Explicit restored mouse-navigation state.
+         * @return {void}
+         */
+        _releaseInteractionMouseNavigationCapture(force = false, forceEnabled = null) {
+            if ((!this._interactionMouseNavCaptured && !force) || !this.viewer) {
+                this._interactionMouseNavCaptured = false;
+                this._interactionPreviousMouseNavEnabled = null;
+                return;
+            }
+
+            const restoreEnabled = typeof forceEnabled === "boolean" ?
+                forceEnabled :
+                this._interactionPreviousMouseNavEnabled !== false;
+
+            this._interactionMouseNavCaptured = false;
+            this._interactionPreviousMouseNavEnabled = null;
+
+            if (typeof this.viewer.setMouseNavEnabled === "function") {
+                this.viewer.setMouseNavEnabled(restoreEnabled);
+            } else if (typeof this.viewer.mouseNavEnabled === "boolean") {
+                this.viewer.mouseNavEnabled = restoreEnabled;
+            }
+        }
+
+        /**
+         * Disable drag/click OpenSeadragon gestures while keeping wheel zoom available.
+         *
+         * This is the `"drag"` capture mode. It keeps the OpenSeadragon mouse tracker
+         * active, but temporarily disables mouse gesture settings that would conflict
+         * with shader interaction tools.
+         *
+         * @private
+         * @return {void}
+         */
+        _captureInteractionGestureSettings() {
+            if (this._interactionGestureSettingsCaptured || !this.viewer) {
+                return;
+            }
+
+            const settings = this.viewer.gestureSettingsMouse;
+
+            if (!settings || typeof settings !== "object") {
+                return;
+            }
+
+            this._interactionPreviousGestureSettings = {
+                dragToPan: settings.dragToPan,
+                clickToZoom: settings.clickToZoom,
+                dblClickToZoom: settings.dblClickToZoom,
+                dblClickDragToZoom: settings.dblClickDragToZoom,
+                flickEnabled: settings.flickEnabled,
+            };
+            this._interactionGestureSettingsCaptured = true;
+
+            settings.dragToPan = false;
+            settings.clickToZoom = false;
+            settings.dblClickToZoom = false;
+
+            if ("dblClickDragToZoom" in settings) {
+                settings.dblClickDragToZoom = false;
+            }
+
+            if ("flickEnabled" in settings) {
+                settings.flickEnabled = false;
+            }
+        }
+
+        /**
+         * Restore OpenSeadragon gesture settings after `"drag"` input capture.
+         *
+         * @private
+         * @param {boolean} [force=false] - Attempt restoration even if the local capture flag is stale.
+         * @param {Object|null} [forceSettings=null] - Explicit gesture settings to restore.
+         * @return {void}
+         */
+        _releaseInteractionGestureSettingsCapture(force = false, forceSettings = null) {
+            if ((!this._interactionGestureSettingsCaptured && !force) || !this.viewer) {
+                this._interactionGestureSettingsCaptured = false;
+                this._interactionPreviousGestureSettings = null;
+                return;
+            }
+
+            const settings = this.viewer.gestureSettingsMouse;
+            const previous = forceSettings || this._interactionPreviousGestureSettings || {};
+
+            this._interactionGestureSettingsCaptured = false;
+            this._interactionPreviousGestureSettings = null;
+
+            if (!settings || typeof settings !== "object") {
+                return;
+            }
+
+            for (const key of Object.keys(previous)) {
+                if (previous[key] !== undefined) {
+                    settings[key] = previous[key];
+                }
+            }
+        }
+
+        /**
+         * Suppress OpenSeadragon viewer input according to current interaction options.
+         *
+         * @private
+         * @return {void}
+         */
+        _captureInteractionViewerInput() {
+            if (!this._interactionOptions) {
+                this._restoreInteractionViewerInputDefaults();
+                return;
+            }
+
+            const mode = this._interactionOptions.viewerInputCaptureMode || "none";
+
+            if (mode === "drag") {
+                this._releaseInteractionMouseNavigationCapture();
+                this._captureInteractionGestureSettings();
+                return;
+            }
+
+            if (mode === "all") {
+                this._releaseInteractionGestureSettingsCapture();
+                this._captureInteractionMouseNavigation();
+                return;
+            }
+
+            this._restoreInteractionViewerInputDefaults();
+        }
+
+        /**
+         * Restore all OpenSeadragon viewer input modified by interaction capture.
+         *
+         * @private
+         * @return {void}
+         */
+        _releaseInteractionViewerInputCapture() {
+            this._releaseInteractionMouseNavigationCapture();
+            this._releaseInteractionGestureSettingsCapture();
+        }
+
+        /**
+         * Restore normal OpenSeadragon mouse input after viewer input capture is
+         * explicitly set to `"none"`.
+         *
+         * This is intentionally stronger than restoring only the saved capture
+         * snapshot. It prevents stale or already-mutated gesture snapshots from
+         * leaving the viewer unable to pan or click-zoom after capture is turned off.
+         *
+         * @private
+         * @return {void}
+         */
+        _restoreInteractionViewerInputDefaults() {
+            this._releaseInteractionMouseNavigationCapture(true, true);
+
+            this._releaseInteractionGestureSettingsCapture(true, {
+                dragToPan: true,
+                clickToZoom: true,
+                dblClickToZoom: true,
+                dblClickDragToZoom: true,
+                flickEnabled: true,
+            });
+        }
+
+        /**
+         * Synchronize OpenSeadragon input capture with current drawer interaction options.
+         *
+         * @private
+         * @return {void}
+         */
+        _syncInteractionViewerInputCapture() {
+            if (
+                this._interactionEnabled &&
+                this._interactionOptions
+            ) {
+                this._captureInteractionViewerInput();
+                return;
+            }
+
+            this._releaseInteractionViewerInputCapture();
+        }
+
+        /**
+         * Update drawer-level interaction observer options.
+         *
+         * This is the main implementation for drawer-side interaction configuration.
+         * It controls whether FlexDrawer observes pointer/mouse events and how those
+         * events are forwarded to the renderer-owned interaction state.
+         *
+         * The second argument is forwarded only when this method needs to mutate
+         * renderer-owned interaction state because `enabled` changed.
+         *
+         * @param {boolean|Partial<FlexDrawerInteractionOptions>} interaction
+         * @param {InteractionStateUpdateOptions} [stateOptions={}] - Renderer state update options used only when enabling/disabling forwarding.
+         * @return {FlexDrawerInteractionOptions}
+         */
+        setInteractionOptions(interaction, stateOptions = {}) {
+            const previousEnabled = this._interactionEnabled;
+            const previousOptions = this.getInteractionOptions();
+            const previousViewerInputCaptureMode = previousOptions.viewerInputCaptureMode || "none";
+
+            const nextOptions = this._normalizeInteractionOptions(
+                interaction && typeof interaction === "object" ?
+                    $.extend(true, {}, this._interactionOptions, interaction) :
+                    interaction
+            );
+
+            this._interactionOptions = nextOptions;
+
+            if (nextOptions.enabled) {
+                if (!this._interactionListeners) {
+                    this._attachInteractionListeners();
+                }
+
+                if (!this._interactionListeners) {
+                    this._interactionEnabled = false;
+                    this._interactionOptions.enabled = false;
+                    return this.getInteractionOptions();
+                }
+
+                this._interactionEnabled = true;
+                this._interactionOptions.enabled = true;
+
+                if (
+                    previousViewerInputCaptureMode !== "none" &&
+                    this._interactionOptions.viewerInputCaptureMode === "none"
+                ) {
+                    this._restoreInteractionViewerInputDefaults();
+                } else {
+                    this._syncInteractionViewerInputCapture();
+                }
+
+                if (!previousEnabled) {
+                    this.setInteractionState({
+                        enabled: true
+                    }, $.extend(true, {
+                        reason: "drawer-enable-interaction"
+                    }, stateOptions));
+                }
+
+                return this.getInteractionOptions();
+            }
+
+            this._interactionEnabled = false;
+            this._interactionOptions.enabled = false;
+            this._detachInteractionListeners();
+            this._resetInteractionTracking();
+            this._releaseInteractionViewerInputCapture();
+
+            this.clearInteractionState($.extend(true, {
+                reason: "drawer-disable-interaction"
+            }, stateOptions));
+
+            return this.getInteractionOptions();
+        }
+
+        /**
+         * Return drawer-level interaction observer options.
+         *
+         * @return {FlexDrawerInteractionOptions}
+         */
+        getInteractionOptions() {
+            return $.extend(true, {}, this._interactionOptions);
+        }
+
+        /**
+         * Enable or disable drawer-side interaction observation and forwarding.
+         *
+         * On FlexDrawer, "interaction enabled" means the drawer observes pointer/mouse
+         * events and forwards normalized interaction state to FlexRenderer.
+         *
+         * This is a convenience wrapper around `setInteractionOptions(...)`.
+         *
+         * @param {boolean} enabled
+         * @param {InteractionStateUpdateOptions} [stateOptions={}] - Renderer state update options used only for the enable/disable state mutation.
+         * @return {FlexDrawerInteractionOptions}
+         */
+        setInteractionEnabled(enabled, stateOptions = {}) {
+            return this.setInteractionOptions({
+                enabled: !!enabled
+            }, stateOptions);
+        }
+
+        /**
+         * Return whether drawer-side interaction observation and forwarding is enabled.
+         *
+         * @return {boolean}
+         */
+        isInteractionEnabled() {
+            return !!this.getInteractionOptions().enabled;
+        }
+
+        /**
+         * Forward an interaction-state patch to the renderer-owned interaction API.
+         *
+         * @param {Partial<InteractionState>|undefined} state
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        setInteractionState(state = undefined, options = {}) {
+            if (!this.renderer || typeof this.renderer.setInteractionState !== "function") {
+                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+            }
+
+            return this.renderer.setInteractionState(state, $.extend(true, {
+                reason: "drawer-set-interaction-state"
+            }, options));
+        }
+
+        /**
+         * Return the renderer-owned canonical interaction state.
+         *
+         * @return {InteractionState}
+         */
+        getInteractionState() {
+            if (!this.renderer || typeof this.renderer.getInteractionState !== "function") {
+                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+            }
+
+            return this.renderer.getInteractionState();
+        }
+
+        /**
+         * Clear drawer-local interaction tracking and renderer-owned interaction state.
+         *
+         * @param {InteractionStateUpdateOptions} [options={}]
+         * @return {InteractionState}
+         */
+        clearInteractionState(options = {}) {
+            this._resetInteractionTracking();
+
+            if (!this.renderer || typeof this.renderer.clearInteractionState !== "function") {
+                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+            }
+
+            return this.renderer.clearInteractionState($.extend(true, {
+                reason: "drawer-clear-interaction-state"
+            }, options));
         }
 
         // DRAWING METHODS
@@ -1142,6 +2136,7 @@
                 const tiledImage = tiledImages[tiledImageIndex];
                 const payload = [];
                 const vecPayload = [];
+                const diagnosticPayload = [];
 
                 const tilesToDraw = tiledImage.getTilesToDraw();
 
@@ -1190,7 +2185,16 @@
 
                         const tileInfo = this.getDataToDraw(tile);
                         if (!tileInfo) {
-                            //TODO consider drawing some error if the tile is in erroneous state
+                            continue;
+                        }
+
+                        if (this._isDiagnosticTileInfo(tileInfo)) {
+                            diagnosticPayload.push(this._makeTileDiagnosticRegion(
+                                tile,
+                                tiledImage,
+                                overallMatrix,
+                                tileInfo.reason || "invalid-data"
+                            ));
                             continue;
                         }
 
@@ -1224,6 +2228,13 @@
                             }
 
                             vecPayload.push(tileInfo.vectors);
+                        } else {
+                            diagnosticPayload.push(this._makeTileDiagnosticRegion(
+                                tile,
+                                tiledImage,
+                                overallMatrix,
+                                "invalid-data"
+                            ));
                         }
                     }
                 }
@@ -1261,6 +2272,7 @@
                     TI_PAYLOAD.push({
                         tiles: payload,
                         vectors: vecPayload,
+                        diagnostics: diagnosticPayload,
                         polygons: polygons,
                         dataIndex: baseLayer + packIndex,
                         stencilIndex: tiledImageIndex,
@@ -1288,7 +2300,7 @@
             const sources = [];
             const flatShaders = this.renderer.getFlatShaderLayers(shaders, shaderOrder);
 
-            const canvas = this.renderer.canvas;
+            const canvas = this.renderer.getPresentationCanvas();
             const osdViewport = this.viewer.viewport;
             const inner = osdViewport && osdViewport._containerInnerSize;
             const sx = inner && inner.x ? canvas.width / inner.x : 1;
@@ -1507,14 +2519,30 @@
                 {
                     debug: false,
                     webGLPreferredVersion: "2.0",
+                    sharedContextKey: null,
                 },
                 // User-defined
                 this.options,
                 // Required
                 {
-                    redrawCallback: () => this.viewer.forceRedraw(),
+                    redrawCallback: () => {
+                        // Shader-internal UI controls (color picker, sliders, opacity, etc.)
+                        // mutate this drawer's shader instances directly and route the redraw
+                        // through here. The navigator's drawer has its own shader instances
+                        // with their own state, so we mirror the change AND kick the navigator's
+                        // own animation loop — without nav.forceRedraw(), glDrawing() never runs
+                        // on the nav controls and the _needsLoad=true left by .set() never flushes.
+                        // Gated on the (opt-in, default-true) handleNavigator option; skipped on
+                        // the navigator drawer itself which has handleNavigator forced to false.
+                        if (this.options.handleNavigator && this.viewer.navigator) {
+                            this._syncNavigatorShaderState();
+                            this.viewer.navigator.forceRedraw();
+                        }
+                        this.viewer.forceRedraw();
+                    },
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,
+                    sharedContextKey: this.options.sharedContextKey,
                     // TODO: problem when navigator renders first
                     // Navigator must not have the handler since it would attempt to define the controls twice
                     htmlHandler: this._isNavigatorDrawer ? null : this.options.htmlHandler,
@@ -1525,24 +2553,36 @@
                     }
                 });
             this.renderer = new $.FlexRenderer(rendererOptions);
+            this.renderer.drawer = this;
 
             this.renderer.setDataBlendingEnabled(true); // enable alpha blending
             this.webGLVersion = this.renderer.webglVersion;
             this.debug = rendererOptions.debug;
 
-            const canvas = this.renderer.canvas;
+            const canvas = this.renderer.getPresentationCanvas();
             let viewportSize = this._calculateCanvasSize();
 
             // SETUP CANVASES
-            this._gl = this.renderer.gl;
             this._setupCanvases();
 
             canvas.width = viewportSize.x;
             canvas.height = viewportSize.y;
             this._refreshDrawReadyState();
+
+            this._interactionOptions = this._normalizeInteractionOptions(
+                this._isNavigatorDrawer ? false : this.options.interaction
+            );
+
+            if (this._interactionOptions.enabled) {
+                this.setInteractionOptions(this._interactionOptions, {
+                    notify: true,
+                    redraw: false,
+                    reason: "drawer-init-interaction"
+                });
+            }
+
             return canvas;
         }
-
 
         /**
          * Sets whether image smoothing is enabled or disabled.
@@ -1556,6 +2596,54 @@
             }
         }
 
+        /**
+         * Override the image-smoothing flag for a single tiledImage. Falls back to the
+         * drawer-wide value when undefined.
+         *
+         * Note: the sampler filter is baked into prepared textures at upload time, and
+         * OpenSeadragon's tile cache is keyed by tile content, not tiledImage identity.
+         * If two tiledImages reference the same source tiles, they will share the
+         * cached prepared textures — the first uploader wins the filter. In the common
+         * case where the per-source flag matches the source's identity, this is fine;
+         * setInternalCacheNeedsRefresh() forces re-preparation when the flag flips.
+         *
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @param {Boolean|null|undefined} enabled true → gl.LINEAR, false → gl.NEAREST,
+         *     null/undefined → inherit drawer default
+         */
+        setTiledImageSmoothingEnabled(tiledImage, enabled){
+            if (!tiledImage) {
+                return;
+            }
+            const normalized = enabled === null || enabled === undefined ? undefined : !!enabled;
+            if (tiledImage.__flexImageSmoothingEnabled === normalized) {
+                return;
+            }
+            tiledImage.__flexImageSmoothingEnabled = normalized;
+            this.setInternalCacheNeedsRefresh();
+            if (typeof tiledImage.requestInvalidate === "function") {
+                tiledImage.requestInvalidate(true);
+            } else {
+                this.viewer.requestInvalidate(false);
+            }
+        }
+
+        /**
+         * Resolve the effective image-smoothing flag for a tiledImage, honoring the
+         * per-tiledImage override when present.
+         *
+         * @private
+         * @param {OpenSeadragon.TiledImage} [tiledImage]
+         * @returns {Boolean}
+         */
+        _resolveImageSmoothingEnabled(tiledImage){
+            const override = tiledImage && tiledImage.__flexImageSmoothingEnabled;
+            if (override === true || override === false) {
+                return override;
+            }
+            return !!this._imageSmoothingEnabled;
+        }
+
         internalCacheCreate(cache, tile) {
             const tiledImage = tile.tiledImage;
             const normalized = this._normalizeCacheData(cache);
@@ -1565,28 +2653,179 @@
                 type: normalized.type,
                 tile,
                 tiledImage
-            }).catch(e => {
-                $.console.error(`Unsupported data type! ${normalized.data}`, e);
+            }).catch(error => {
+                $.console.error(`Failed to prepare tile data.`, error, normalized.data);
+
+                return this._createDiagnosticTileInfo(
+                    error && error.reason ? error.reason : "invalid-data"
+                );
             });
         }
 
-        async createTileInfoFromSource({ data, type, tile, tiledImage }) {
-            const gl = this._gl;
+        /**
+         * Create an internal tile-info sentinel for tile data that was received but
+         * could not be converted into renderer-ready raster or vector data.
+         *
+         * @private
+         * @param {string} reason
+         * @return {{__flexDiagnostic: boolean, reason: string}}
+         */
+        _createDiagnosticTileInfo(reason = "invalid-data") {
+            return {
+                __flexDiagnostic: true,
+                reason: reason
+            };
+        }
 
+        /**
+         * Return whether tile info is an internal diagnostic sentinel.
+         *
+         * @private
+         * @param {*} tileInfo
+         * @return {boolean}
+         */
+        _isDiagnosticTileInfo(tileInfo) {
+            return !!(tileInfo && tileInfo.__flexDiagnostic === true);
+        }
+
+        /**
+         * Return renderer-neutral texture options for prepared tile resources.
+         *
+         * @private
+         * @returns {RasterTileTextureOptions}
+         */
+        _getPreparedTileTextureOptions(tiledImage) {
+            return {
+                imageSmoothingEnabled: this._resolveImageSmoothingEnabled(tiledImage)
+            };
+        }
+
+        /**
+         * Convert a successful renderer preparation result into FlexDrawer's
+         * internal raster tile-info shape.
+         *
+         * FlexDrawer owns OpenSeadragon tile placement. The renderer/backend owns
+         * the prepared resource.
+         *
+         * @private
+         * @param {PreparedRasterTileSuccess} result - Successful preparation result.
+         * @param {OpenSeadragon.Tile} tile - OpenSeadragon tile.
+         * @param {OpenSeadragon.TiledImage} tiledImage - Owning tiled image.
+         * @returns {{position: Float32Array, texture: *, resource: *, vectors: undefined}}
+         */
+        _createPreparedRasterTileInfo(result, tile, tiledImage) {
+            return {
+                position: this._computeTilePosition(tile, tiledImage, result.width, result.height),
+                texture: result.texture,
+                resource: result.resource,
+                vectors: undefined
+            };
+        }
+
+        /**
+         * Convert a preparation failure into the existing diagnostic tile sentinel.
+         *
+         * @private
+         * @param {PreparedTileFailure} result - Failed preparation result.
+         * @returns {{__flexDiagnostic: boolean, reason: string}}
+         */
+        _createDiagnosticTileInfoFromPreparationFailure(result) {
+            const reason = result && result.reason ? result.reason : "invalid-data";
+            return this._createDiagnosticTileInfo(reason);
+        }
+
+        /**
+         * Return whether OpenSeadragon/canvas preflight can already identify a
+         * bitmap-like tile source as tainted.
+         *
+         * This is an adapter-level optimization only. It does not replace renderer/backend upload classification.
+         *
+         * @private
+         * @param {*} data - Normalized tile data.
+         * @param {OpenSeadragon.TiledImage} tiledImage - Owning tiled image.
+         * @returns {boolean}
+         */
+        _isKnownTaintedBitmapTileData(data, tiledImage) {
+            if (tiledImage && typeof tiledImage.isTainted === "function" && tiledImage.isTainted()) {
+                return true;
+            }
+
+            const canvas = this._getCanvasFromBitmapTileData(data);
+
+            if (!canvas) {
+                return false;
+            }
+
+            // checks if the canvas is tainted by trying to read from it
+            return !!$.isCanvasTainted(canvas);
+        }
+
+        /**
+         * Extract a canvas from bitmap-like tile data when available.
+         *
+         * @private
+         * @param {*} data - Tile data.
+         * @returns {HTMLCanvasElement | OffscreenCanvas | null}
+         */
+        _getCanvasFromBitmapTileData(data) {
+            if (!data) {
+                return null;
+            }
+
+            if (typeof CanvasRenderingContext2D !== "undefined" && data instanceof CanvasRenderingContext2D) {
+                return data.canvas || null;
+            }
+
+            if (typeof HTMLCanvasElement !== "undefined" && data instanceof HTMLCanvasElement) {
+                return data;
+            }
+
+            if (typeof OffscreenCanvas !== "undefined" && data instanceof OffscreenCanvas) {
+                return data;
+            }
+
+            return null;
+        }
+
+        async createTileInfoFromSource({ data, type, tile, tiledImage }) {
             if (type === "undefined") {
                 return null;
             }
 
             if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points))) {
-                return this._buildVectorTileInfo(data, gl);
+                const result = await this.renderer.prepareVectorTile({
+                    data: data
+                });
+
+                if (!result.ok) {
+                    return this._createDiagnosticTileInfoFromPreparationFailure(result);
+                }
+
+                return {
+                    position: null,
+                    texture: null,
+                    resource: result.resource,
+                    vectors: result.vectors
+                };
             }
 
-            const isGpuTextureSet = data &&
-                typeof data.getType === "function" &&
-                data.getType() === "gpuTextureSet";
+            const isGpuTextureSet = type === "gpuTextureSet" || (data && typeof data.getType === "function" && data.getType() === "gpuTextureSet");
 
             if (isGpuTextureSet) {
-                const tileInfo = this._buildGpuTextureTileInfo(data, tile, tiledImage, gl);
+                const result = await this.renderer.prepareGpuTextureTile({
+                    data: data,
+                    textureOptions: this._getPreparedTileTextureOptions(tiledImage)
+                });
+
+                if (!result.ok) {
+                    return this._createDiagnosticTileInfoFromPreparationFailure(result);
+                }
+
+                this._updatePackMetadata(
+                    tiledImage,
+                    result.packCount || result.textureDepth || 1,
+                    result.channelCount || (result.packCount || result.textureDepth || 1) * 4
+                );
 
                 if (this._packLayoutDirty) {
                     // TODO: is this refreshing logic necessary?
@@ -1595,16 +2834,97 @@
                     this._requestRebuild();
                 }
 
-                return tileInfo;
+                return this._createPreparedRasterTileInfo(result, tile, tiledImage);
             }
 
-            return this._buildBitmapTileInfo(data, tile, tiledImage, gl);
+            if (this._isKnownTaintedBitmapTileData(data, tiledImage)) {
+                return this._createDiagnosticTileInfo("tainted-data");
+            }
+
+            const result = await this.renderer.prepareBitmapTile({
+                data: data,
+                textureOptions: this._getPreparedTileTextureOptions(tiledImage)
+            });
+
+            if (!result.ok) {
+                return this._createDiagnosticTileInfoFromPreparationFailure(result);
+            }
+
+            this._updatePackMetadata(
+                tiledImage,
+                result.packCount || 1,
+                result.channelCount || 4
+            );
+
+            return this._createPreparedRasterTileInfo(result, tile, tiledImage);
         }
 
         // _refreshPackLayoutNow() {
         //     this._updatePackLayout();
         //     this._packLayoutDirty = false;
         // }
+
+        /**
+         * Compute fallback dimensions for a diagnostic tile region.
+         *
+         * Diagnostic entries have no decoded image/texture dimensions, so this uses
+         * source bounds when OpenSeadragon exposes them and falls back to the tile
+         * source's nominal tile dimensions.
+         *
+         * @private
+         * @param {OpenSeadragon.Tile} tile
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @return {{width: number, height: number}}
+         */
+        _getDiagnosticTileDimensions(tile, tiledImage) {
+            const source = tiledImage && tiledImage.source ? tiledImage.source : {};
+            const sourceBounds = tile && tile.sourceBounds ? tile.sourceBounds : null;
+            const width = sourceBounds && Number.isFinite(sourceBounds.width) && sourceBounds.width > 0 ?
+                sourceBounds.width :
+                source.tileWidth || source.tileSize || 1;
+            const height = sourceBounds && Number.isFinite(sourceBounds.height) && sourceBounds.height > 0 ?
+                sourceBounds.height :
+                source.tileHeight || source.tileSize || width;
+
+            return {
+                width: width,
+                height: height
+            };
+        }
+
+        /**
+         * Create a renderer-ready diagnostic first-pass region for a tile.
+         *
+         * @private
+         * @param {OpenSeadragon.Tile} tile
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @param {OpenSeadragon.Mat3} overallMatrix
+         * @param {string} [reason="invalid-data"]
+         * @return {FPRenderDiagnosticTile}
+         */
+        _makeTileDiagnosticRegion(tile, tiledImage, overallMatrix, reason = "invalid-data") {
+            const dimensions = this._getDiagnosticTileDimensions(tile, tiledImage);
+            const position = this._computeTilePosition(
+                tile,
+                tiledImage,
+                dimensions.width,
+                dimensions.height
+            );
+            const diagnosticTileInfo = {
+                position: position
+            };
+
+            return {
+                reason: reason,
+                transformMatrix: this._updateTileMatrix(
+                    diagnosticTileInfo,
+                    tile,
+                    tiledImage,
+                    overallMatrix
+                ),
+                position: position
+            };
+        }
 
         /**
          * Compute normalized tile texture coordinates (UVs) in source image space,
@@ -1673,37 +2993,22 @@
             if (!data) {
                 return;
             }
-            if (data.texture) {
-                this._gl.deleteTexture(data.texture);
-                data.texture = null;
-            }
-            if (data.vectors) {
-                const gl = this._gl;
-                if (data.vectors.fills) {
-                    gl.deleteBuffer(data.vectors.fills.vboPos);
-                    gl.deleteBuffer(data.vectors.fills.vboParam);
-                    gl.deleteBuffer(data.vectors.fills.ibo);
-                }
-                if (data.vectors.lines) {
-                    gl.deleteBuffer(data.vectors.lines.vboPos);
-                    gl.deleteBuffer(data.vectors.lines.vboParam);
-                    gl.deleteBuffer(data.vectors.lines.ibo);
-                }
-                if (data.vectors.linePrimitives) {
-                    for (const lineBatch of data.vectors.linePrimitives) {
-                        gl.deleteBuffer(lineBatch.vboPos);
-                        gl.deleteBuffer(lineBatch.vboParam);
-                        gl.deleteBuffer(lineBatch.ibo);
-                    }
-                }
-                if (data.vectors.points) {
-                    gl.deleteBuffer(data.vectors.points.vboPos);
-                    gl.deleteBuffer(data.vectors.points.vboParam);
-                    gl.deleteBuffer(data.vectors.points.ibo);
+
+            if (data.resource) {
+                this.renderer.releasePreparedTileResource(data.resource);
+                data.resource = null;
+            } else {
+                if (data.texture) {
+                    this.renderer.releasePreparedTileResource(data.texture);
                 }
 
-                data.vectors = null;
+                if (data.vectors) {
+                    this.renderer.releasePreparedTileResource(data.vectors);
+                }
             }
+
+            data.texture = null;
+            data.vectors = null;
         }
 
         // inside OpenSeadragon.FlexDrawer
@@ -1793,220 +3098,18 @@
             this._requestRebuild(0, true);
         }
 
-        _buildVectorTileInfo(data, gl) {
-            const tileInfo = {
-                position: null,
-                texture: null,
-                vectors: {}
-            };
-
-            const buildBatch = (meshes) => {
-                let vCount = 0,
-                    iCount = 0;
-                for (const m of meshes) {
-                    vCount += (m.vertices.length / 4);
-                    iCount += m.indices.length;
-                }
-
-                const positions = new Float32Array(vCount * 4);
-                const parameters = new Float32Array(vCount * 4);
-                const indices = new Uint32Array(iCount);
-
-                let vOfs = 0,
-                    iOfs = 0,
-                    baseVertex = 0;
-
-                for (const m of meshes) {
-                    positions.set(m.vertices, vOfs * 4);
-
-                    // fill color per-vertex (constant per feature)
-                    const rgba = m.color ? m.color : [0, 0, 0, 1];
-                    const r = Math.max(0.0, Math.min(1.0, rgba[0]));
-                    const g = Math.max(0.0, Math.min(1.0, rgba[1]));
-                    const b = Math.max(0.0, Math.min(1.0, rgba[2]));
-                    const a = Math.max(0.0, Math.min(1.0, rgba[3]));
-                    for (let k = 0; k < (m.vertices.length / 4); k++) {
-                        const pOfs = (vOfs + k) * 4;
-                        parameters[pOfs + 0] = r;
-                        parameters[pOfs + 1] = g;
-                        parameters[pOfs + 2] = b;
-                        parameters[pOfs + 3] = a;
-                    }
-
-                    // if parameters are specified from mesh
-                    if (m.parameters) {
-                        parameters.set(m.parameters, vOfs * 4);
-                    }
-
-                    // rebase indices
-                    for (let k = 0; k < m.indices.length; k++) {
-                        indices[iOfs + k] = baseVertex + m.indices[k];
-                    }
-
-                    vOfs += (m.vertices.length / 4);
-                    iOfs += m.indices.length;
-                    baseVertex += (m.vertices.length / 4);
-                }
-
-                // Upload once
-                const vboPos = gl.createBuffer();
-                gl.bindBuffer(gl.ARRAY_BUFFER, vboPos);
-                gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-
-                const vboParam = gl.createBuffer();
-                gl.bindBuffer(gl.ARRAY_BUFFER, vboParam);
-                gl.bufferData(gl.ARRAY_BUFFER, parameters, gl.STATIC_DRAW);
-
-                const ibo = gl.createBuffer();
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-
-                const firstMesh = meshes[0] || {};
-                const lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0 ? firstMesh.lineWidth : 1;
-
-                return { vboPos, vboParam, ibo, count: indices.length, lineWidth };
-            };
-
-            const hasNativeLines = data.linePrimitives && data.linePrimitives.length;
-            const hasMeshLines = !hasNativeLines && data.lines && data.lines.length;
-
-            if (data.fills && data.fills.length) {
-                tileInfo.vectors.fills = buildBatch(data.fills);
-            }
-            if (hasMeshLines) {
-                tileInfo.vectors.lines = buildBatch(data.lines);
-            }
-            if (hasNativeLines) {
-                const linePrimitiveGroups = new Map();
-
-                for (const mesh of data.linePrimitives) {
-                    const lineWidth = Number.isFinite(mesh.lineWidth) && mesh.lineWidth > 0
-                        ? mesh.lineWidth
-                        : 1;
-                    const key = String(lineWidth);
-
-                    if (!linePrimitiveGroups.has(key)) {
-                        linePrimitiveGroups.set(key, []);
-                    }
-
-                    linePrimitiveGroups.get(key).push(mesh);
-                }
-
-                tileInfo.vectors.linePrimitives = Array.from(linePrimitiveGroups.values()).map(buildBatch);
-            }
-            if (data.points && data.points.length) {
-                tileInfo.vectors.points = buildBatch(data.points);
-            }
-
-            return tileInfo;
-        }
-
-        _buildGpuTextureTileInfo(gpu, tile, tiledImage, gl) {
-            const width = gpu.width;
-            const height = gpu.height;
-            const packs = gpu.packs || [];
-            const packCount = packs.length || 1;
-            const channelCount = gpu.channelCount || packCount * 4;
-
-            this._updatePackMetadata(tiledImage, packCount, channelCount);
-
-            const tileInfo = {
-                position: this._computeTilePosition(tile, tiledImage, width, height),
-                texture: null,
-                vectors: undefined,
-            };
-
-            const texture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-
-            const firstFmt = (packs[0] && packs[0].format) || "RGBA8";
-            const internalFormat = (firstFmt === "RGBA16F") ? gl.RGBA16F : gl.RGBA8;
-            const format = gl.RGBA;
-            const type = (firstFmt === "RGBA16F") ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
-
-            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, internalFormat, width, height, packCount);
-
-            for (let layer = 0; layer < packCount; layer++) {
-                const pack = packs[layer];
-                if (!pack) {
-                    continue;
-                }
-
-                gl.texSubImage3D(
-                    gl.TEXTURE_2D_ARRAY,
-                    0,
-                    0, 0, layer,
-                    width, height, 1,
-                    format,
-                    type,
-                    pack.data
-                );
-            }
-
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-            tileInfo.texture = texture;
-            return tileInfo;
-        }
-
-        async _buildBitmapTileInfo(data, tile, tiledImage, gl) {
-            // if (!tiledImage.isTainted()) {
-            // todo tained data handle
-            // if((data instanceof CanvasRenderingContext2D) && $.isCanvasTainted(data.canvas)){
-            //     tiledImage.setTainted(true);
-            //     $.console.warn('WebGL cannot be used to draw this TiledImage because it has tainted data. Does crossOriginPolicy need to be set?');
-            //     this._raiseDrawerErrorEvent(tiledImage, 'Tainted data cannot be used by the WebGLDrawer. Falling back to CanvasDrawer for this TiledImage.');
-            //     this.setInternalCacheNeedsRefresh();
-            // } else {
-
-            const bitmap = await createImageBitmap(data);
-
-            const width = bitmap.width;
-            const height = bitmap.height;
-
-            this._updatePackMetadata(tiledImage, 1, 4);
-
-            const tileInfo = {
-                position: this._computeTilePosition(tile, tiledImage, width, height),
-                texture: null,
-                vectors: undefined,
-            };
-
-            const tex = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-
-            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 1);
-            gl.texSubImage3D(
-                gl.TEXTURE_2D_ARRAY,
-                0,
-                0, 0, 0,
-                width, height, 1,
-                gl.RGBA,
-                gl.UNSIGNED_BYTE,
-                bitmap
-            );
-
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-            tileInfo.texture = tex;
-            return tileInfo;
-        }
-
         _setClip(){
             // no-op: called, handled during rendering from tiledImage data
         }
-    };
+    }
 
-    OpenSeadragon.FlexDrawer._idGenerator = 0;
-    Object.defineProperty(OpenSeadragon.FlexDrawer, 'idGenerator', {
+    FlexDrawer._idGenerator = 0;
+    Object.defineProperty(FlexDrawer, 'idGenerator', {
         get: function() {
             return this._idGenerator++;
         }
     });
+
+    $.FlexDrawer = FlexDrawer;
+
 }( OpenSeadragon ));

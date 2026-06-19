@@ -8,6 +8,10 @@ let STYLE = {
 
 let USE_NATIVE_LINES = false;
 
+// className -> textureId, keyed by MVT layer name. Populated incrementally as
+// the main thread renders icons to canvases and uploads them to firstAtlas.
+let ICON_MAP = {};
+
 self.onmessage = async (e) => {
     const msg = e.data;
 
@@ -16,6 +20,17 @@ self.onmessage = async (e) => {
             EXTENT = msg.extent || EXTENT;
             STYLE = msg.style || STYLE;
             USE_NATIVE_LINES = msg.useNativeLines === true;
+            return;
+        }
+
+        if (msg.type === 'icons') {
+            const incoming = msg.iconMap || {};
+            if (msg.replace) {
+                ICON_MAP = {};
+            }
+            for (const layerName of Object.keys(incoming)) {
+                ICON_MAP[layerName] = Object.assign(ICON_MAP[layerName] || {}, incoming[layerName] || {});
+            }
             return;
         }
 
@@ -28,7 +43,7 @@ self.onmessage = async (e) => {
             if (!self.Pbf || !self.vectorTile || !self.earcut) {
                 throw new Error('Missing libs');
             }
-            const resp = await fetch(url);
+            const resp = self.__hasHttpBridge ? await self.requestFetch(url) : await fetch(url);
 
             if (!resp.ok) {
                 throw new Error('HTTP ' + resp.status);
@@ -178,12 +193,17 @@ self.onmessage = async (e) => {
                     }
 
                     if (feat.type === 1 && fstyle.type === 'icon') {
-                        const size = fstyle.size || 1.0;
-                        const icon = fstyle.iconMapping[feat.properties.class] || {
-                            textureId: -1,
-                            width: 16,
-                            height: 16
-                        };
+                        const classMap = ICON_MAP[lname] || {};
+                        const textureId = classMap[feat.properties.class];
+                        if (!Number.isInteger(textureId) || textureId < 0) {
+                            continue;
+                        }
+
+                        // Quad side in extent units. iconSize defaults to 256 on the main
+                        // thread; size is a world-space scale factor.
+                        const scale = fstyle.size || 1.0;
+                        const iconSize = fstyle.iconSize || 256;
+                        const half = (scale * iconSize) / 2.0;
 
                         const verts = [];
                         const idx = [];
@@ -195,28 +215,22 @@ self.onmessage = async (e) => {
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
 
-                                const width = size * icon.width;
-                                const height = size * icon.height;
-
-                                const xStart = (pt.x - (width / 2.0)) / lyr.extent;
-                                const xEnd = (pt.x + (width / 2.0)) / lyr.extent;
-                                const yStart = (pt.y - (height / 2.0)) / lyr.extent;
-                                const yEnd = (pt.y + (height / 2.0)) / lyr.extent;
+                                const xStart = (pt.x - half) / lyr.extent;
+                                const xEnd = (pt.x + half) / lyr.extent;
+                                const yStart = (pt.y - half) / lyr.extent;
+                                const yEnd = (pt.y + half) / lyr.extent;
+                                const w = (2 * half) / lyr.extent;
+                                const h = w;
 
                                 const base = verts.length / 4;
 
-                                verts.push(xStart, yStart, tileDepth, icon.textureId);
-                                verts.push(xEnd, yStart, tileDepth, icon.textureId);
-                                verts.push(xStart, yEnd, tileDepth, icon.textureId);
-                                verts.push(xEnd, yEnd, tileDepth, icon.textureId);
+                                verts.push(xStart, yStart, tileDepth, textureId);
+                                verts.push(xEnd, yStart, tileDepth, textureId);
+                                verts.push(xStart, yEnd, tileDepth, textureId);
+                                verts.push(xEnd, yEnd, tileDepth, textureId);
 
                                 for (let i = 0; i < 4; i += 1) {
-                                    parameters.push(
-                                        xStart,
-                                        yStart,
-                                        width / lyr.extent,
-                                        height / lyr.extent
-                                    );
+                                    parameters.push(xStart, yStart, w, h);
                                 }
 
                                 idx.push(
@@ -234,6 +248,7 @@ self.onmessage = async (e) => {
                             });
                         }
                     }
+
                 }
             }
 

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FlexRenderer shared-context useProgram repro</title>
+
+    <script type="text/javascript" src="../../openseadragon/openseadragon.js"></script>
+    <script type="text/javascript" src="/build/openseadragon/flex-renderer.js"></script>
+    <script type="module" src="shared-useprogram-repro.js"></script>
+
+    <style>
+        :root {
+            color-scheme: light;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            background: #f5f5f5;
+            color: #111827;
+        }
+
+        .content {
+            max-width: 1100px;
+            min-height: 100vh;
+            margin: 0 auto;
+            padding: 24px;
+            box-sizing: border-box;
+        }
+
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 22px;
+        }
+
+        h2 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+        }
+
+        h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+        }
+
+        p {
+            line-height: 1.45;
+        }
+
+        code {
+            background: #eef2f7;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        .panel {
+            margin: 16px 0;
+            padding: 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+
+        .viewer-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+        }
+
+        .viewer-card {
+            min-width: 0;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #f9fafb;
+        }
+
+        canvas.viewer-canvas {
+            width: 100%;
+            max-width: 420px;
+            height: 180px;
+            border: 1px solid #9ca3af;
+            background: repeating-conic-gradient(#ddd 0% 25%, #fff 0% 50%) 50% / 20px 20px;
+            image-rendering: pixelated;
+            display: block;
+        }
+
+        .viewer-note {
+            margin: 8px 0 0 0;
+            color: #4b5563;
+            font-size: 13px;
+        }
+
+        table {
+            width: 100%;
+            margin-top: 12px;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 6px 8px;
+            border: 1px solid #d1d5db;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            width: 38%;
+            background: #f3f4f6;
+        }
+
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .small {
+            margin: 8px 0 0 0;
+            color: #4b5563;
+            font-size: 13px;
+        }
+
+        .result {
+            font-weight: 700;
+        }
+
+        .pass {
+            color: #166534;
+        }
+
+        .fail {
+            color: #991b1b;
+        }
+
+        .neutral {
+            color: #4b5563;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 0.75em;
+            height: 0.75em;
+            margin-right: 6px;
+            border-radius: 999px;
+            background: #9ca3af;
+        }
+
+        .status-dot.pass {
+            background: #16a34a;
+        }
+
+        .status-dot.fail {
+            background: #dc2626;
+        }
+
+        @media (max-width: 760px) {
+            .viewer-grid {
+                grid-template-columns: 1fr;
+            }
+
+            canvas.viewer-canvas {
+                max-width: none;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="content">
+    <h1>FlexRenderer shared-context <code>useProgram</code> repro</h1>
+
+    <p>
+        This harness tests the FlexRenderer build loaded by
+        <code>/build/openseadragon/flex-renderer.js</code>. It uses one shared WebGL2 backing context and two
+        separate presentation canvases. Viewer A is expected to render red and viewer B is expected to render green.
+        The repro renders A, renders B, then renders A again through FlexRenderer's <code>useProgram</code> skip-load
+        path. The old behavior leaves WebGL's context-global <code>CURRENT_PROGRAM</code> bound to B, so A incorrectly
+        renders green; the fixed behavior rebinds A and the two viewers remain visually different.
+    </p>
+
+    <section class="panel">
+        <h2>Shared-context presentation viewers</h2>
+        <div class="viewer-grid">
+            <article class="viewer-card">
+                <h3>Viewer A — expected red after interleaved redraw</h3>
+                <canvas id="viewer-a" class="viewer-canvas" width="320" height="180"></canvas>
+                <p id="viewer-a-note" class="viewer-note">Waiting for test.</p>
+            </article>
+
+            <article class="viewer-card">
+                <h3>Viewer B — expected green</h3>
+                <canvas id="viewer-b" class="viewer-canvas" width="320" height="180"></canvas>
+                <p id="viewer-b-note" class="viewer-note">Waiting for test.</p>
+            </article>
+        </div>
+        <p id="summary" class="result neutral"><span class="status-dot"></span>Not run yet.</p>
+        <p class="small">
+            Both visible canvases are ordinary presentation canvases. Rendering is performed into one hidden WebGL2
+            backing canvas, then copied into the target presentation canvas, mirroring the shared-context presentation
+            contract without requiring the full tile stack.
+        </p>
+    </section>
+
+    <section class="panel">
+        <h2>Checks</h2>
+        <table>
+            <tbody id="checks-body">
+            <tr><td>Status</td><td>Waiting for test.</td></tr>
+            </tbody>
+        </table>
+    </section>
+</div>
+</body>
+</html>
