@@ -361,14 +361,6 @@ module.exports = function(grunt) {
         grunt.file.write(reportPath, JSON.stringify(coverage));
     });
 
-    // Copy:build task.
-    // Copies icon files into the appropriate location in the build folder
-    grunt.registerTask("copy:build", function() {
-        grunt.file.recurse("icons", function(abspath, rootdir, subdir, filename) {
-            grunt.file.copy(abspath, "build/openseadragon/icons/" + (subdir ? (subdir + "/") : "") + filename);
-        });
-    });
-
     // ----------
     // Copy:package task.
     // Creates a directory tree to be compressed into a package.
@@ -431,14 +423,14 @@ module.exports = function(grunt) {
         "concat:fabricWorkerPre", "concat:fabricWorkerPost",
         "concat:geojsonWorkerPre", "concat:geojsonWorkerPost",
         "concat:dist", "uglify",
-        "replace:cleanPaths", "copy:build"
+        "replace:cleanPaths"
     ]);
 
     // ----------
     // Minimal build task.
     // For use during development as desired. Creates only the unminified version.
     grunt.registerTask("minbuild", [
-        "git-describe", "concat", "copy:build"
+        "git-describe", "concat"
     ]);
 
     // ----------
