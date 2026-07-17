@@ -1,13 +1,65 @@
 (function($) {
     /**
+     * A color in any encoding the source accepts.
+     *
+     * Supported forms:
+     * - CSS hex string: `'#rgb'`, `'#rgba'`, `'#rrggbb'`, `'#rrggbbaa'` (leading `#` optional)
+     * - Array of 3 or 4 finite numbers, either 0..1 floats or 0-255 components
+     * - Packed signed 32-bit ARGB integer, as written by QuPath
+     *
+     * A numeric array is read as 0..1 floats when every component is `<= 1`, and as
+     * 0-255 otherwise. See GEOJSON.md for the reasoning and the one case this makes
+     * unwritable.
+     *
+     * @typedef {string|number|number[]} GeoJSONColor
+     */
+
+    /**
+     * Ramps a numeric feature property through a color scale.
+     *
+     * Supply either `name` (a scheme from src/colormaps.js) or `stops` (an explicit
+     * ramp). `steps` only selects how many stops to pull from a named scheme, which
+     * controls ramp fidelity; it is not a quantization count, since interpolation
+     * between stops is continuous.
+     *
+     * @typedef {object} GeoJSONColormapSpec
+     * @property {string} property - Dotted path to the numeric feature property to ramp.
+     * @property {string} [name] - Colormap scheme name, for example 'Viridis' or 'Spectral'.
+     * @property {number} [steps] - Stop count to pull from the named scheme. Defaults to the
+     *     scheme's largest available variant. Schemes differ in which counts they offer.
+     * @property {GeoJSONColor[]} [stops] - Explicit ramp, bypassing `name` entirely. At least two.
+     * @property {number[]} [domain=[0, 1]] - Value range as [min, max]. Values are clamped.
+     */
+
+    /**
      * Options controlling annotation style.
+     *
+     * Beyond the flat per-geometry-type colors, a feature's color can be derived
+     * from its own properties. Resolution order per feature, first hit wins:
+     *
+     * 1. `classes[properties[classProperty]]` - a label lookup, which lets a caller
+     *    recolor at runtime via `setStyle` without re-exporting the source data.
+     * 2. `colorProperties` - the first listed path holding a parseable color, i.e.
+     *    the color the producer baked into the file.
+     * 3. `colormap` - ramp a numeric property through a color scale.
+     * 4. `pointColor` / `lineColor` / `fillColor` - the flat fallback.
+     *
+     * All four resolver fields are optional. Omit them all and styling behaves
+     * exactly as it did before they existed.
      *
      * @typedef {object} GeoJSONStyleOptions
      * @property {number} [pointSize=4] - Point size in pixels.
-     * @property {number[]} [pointColor=[1, 0.2, 0.2, 1]] - Point color as [r, g, b, a].
+     * @property {GeoJSONColor} [pointColor=[1, 0.2, 0.2, 1]] - Fallback point color.
      * @property {number} [lineWidth=2] - Line width in pixels.
-     * @property {number[]} [lineColor=[0.2, 1, 0.2, 1]] - Line color as [r, g, b, a].
-     * @property {number[]} [fillColor=[0.2, 0.2, 1, 0.6]] - Fill color as [r, g, b, a].
+     * @property {GeoJSONColor} [lineColor=[0.2, 1, 0.2, 1]] - Fallback line color.
+     * @property {GeoJSONColor} [fillColor=[0.2, 0.2, 1, 0.6]] - Fallback fill color.
+     * @property {string[]} [colorProperties] - Ordered dotted paths to read a per-feature
+     *     color from, for example `['classification.color', 'color']`.
+     * @property {string} [classProperty] - Dotted path to the feature property holding the
+     *     class label. Required when `classes` is set.
+     * @property {Object<string, GeoJSONColor|{color: GeoJSONColor}>} [classes] - Map of class
+     *     label to color. Wins over `colorProperties`, which is what makes runtime recolor work.
+     * @property {GeoJSONColormapSpec} [colormap] - Ramp a numeric property through a color scale.
      */
 
     /**
@@ -189,10 +241,22 @@
              * Once set, future tile jobs fail immediately instead of being sent to a
              * worker that cannot produce valid tiles.
              *
+             * Only genuinely fatal conditions latch here. Individual malformed
+             * features are skipped by the worker and reported as warnings instead.
+             *
              * @private
              * @type {?string}
              */
             this._workerError = null;
+
+            /**
+             * Tiled image this source is attached to, resolved lazily on first tile
+             * request. Used by setStyle to force a re-decode.
+             *
+             * @private
+             * @type {?OpenSeadragon.TiledImage}
+             */
+            this._tiledImage = null;
 
             this._worker = this._createWorker();
 
@@ -387,6 +451,12 @@
                 return;
             }
 
+            // Resolve the tiled image lazily: TileSources are constructed before any
+            // viewer attaches one, and setStyle needs it to force a re-decode.
+            if (!this._tiledImage && tile.tiledImage) {
+                this._tiledImage = tile.tiledImage;
+            }
+
             const key = this.getTileHashKey(tile.level, tile.x, tile.y);
             const jobs = this._pending.get(key);
 
@@ -558,6 +628,39 @@
         }
 
         /**
+         * Replace the source style without refetching or reindexing the source.
+         *
+         * The worker keeps its parsed geometries and spatial index and only
+         * re-meshes, so this is cheap enough to drive from a color picker. Re-posting
+         * the full config would instead re-download the GeoJSON and rebuild the
+         * quadtree.
+         *
+         * @param {GeoJSONStyleOptions} style - New style options.
+         * @returns {void}
+         * @throws {Error} Thrown when the style options are invalid.
+         */
+        setStyle(style) {
+            // Normalize before touching any state so an invalid style is rejected
+            // without leaving the source half-updated.
+            const normalized = normalizeStyleOptions(style);
+
+            this.style = normalized;
+
+            if (this._worker) {
+                this._worker.postMessage({ type: 'style', style: normalized });
+            }
+
+            if (this._tiledImage && typeof this._tiledImage.reset === 'function') {
+                try {
+                    this._tiledImage.reset();
+                } catch (_) {
+                    // The tiled image may already be torn down; the style still applies
+                    // to tiles requested after this point.
+                }
+            }
+        }
+
+        /**
          * Handle one worker response.
          *
          * @private
@@ -568,6 +671,15 @@
             if (message.type === 'error' && !message.key) {
                 this._workerError = message.error || 'GeoJSON worker failed.';
                 this._failAllPending(this._workerError);
+                return;
+            }
+
+            if (message.type === 'warning') {
+                // Non-fatal: the worker skipped malformed features and rendered the rest.
+                $.console.warn(
+                    `GeoJSONTileSource: skipped ${message.skipped} of ${message.total} malformed features.`,
+                    message.samples
+                );
                 return;
             }
 
@@ -694,7 +806,134 @@
         normalized.lineColor = normalizeColor(normalized.lineColor, 'GeoJSONTileSource: style.lineColor');
         normalized.fillColor = normalizeColor(normalized.fillColor, 'GeoJSONTileSource: style.fillColor');
 
+        if (source.colorProperties !== undefined && source.colorProperties !== null) {
+            normalized.colorProperties = normalizeColorProperties(source.colorProperties);
+        }
+
+        if (source.classes !== undefined && source.classes !== null) {
+            if (typeof source.classProperty !== 'string' || !source.classProperty) {
+                throw new Error('GeoJSONTileSource: style.classes requires style.classProperty naming the feature property to key on.');
+            }
+
+            normalized.classProperty = source.classProperty;
+            normalized.classes = normalizeClasses(source.classes);
+        }
+
+        if (source.colormap !== undefined && source.colormap !== null) {
+            normalized.colormap = normalizeColormap(source.colormap);
+        }
+
         return normalized;
+    }
+
+    /**
+     * Normalize the ordered list of feature property paths to read a color from.
+     *
+     * @param {*} paths - Candidate path list.
+     * @returns {string[]} Validated dotted paths.
+     * @throws {Error} Thrown when the list is not an array of non-empty strings.
+     */
+    function normalizeColorProperties(paths) {
+        if (!Array.isArray(paths) || !paths.length || !paths.every(path => typeof path === 'string' && path)) {
+            throw new Error('GeoJSONTileSource: style.colorProperties must be a non-empty array of property path strings.');
+        }
+
+        return paths.slice();
+    }
+
+    /**
+     * Normalize a class label to color map.
+     *
+     * Values are resolved to RGBA here so the worker never parses them.
+     *
+     * @param {*} classes - Candidate class map.
+     * @returns {object} Map of class label to [r, g, b, a].
+     * @throws {Error} Thrown when the map or any of its colors is invalid.
+     */
+    function normalizeClasses(classes) {
+        if (typeof classes !== 'object' || Array.isArray(classes)) {
+            throw new Error('GeoJSONTileSource: style.classes must be an object mapping class labels to colors.');
+        }
+
+        const normalized = {};
+
+        for (const label of Object.keys(classes)) {
+            const entry = classes[label];
+            // Accept a bare color or a {color} object, so a class entry can grow
+            // more per-class fields later without breaking callers.
+            const color = (entry && typeof entry === 'object' && !Array.isArray(entry)) ? entry.color : entry;
+
+            normalized[label] = normalizeColor(color, `GeoJSONTileSource: style.classes['${label}']`);
+        }
+
+        return normalized;
+    }
+
+    /**
+     * Normalize a colormap spec, resolving a named scheme to literal stops.
+     *
+     * Stops are resolved here rather than in the worker because src/colormaps.js
+     * attaches to the OpenSeadragon global and the worker is built standalone.
+     *
+     * `steps` selects how many stops to pull from a named scheme, which controls
+     * ramp fidelity only. It is not a quantization count: the worker interpolates
+     * continuously between stops. Producers that quantize (for example a Python
+     * `round(p, 1)`) have already done so before the value reaches here.
+     *
+     * @param {*} spec - Candidate colormap spec.
+     * @returns {object} Normalized spec with property, domain, and resolved stops.
+     * @throws {Error} Thrown when the spec, scheme name, or step count is invalid.
+     */
+    function normalizeColormap(spec) {
+        if (typeof spec !== 'object' || Array.isArray(spec)) {
+            throw new Error('GeoJSONTileSource: style.colormap must be an object.');
+        }
+
+        if (typeof spec.property !== 'string' || !spec.property) {
+            throw new Error('GeoJSONTileSource: style.colormap.property must name the feature property to ramp.');
+        }
+
+        const domain = spec.domain || [0, 1];
+
+        if (!Array.isArray(domain) || domain.length !== 2 || !domain.every(Number.isFinite)) {
+            throw new Error('GeoJSONTileSource: style.colormap.domain must be [min, max].');
+        }
+
+        let rawStops;
+
+        if (spec.stops !== undefined && spec.stops !== null) {
+            if (!Array.isArray(spec.stops) || spec.stops.length < 2) {
+                throw new Error('GeoJSONTileSource: style.colormap.stops must be an array of at least two colors.');
+            }
+
+            rawStops = spec.stops;
+        } else {
+            const schemes = $.FlexRenderer && $.FlexRenderer.ColorMaps;
+
+            if (!schemes) {
+                throw new Error('GeoJSONTileSource: style.colormap.name requires src/colormaps.js to be loaded; pass explicit stops instead.');
+            }
+
+            if (typeof spec.name !== 'string' || !schemes[spec.name] || spec.name === 'defaults' || spec.name === 'schemeGroups') {
+                throw new Error(`GeoJSONTileSource: unknown colormap scheme '${spec.name}'. Pass style.colormap.stops to use a custom ramp.`);
+            }
+
+            const scheme = schemes[spec.name];
+            const available = Object.keys(scheme).map(Number).sort((a, b) => a - b);
+            const steps = (spec.steps !== undefined && spec.steps !== null) ? spec.steps : available[available.length - 1];
+
+            if (!scheme[steps]) {
+                throw new Error(`GeoJSONTileSource: colormap '${spec.name}' has no ${steps}-step variant. Available: ${available.join(', ')}.`);
+            }
+
+            rawStops = scheme[steps];
+        }
+
+        return {
+            property: spec.property,
+            domain: domain,
+            stops: rawStops.map((stop, index) => normalizeColor(stop, `GeoJSONTileSource: style.colormap.stops[${index}]`))
+        };
     }
 
     /**
@@ -747,19 +986,96 @@
     }
 
     /**
-     * Normalize an RGBA color.
+     * Parse a color from any of the encodings producers commonly emit.
+     *
+     * Supported forms:
+     *   - CSS hex string: '#rgb', '#rgba', '#rrggbb', '#rrggbbaa' (leading '#' optional)
+     *   - Array of 3 or 4 finite numbers, either 0..1 floats or 0-255 components
+     *   - Packed signed 32-bit ARGB integer, as written by QuPath
+     *
+     * Numeric arrays are ambiguous: [1, 0, 0] is valid in both scales. The rule is
+     * that an array is read as 0..1 floats when every component is <= 1, and as
+     * 0-255 otherwise. This keeps [0, 0, 0, 1] meaning opaque black rather than
+     * near-transparent black, at the cost of making 0-255 near-black unwritable.
+     * Use hex if you need it.
+     *
+     * Returns null rather than throwing so per-feature resolution can fall through
+     * to the next precedence tier instead of failing a tile. Callers wanting a hard
+     * failure should use normalizeColor.
+     *
+     * Mirrored in src/workers/geojson-worker.core.js, which is built standalone and
+     * cannot import from here. Keep the two copies identical.
+     *
+     * @param {*} value - Candidate color.
+     * @returns {?number[]} Color as [r, g, b, a] in 0..1, or null when unparseable.
+     */
+    function parseColor(value) {
+        if (typeof value === 'string') {
+            const hex = value.trim().replace(/^#/, '');
+            const expand = hex.length === 3 || hex.length === 4
+                ? hex.split('').map(c => c + c).join('')
+                : hex;
+
+            if ((expand.length !== 6 && expand.length !== 8) || !/^[0-9a-fA-F]+$/.test(expand)) {
+                return null;
+            }
+
+            const parts = expand.match(/../g).map(byte => parseInt(byte, 16) / 255);
+            return [parts[0], parts[1], parts[2], parts.length === 4 ? parts[3] : 1];
+        }
+
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value) || !Number.isInteger(value)) {
+                return null;
+            }
+
+            const alphaByte = (value >>> 24) & 0xFF;
+            return [
+                ((value >>> 16) & 0xFF) / 255,
+                ((value >>> 8) & 0xFF) / 255,
+                (value & 0xFF) / 255,
+                // QuPath stores RGB-only colors with a zero alpha byte; treat those as opaque.
+                alphaByte === 0 ? 1 : alphaByte / 255
+            ];
+        }
+
+        if (Array.isArray(value)) {
+            if ((value.length !== 3 && value.length !== 4) || !value.every(Number.isFinite)) {
+                return null;
+            }
+
+            const scale = value.every(component => component <= 1) ? 1 : 255;
+            return [
+                value[0] / scale,
+                value[1] / scale,
+                value[2] / scale,
+                value.length === 4 ? value[3] / scale : 1
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize an RGBA color, failing hard when it cannot be parsed.
+     *
+     * Accepts every encoding parseColor supports. Used for style-level and
+     * aggregation-level colors, where a bad value is a configuration error worth
+     * surfacing at construction time.
      *
      * @param {*} color - Candidate color.
      * @param {string} label - Error label.
-     * @returns {number[]} Color as [r, g, b, a].
+     * @returns {number[]} Color as [r, g, b, a] in 0..1.
      * @throws {Error} Thrown when color is invalid.
      */
     function normalizeColor(color, label) {
-        if (!Array.isArray(color) || color.length !== 4 || !color.every(Number.isFinite)) {
-            throw new Error(`${label} must be [r, g, b, a].`);
+        const parsed = parseColor(color);
+
+        if (!parsed) {
+            throw new Error(`${label} must be [r, g, b, a], a hex string, or a packed integer color.`);
         }
 
-        return color;
+        return parsed;
     }
 
     /**
