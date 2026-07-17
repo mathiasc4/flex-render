@@ -65,6 +65,13 @@ const SEVEN_SEGMENT_GLYPHS = Object.freeze({
 self.onmessage = function(event) {
     const message = event.data || {};
 
+    // The HTTP bridge shim shares this worker's message port and installs its own
+    // 'message' listener; both it and self.onmessage see every message. Ignore its
+    // traffic here so it never reaches `default:` below and fails the whole source.
+    if (typeof message.type === 'string' && message.type.indexOf('http:') === 0) {
+        return;
+    }
+
     switch (message.type) {
         case 'config':
             STATE.configurePromise = configure(message);
