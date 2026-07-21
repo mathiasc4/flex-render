@@ -38,7 +38,8 @@ let STATE = {
     // this, so a restyle invalidates them without walking every record.
     styleEpoch: 0,
     useNativeLines: false,
-    aggregation: null
+    aggregation: null,
+    debug: false
 };
 
 
@@ -128,7 +129,8 @@ async function configure(message) {
             style: message.style,
             styleEpoch: 0,
             useNativeLines: message.useNativeLines === true,
-            aggregation: message.aggregation
+            aggregation: message.aggregation,
+            debug: message.debug === true
         };
 
         const parsed = parseGeojson(data);
@@ -1272,20 +1274,107 @@ function buildTile(tile) {
 
     const transfers = [];
 
-    const visibleGeometries = getVisibleTileGeometries(tileBounds);
+    const { visible: visibleGeometries, contributingCandidates, drops } = getVisibleTileGeometries(tileBounds);
 
-    if (shouldAggregateTile(tile, visibleGeometries.length)) {
+    const aggregated = shouldAggregateTile(tile, visibleGeometries.length);
+
+    if (aggregated) {
         buildAggregateTile(tile, depth, visibleGeometries.length, output, transfers);
     } else {
         buildGeometryTile(tile, depth, visibleGeometries, output, transfers);
+    }
+
+    // An empty build is only suspicious when a candidate clipped to real coverage (positive
+    // area or length) yet nothing meshed — "data expected here, none produced". It is posted
+    // as a successful tile carrying a suspicious flag so the drawer can surface it as a
+    // diagnostic (visible when render diagnostics are on) instead of a silent blank. A tile
+    // made only of zero-area boundary grazes (a neighbouring polygon touching this tile's
+    // edge) has no contributing candidate and is genuinely empty: it stays an ordinary empty
+    // tile that draws nothing, exactly as before this guard existed.
+    const empty = output.fills.length === 0 && output.lines.length === 0 &&
+        output.linePrimitives.length === 0 && output.points.length === 0;
+    const suspicious = empty && contributingCandidates > 0;
+
+    if (suspicious && STATE.debug) {
+        // eslint-disable-next-line no-console
+        console.warn(
+            `GeoJSON worker: tile ${tile.level}/${tile.x}/${tile.y} had ` +
+            `${contributingCandidates} geometries with real coverage but meshed nothing.`,
+            {
+                level: tile.level,
+                x: tile.x,
+                y: tile.y,
+                tileBounds,
+                contributingCandidates,
+                drops,
+                aggregated
+            }
+        );
     }
 
     self.postMessage({
         type: 'tile',
         key: tile.key,
         ok: true,
+        suspicious: suspicious,
         data: output
     }, transfers);
+}
+
+/**
+ * Smallest clipped coverage that still counts as real geometry.
+ *
+ * A polygon that merely grazes a tile's shared boundary edge clips to a collinear,
+ * zero-area ring (which earcut then triangulates to nothing); a line that grazes a corner
+ * clips to a zero-length segment. Their measured area/length is 0 up to floating-point
+ * noise, so anything at or below this threshold is treated as no coverage rather than a
+ * missing render. Real coverage is many orders of magnitude larger (image-space pixels).
+ *
+ * @type {number}
+ */
+const CLIP_COVERAGE_EPSILON = 1e-6;
+
+/**
+ * Absolute shoelace area of a ring in image-space square pixels.
+ *
+ * @param {number[][]} ring - Polygon ring; the closing duplicate vertex, if present, does
+ *     not affect the result.
+ * @returns {number} Non-negative ring area.
+ */
+function ringArea(ring) {
+    if (!Array.isArray(ring) || ring.length < 3) {
+        return 0;
+    }
+
+    let sum = 0;
+
+    for (let i = 0; i < ring.length; i += 1) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        sum += (a[0] * b[1]) - (b[0] * a[1]);
+    }
+
+    return Math.abs(sum) / 2;
+}
+
+/**
+ * Total length of one or more clipped polylines in image-space pixels.
+ *
+ * @param {number[][][]} segments - Array of polylines, each an array of points.
+ * @returns {number} Non-negative total length.
+ */
+function polylineLength(segments) {
+    let total = 0;
+
+    for (const segment of segments) {
+        for (let i = 1; i < segment.length; i += 1) {
+            const dx = segment[i][0] - segment[i - 1][0];
+            const dy = segment[i][1] - segment[i - 1][1];
+            total += Math.sqrt((dx * dx) + (dy * dy));
+        }
+    }
+
+    return total;
 }
 
 /**
@@ -1296,10 +1385,23 @@ function buildTile(tile) {
  * previous direct rendering path.
  *
  * @param {number[]} tileBounds - Tile image-space bounds.
- * @returns {object[]} Array of objects containing the full visible geometries and their clipped variants.
+ * @returns {{visible: object[], contributingCandidates: number, drops: {points: number, lines: number, polygons: number}}}
+ *     The visible geometries with their clipped variants, plus a diagnostic summary.
+ *     `contributingCandidates` counts candidates that clip to real coverage (positive area
+ *     or length) — i.e. geometry that is expected to mesh. `drops` counts candidates whose
+ *     bbox overlapped the tile yet clipped away to nothing, including zero-area boundary
+ *     grazes. `contributingCandidates` drives the suspicious-empty detection in `buildTile`:
+ *     an empty build with a contributing candidate is a real anomaly, whereas an empty
+ *     build made only of grazes is genuinely empty and stays a normal cached success.
  */
 function getVisibleTileGeometries(tileBounds) {
     const visible = [];
+
+    // A candidate "contributes" only when it clips to real coverage. A polygon whose bbox
+    // merely touches the tile boundary clips to a zero-area ring that earcut drops to
+    // nothing — legitimately empty, not a bug — so it must not count toward suspicion.
+    let contributingCandidates = 0;
+    const drops = { points: 0, lines: 0, polygons: 0 };
 
     // Candidate geometries are read from a static image-space quadtree when the
     // source is large enough to justify indexing. Small sources fall back to
@@ -1322,6 +1424,9 @@ function getVisibleTileGeometries(tileBounds) {
                 visible.push({
                     geometry
                 });
+                contributingCandidates++;
+            } else {
+                drops.points++;
             }
         } else if (geometry.type === 'LineString') {
             const clippedLines = clipLineStringToBounds(geometry.coordinates, tileBounds);
@@ -1331,6 +1436,12 @@ function getVisibleTileGeometries(tileBounds) {
                     geometry,
                     clippedLines
                 });
+
+                if (polylineLength(clippedLines) > CLIP_COVERAGE_EPSILON) {
+                    contributingCandidates++;
+                }
+            } else {
+                drops.lines++;
             }
         } else if (geometry.type === 'Polygon') {
             const clippedPolygon = clipPolygonToBounds(geometry.coordinates, tileBounds);
@@ -1340,11 +1451,17 @@ function getVisibleTileGeometries(tileBounds) {
                     geometry,
                     clippedPolygon
                 });
+
+                if (ringArea(clippedPolygon[0]) > CLIP_COVERAGE_EPSILON) {
+                    contributingCandidates++;
+                }
+            } else {
+                drops.polygons++;
             }
         }
     }
 
-    return visible;
+    return { visible, contributingCandidates, drops };
 }
 
 /**

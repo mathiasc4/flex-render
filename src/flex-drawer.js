@@ -1079,9 +1079,7 @@
                 }
 
                 this._buildStamp = Date.now();
-                this.renderer.setDimensions(
-                    0,
-                    0,
+                this._setOffscreenDimensions(
                     this.canvas.width,
                     this.canvas.height,
                     this._computeOffscreenLayerCount(),
@@ -1150,7 +1148,7 @@
                 // this._renderingCanvas.height = this._outputCanvas.height;
 
                 //todo batched?
-                this.renderer.setDimensions(0, 0, viewportSize.x, viewportSize.y, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
+                this._setOffscreenDimensions(viewportSize.x, viewportSize.y, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
                 this._size = viewportSize;
                 this._refreshDrawReadyState();
             };
@@ -2094,6 +2092,7 @@
             const viewMatrix = scaleMatrix.multiply(rotMatrix).multiply(posMatrix);
 
             this._ensurePackLayout();
+            this._ensureOffscreenCapacity();
 
             const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
             const secondPass = this._collectSecondPassPayload(view);
@@ -2203,7 +2202,7 @@
                         if (tileInfo.texture) {
                             payload.push({
                                 transformMatrix,
-                                dataIndex: tiledImage.__flexBaseLayer || tiledImageIndex, // color layer index
+                                dataIndex: (typeof tiledImage.__flexBaseLayer === "number") ? tiledImage.__flexBaseLayer : tiledImageIndex, // color layer index
                                 stencilIndex: tiledImageIndex,
                                 texture: tileInfo.texture,
                                 position: tileInfo.position,
@@ -2228,6 +2227,10 @@
                             }
 
                             vecPayload.push(tileInfo.vectors);
+                        } else if (tileInfo.__flexEmpty) {
+                            // Legitimately empty vector tile (no geometry overlapped it):
+                            // nothing to draw, and NOT an error — never tint it.
+                            continue;
                         } else {
                             diagnosticPayload.push(this._makeTileDiagnosticRegion(
                                 tile,
@@ -2792,7 +2795,14 @@
                 return null;
             }
 
-            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points))) {
+            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points || data.__suspicious))) {
+                // The worker flags a tile where geometry with real coverage overlapped yet
+                // nothing meshed. That is "data expected here, none produced" — surface it as
+                // a diagnostic (amber when diagnostics are on) rather than a silent blank.
+                if (data && data.__suspicious) {
+                    return this._createDiagnosticTileInfo("expected-data-missing");
+                }
+
                 const result = await this.renderer.prepareVectorTile({
                     data: data
                 });
@@ -2805,7 +2815,10 @@
                     position: null,
                     texture: null,
                     resource: result.resource,
-                    vectors: result.vectors
+                    vectors: result.vectors,
+                    // ok but nothing uploaded: a genuinely empty (no-data) tile. Marked so the
+                    // draw loop skips it silently instead of tinting it as invalid.
+                    __flexEmpty: !result.vectors
                 };
             }
 
@@ -2972,6 +2985,53 @@
             if (this._packLayoutDirty) {
                 this._updatePackLayout();
                 this._packLayoutDirty = false;
+            }
+        }
+
+        /**
+         * Allocate the offscreen texture arrays and remember the layer depths that were
+         * requested. Every call that changes the array depth must go through here so the
+         * cached depths stay authoritative for _ensureOffscreenCapacity.
+         *
+         * @param {number} width - Offscreen width in pixels.
+         * @param {number} height - Offscreen height in pixels.
+         * @param {number} colorLayers - colorTextureA layer count (Σ pack counts).
+         * @param {number} stencilLayers - stencilTextureA layer count (world item count).
+         * @private
+         */
+        _setOffscreenDimensions(width, height, colorLayers, stencilLayers) {
+            this.renderer.setDimensions(0, 0, width, height, colorLayers, stencilLayers);
+            this._allocatedColorLayers = colorLayers;
+            this._allocatedStencilLayers = stencilLayers;
+        }
+
+        /**
+         * Grow the offscreen texture arrays before the first pass attaches their layers.
+         *
+         * Layer indices (dataIndex/stencilIndex) are recomputed at render time by
+         * _ensurePackLayout, but the arrays are otherwise only (re)allocated on the debounced
+         * rebuild and on resize. Adding a source or a source reporting more packs raises the
+         * indices first, so framebufferTextureLayer would attach a layer beyond the allocated
+         * depth and leave the framebuffer incomplete (every clear/draw for that source then
+         * fails -> the source renders blank until the next rebuild). Reallocating here closes
+         * that lag. Grow-only: the debounced rebuild handles shrinking. The first pass repaints
+         * these arrays every frame, so reallocating immediately before it loses nothing.
+         *
+         * @private
+         */
+        _ensureOffscreenCapacity() {
+            const neededColor = this._computeOffscreenLayerCount();
+            const neededStencil = this.viewer.world.getItemCount();
+            const haveColor = this._allocatedColorLayers || 0;
+            const haveStencil = this._allocatedStencilLayers || 0;
+
+            if (neededColor > haveColor || neededStencil > haveStencil) {
+                this._setOffscreenDimensions(
+                    this.canvas.width,
+                    this.canvas.height,
+                    Math.max(neededColor, haveColor),
+                    Math.max(neededStencil, haveStencil)
+                );
             }
         }
 

@@ -105,6 +105,10 @@
      * @property {GeoJSONAggregationOptions} [aggregation] - Optional per-tile aggregation settings.
      * @property {HttpAdapter} [httpAdapter] - Optional host-supplied HTTP transport used by the GeoJSON worker.
      *     When omitted, the drawer-level adapter (if any) is used; otherwise native `fetch` is used.
+     * @property {boolean} [debug=false] - When true, the worker logs suspicious empty-tile
+     *     builds (a tile whose bounds overlap data yet meshes nothing), with level/x/y,
+     *     tile bounds, intersecting-candidate count and per-type clip drops. Diagnostic aid
+     *     for edge-tile mesh bugs; leaves rendering unchanged.
      */
 
     const GEOJSON_ROOT_TYPES = new Set([
@@ -190,6 +194,14 @@
              * @type {GeoJSONAggregationOptions}
              */
             this.aggregation = normalized.aggregation;
+
+            /**
+             * Whether the worker logs suspicious empty-tile builds (a tile that overlaps
+             * data yet meshes nothing). Off by default; enable to pin edge-tile mesh bugs.
+             *
+             * @type {boolean}
+             */
+            this.debug = normalized.debug;
 
             /**
              * Optional HttpAdapter routing the worker's outbound fetches.
@@ -294,7 +306,8 @@
                 style: normalizeStyleOptions(options.style),
                 useNativeLines: options.useNativeLines === true,
                 aggregation: normalizeAggregationOptions(options.aggregation),
-                httpAdapter: options.httpAdapter || ($.FlexDrawer && $.FlexDrawer._defaultHttpAdapter) || null
+                httpAdapter: options.httpAdapter || ($.FlexDrawer && $.FlexDrawer._defaultHttpAdapter) || null,
+                debug: options.debug === true
             };
 
             if (typeof normalized.url !== 'string' || !normalized.url.trim()) {
@@ -623,7 +636,8 @@
                 height: this.dimensions.y,
                 style: this.style,
                 useNativeLines: this.useNativeLines,
-                aggregation: this.aggregation
+                aggregation: this.aggregation,
+                debug: this.debug
             });
         }
 
@@ -697,12 +711,23 @@
             if (message.ok) {
                 const tile = message.data || {};
 
+                // A suspicious tile (geometry with real coverage overlapped it yet nothing
+                // meshed) is delivered as a successful but flagged tile. The flag rides into
+                // the drawer, which renders it as a diagnostic region ("expected data here,
+                // none produced") instead of a silent blank.
+                if (message.suspicious) {
+                    $.console.warn(
+                        `GeoJSONTileSource: tile ${message.key} had geometry with real coverage but meshed nothing.`
+                    );
+                }
+
                 for (const job of jobs) {
                     job.finish({
                         fills: (tile.fills || []).map(packMesh),
                         lines: (tile.lines || []).map(packMesh),
                         linePrimitives: (tile.linePrimitives || []).map(packMesh),
-                        points: (tile.points || []).map(packMesh)
+                        points: (tile.points || []).map(packMesh),
+                        __suspicious: message.suspicious === true
                     }, undefined, 'vector-mesh');
                 }
             } else {
