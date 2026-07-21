@@ -1183,6 +1183,17 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 vectors.points = this._prepareVectorTileBatch(data.points);
             }
 
+            if (!this._isPreparedVectorTileResource(vectors)) {
+                // Empty-but-valid vector tile: nothing was uploaded. Don't
+                // track or emit an empty {} resource, otherwise release would
+                // mis-route it to the raster branch and call deleteTexture({}).
+                return {
+                    ok: true,
+                    resource: null,
+                    vectors: null
+                };
+            }
+
             this._preparedTileResources.add(vectors);
 
             return {
@@ -1386,7 +1397,11 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
             return;
         }
 
-        this.gl.deleteTexture(texture);
+        // Only real textures may be freed; a non-texture object slipping into
+        // this branch (e.g. a stray vector resource) would throw a TypeError.
+        if (texture instanceof WebGLTexture) {
+            this.gl.deleteTexture(texture);
+        }
 
         if (this._preparedTileResources) {
             this._preparedTileResources.delete(texture);
