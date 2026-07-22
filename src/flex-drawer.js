@@ -1075,7 +1075,13 @@
                 }
 
                 if (!this._configuredExternally) {
-                    this.renderer.setShaderLayerOrder(this.viewer.world._items.map(item => item.__shaderConfig.id));
+                    // __shaderConfig may be missing for an item mid-teardown during a reset window
+                    // (remove-item deletes it, then this rebuild fires deferred) — skip such items
+                    this.renderer.setShaderLayerOrder(
+                        this.viewer.world._items
+                            .filter(item => item.__shaderConfig)
+                            .map(item => item.__shaderConfig.id)
+                    );
                 }
 
                 this._buildStamp = Date.now();
