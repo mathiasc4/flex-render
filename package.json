@@ -1,6 +1,6 @@
 {
     "name": "flex-renderer",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "Versatile, GPU-accelerated renderer for OpenSeadragon.",
     "keywords": [
         "image",

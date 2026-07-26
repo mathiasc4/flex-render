@@ -24,6 +24,7 @@
 let STATE = {
     configured: false,
     configurePromise: null,
+    fatalError: null,
     geometries: [],
     spatialIndex: null,
     tileSize: 512,
@@ -33,8 +34,12 @@ let STATE = {
     width: 1,
     height: 1,
     style: {},
+    // Bumped on every style change. Per-geometry resolved colors are cached against
+    // this, so a restyle invalidates them without walking every record.
+    styleEpoch: 0,
     useNativeLines: false,
-    aggregation: null
+    aggregation: null,
+    debug: false
 };
 
 
@@ -61,9 +66,24 @@ const SEVEN_SEGMENT_GLYPHS = Object.freeze({
 self.onmessage = function(event) {
     const message = event.data || {};
 
+    // The HTTP bridge shim shares this worker's message port and installs its own
+    // 'message' listener; both it and self.onmessage see every message. Ignore its
+    // traffic here so it never reaches `default:` below and fails the whole source.
+    if (typeof message.type === 'string' && message.type.indexOf('http:') === 0) {
+        return;
+    }
+
     switch (message.type) {
         case 'config':
             STATE.configurePromise = configure(message);
+            break;
+
+        case 'style':
+            // Style-only update: keep the parsed geometries and the spatial index, and
+            // invalidate memoized per-feature colors by bumping the epoch. Re-posting
+            // 'config' would refetch the source and rebuild the quadtree.
+            STATE.style = message.style;
+            STATE.styleEpoch++;
             break;
 
         case 'tile':
@@ -97,6 +117,7 @@ async function configure(message) {
         STATE = {
             configured: true,
             configurePromise: null,
+            fatalError: null,
             geometries: [],
             spatialIndex: null,
             bbox: message.bbox || data.bbox,
@@ -106,17 +127,37 @@ async function configure(message) {
             minLevel: message.minLevel,
             maxLevel: message.maxLevel,
             style: message.style,
+            styleEpoch: 0,
             useNativeLines: message.useNativeLines === true,
-            aggregation: message.aggregation
+            aggregation: message.aggregation,
+            debug: message.debug === true
         };
 
-        STATE.geometries = parseGeojson(data);
+        const parsed = parseGeojson(data);
+
+        STATE.geometries = parsed.geometries;
         STATE.spatialIndex = createSpatialIndex(STATE.geometries);
+
+        if (parsed.skipped) {
+            // Malformed features are skipped rather than failing the source. Report
+            // once per configure, not once per bad feature.
+            self.postMessage({
+                type: 'warning',
+                skipped: parsed.skipped,
+                total: parsed.total,
+                samples: parsed.samples
+            });
+        }
     } catch (error) {
+        // Record the reason so a tile request racing this failure reports the real
+        // cause instead of the generic not-configured message.
+        STATE.configured = false;
+        STATE.fatalError = error.message || String(error);
+
         self.postMessage({
             type: 'error',
             ok: false,
-            error: error.message || String(error)
+            error: STATE.fatalError
         });
     }
 }
@@ -162,6 +203,14 @@ const GEOMETRY_TYPES = new Set([
  */
 
 /**
+ * @typedef {object} GeoJSONParseResult
+ * @property {SimpleGeoJSONGeometry[]} geometries - Simple geometry records.
+ * @property {number} total - Feature count seen in the source.
+ * @property {number} skipped - Feature count dropped as malformed.
+ * @property {string[]} samples - First few skip reasons, for diagnostics.
+ */
+
+/**
  * Extract simple GeoJSON geometry records from a GeoJSON object.
  *
  * The renderer only consumes simple Point, LineString, and Polygon records.
@@ -173,8 +222,12 @@ const GEOMETRY_TYPES = new Set([
  * - Feature
  * - a simple geometry type or a GeometryCollection
  *
+ * Within a FeatureCollection a malformed feature is skipped and counted, not
+ * thrown, so one bad ring cannot take down the whole source. Structural problems
+ * with the container itself remain fatal.
+ *
  * @param {object} geojson - GeoJSON object.
- * @returns {SimpleGeoJSONGeometry[]} Simple geometry records.
+ * @returns {GeoJSONParseResult} Parsed records and a skip summary.
  * @throws {Error} Thrown when geojson is not a valid GeoJSON object.
  */
 function parseGeojson(geojson) {
@@ -186,23 +239,39 @@ function parseGeojson(geojson) {
         return parseFeatureCollection(geojson);
     }
 
+    // A single-feature or bare-geometry root has nothing to degrade to: if it is
+    // malformed the source is empty, so let the throw stay fatal.
     if (geojson.type === 'Feature') {
-        return parseFeature(geojson);
+        return { geometries: parseFeature(geojson), total: 1, skipped: 0, samples: [] };
     }
 
     if (GEOMETRY_TYPES.has(geojson.type)) {
-        return parseGeometry(geojson);
+        return { geometries: parseGeometry(geojson), total: 1, skipped: 0, samples: [] };
     }
 
     throw new Error('GeoJSON worker: root GeoJSON type must be FeatureCollection, Feature, or a supported geometry type.');
 }
 
 /**
+ * Maximum number of skip reasons retained for diagnostics.
+ *
+ * @type {number}
+ */
+const MAX_SKIP_SAMPLES = 5;
+
+/**
  * Parse a standard GeoJSON FeatureCollection.
  *
+ * Individual malformed features are skipped and counted instead of aborting the
+ * collection: real producer output routinely contains a few bad rings, and one of
+ * them must not cost every other feature in the file.
+ *
+ * A collection in which every feature fails is treated as fatal, because that
+ * means the file is not what it claims to be.
+ *
  * @param {object} collection - FeatureCollection object.
- * @returns {SimpleGeoJSONGeometry[]} Simple geometry records.
- * @throws {Error} Thrown when collection is not a valid GeoJSON FeatureCollection.
+ * @returns {GeoJSONParseResult} Parsed records and a skip summary.
+ * @throws {Error} Thrown when the collection itself is invalid, or when no feature parsed.
  */
 function parseFeatureCollection(collection) {
     if (!collection || typeof collection !== 'object' || Array.isArray(collection)) {
@@ -217,7 +286,33 @@ function parseFeatureCollection(collection) {
         throw new Error('GeoJSON worker: FeatureCollection.features must be an array of Feature objects.');
     }
 
-    return collection.features.flatMap(feature => parseFeature(feature));
+    const geometries = [];
+    const samples = [];
+    let skipped = 0;
+
+    for (let index = 0; index < collection.features.length; index++) {
+        try {
+            const records = parseFeature(collection.features[index]);
+
+            for (const record of records) {
+                geometries.push(record);
+            }
+        } catch (error) {
+            skipped++;
+
+            if (samples.length < MAX_SKIP_SAMPLES) {
+                samples.push(`feature[${index}]: ${error.message || String(error)}`);
+            }
+        }
+    }
+
+    const total = collection.features.length;
+
+    if (total > 0 && skipped === total) {
+        throw new Error(`GeoJSON worker: every feature failed to parse (${total}). First reason: ${samples[0]}`);
+    }
+
+    return { geometries, total, skipped, samples };
 }
 
 /**
@@ -1146,7 +1241,7 @@ async function buildTileWhenReady(message) {
         }
 
         if (!STATE.configured) {
-            throw new Error('GeoJSON worker: received tile request before valid configuration.');
+            throw new Error(STATE.fatalError || 'GeoJSON worker: received tile request before valid configuration.');
         }
 
         buildTile(message);
@@ -1179,20 +1274,107 @@ function buildTile(tile) {
 
     const transfers = [];
 
-    const visibleGeometries = getVisibleTileGeometries(tileBounds);
+    const { visible: visibleGeometries, contributingCandidates, drops } = getVisibleTileGeometries(tileBounds);
 
-    if (shouldAggregateTile(tile, visibleGeometries.length)) {
+    const aggregated = shouldAggregateTile(tile, visibleGeometries.length);
+
+    if (aggregated) {
         buildAggregateTile(tile, depth, visibleGeometries.length, output, transfers);
     } else {
         buildGeometryTile(tile, depth, visibleGeometries, output, transfers);
+    }
+
+    // An empty build is only suspicious when a candidate clipped to real coverage (positive
+    // area or length) yet nothing meshed — "data expected here, none produced". It is posted
+    // as a successful tile carrying a suspicious flag so the drawer can surface it as a
+    // diagnostic (visible when render diagnostics are on) instead of a silent blank. A tile
+    // made only of zero-area boundary grazes (a neighbouring polygon touching this tile's
+    // edge) has no contributing candidate and is genuinely empty: it stays an ordinary empty
+    // tile that draws nothing, exactly as before this guard existed.
+    const empty = output.fills.length === 0 && output.lines.length === 0 &&
+        output.linePrimitives.length === 0 && output.points.length === 0;
+    const suspicious = empty && contributingCandidates > 0;
+
+    if (suspicious && STATE.debug) {
+        // eslint-disable-next-line no-console
+        console.warn(
+            `GeoJSON worker: tile ${tile.level}/${tile.x}/${tile.y} had ` +
+            `${contributingCandidates} geometries with real coverage but meshed nothing.`,
+            {
+                level: tile.level,
+                x: tile.x,
+                y: tile.y,
+                tileBounds,
+                contributingCandidates,
+                drops,
+                aggregated
+            }
+        );
     }
 
     self.postMessage({
         type: 'tile',
         key: tile.key,
         ok: true,
+        suspicious: suspicious,
         data: output
     }, transfers);
+}
+
+/**
+ * Smallest clipped coverage that still counts as real geometry.
+ *
+ * A polygon that merely grazes a tile's shared boundary edge clips to a collinear,
+ * zero-area ring (which earcut then triangulates to nothing); a line that grazes a corner
+ * clips to a zero-length segment. Their measured area/length is 0 up to floating-point
+ * noise, so anything at or below this threshold is treated as no coverage rather than a
+ * missing render. Real coverage is many orders of magnitude larger (image-space pixels).
+ *
+ * @type {number}
+ */
+const CLIP_COVERAGE_EPSILON = 1e-6;
+
+/**
+ * Absolute shoelace area of a ring in image-space square pixels.
+ *
+ * @param {number[][]} ring - Polygon ring; the closing duplicate vertex, if present, does
+ *     not affect the result.
+ * @returns {number} Non-negative ring area.
+ */
+function ringArea(ring) {
+    if (!Array.isArray(ring) || ring.length < 3) {
+        return 0;
+    }
+
+    let sum = 0;
+
+    for (let i = 0; i < ring.length; i += 1) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        sum += (a[0] * b[1]) - (b[0] * a[1]);
+    }
+
+    return Math.abs(sum) / 2;
+}
+
+/**
+ * Total length of one or more clipped polylines in image-space pixels.
+ *
+ * @param {number[][][]} segments - Array of polylines, each an array of points.
+ * @returns {number} Non-negative total length.
+ */
+function polylineLength(segments) {
+    let total = 0;
+
+    for (const segment of segments) {
+        for (let i = 1; i < segment.length; i += 1) {
+            const dx = segment[i][0] - segment[i - 1][0];
+            const dy = segment[i][1] - segment[i - 1][1];
+            total += Math.sqrt((dx * dx) + (dy * dy));
+        }
+    }
+
+    return total;
 }
 
 /**
@@ -1203,10 +1385,23 @@ function buildTile(tile) {
  * previous direct rendering path.
  *
  * @param {number[]} tileBounds - Tile image-space bounds.
- * @returns {object[]} Array of objects containing the full visible geometries and their clipped variants.
+ * @returns {{visible: object[], contributingCandidates: number, drops: {points: number, lines: number, polygons: number}}}
+ *     The visible geometries with their clipped variants, plus a diagnostic summary.
+ *     `contributingCandidates` counts candidates that clip to real coverage (positive area
+ *     or length) — i.e. geometry that is expected to mesh. `drops` counts candidates whose
+ *     bbox overlapped the tile yet clipped away to nothing, including zero-area boundary
+ *     grazes. `contributingCandidates` drives the suspicious-empty detection in `buildTile`:
+ *     an empty build with a contributing candidate is a real anomaly, whereas an empty
+ *     build made only of grazes is genuinely empty and stays a normal cached success.
  */
 function getVisibleTileGeometries(tileBounds) {
     const visible = [];
+
+    // A candidate "contributes" only when it clips to real coverage. A polygon whose bbox
+    // merely touches the tile boundary clips to a zero-area ring that earcut drops to
+    // nothing — legitimately empty, not a bug — so it must not count toward suspicion.
+    let contributingCandidates = 0;
+    const drops = { points: 0, lines: 0, polygons: 0 };
 
     // Candidate geometries are read from a static image-space quadtree when the
     // source is large enough to justify indexing. Small sources fall back to
@@ -1229,6 +1424,9 @@ function getVisibleTileGeometries(tileBounds) {
                 visible.push({
                     geometry
                 });
+                contributingCandidates++;
+            } else {
+                drops.points++;
             }
         } else if (geometry.type === 'LineString') {
             const clippedLines = clipLineStringToBounds(geometry.coordinates, tileBounds);
@@ -1238,6 +1436,12 @@ function getVisibleTileGeometries(tileBounds) {
                     geometry,
                     clippedLines
                 });
+
+                if (polylineLength(clippedLines) > CLIP_COVERAGE_EPSILON) {
+                    contributingCandidates++;
+                }
+            } else {
+                drops.lines++;
             }
         } else if (geometry.type === 'Polygon') {
             const clippedPolygon = clipPolygonToBounds(geometry.coordinates, tileBounds);
@@ -1247,11 +1451,17 @@ function getVisibleTileGeometries(tileBounds) {
                     geometry,
                     clippedPolygon
                 });
+
+                if (ringArea(clippedPolygon[0]) > CLIP_COVERAGE_EPSILON) {
+                    contributingCandidates++;
+                }
+            } else {
+                drops.polygons++;
             }
         }
     }
 
-    return visible;
+    return { visible, contributingCandidates, drops };
 }
 
 /**
@@ -1266,6 +1476,215 @@ function getVisibleTileGeometries(tileBounds) {
  */
 function shouldAggregateTile(tile, count) {
     return !!(STATE.aggregation && STATE.aggregation.enabled && tile.level < STATE.maxLevel && count > STATE.aggregation.threshold);
+}
+
+/**
+ * Parse a color from any of the encodings producers commonly emit.
+ *
+ * Supported forms:
+ *   - CSS hex string: '#rgb', '#rgba', '#rrggbb', '#rrggbbaa' (leading '#' optional)
+ *   - Array of 3 or 4 finite numbers, either 0..1 floats or 0-255 components
+ *   - Packed signed 32-bit ARGB integer, as written by QuPath
+ *
+ * Numeric arrays are ambiguous: [1, 0, 0] is valid in both scales. The rule is
+ * that an array is read as 0..1 floats when every component is <= 1, and as
+ * 0-255 otherwise. This keeps [0, 0, 0, 1] meaning opaque black rather than
+ * near-transparent black, at the cost of making 0-255 near-black unwritable.
+ * Use hex if you need it.
+ *
+ * Returns null rather than throwing so per-feature resolution can fall through
+ * to the next precedence tier instead of failing a tile.
+ *
+ * Mirrored from src/geojson-tile-source.js. This worker is built standalone and
+ * cannot import from there. Keep the two copies identical.
+ *
+ * @param {*} value - Candidate color.
+ * @returns {?number[]} Color as [r, g, b, a] in 0..1, or null when unparseable.
+ */
+function parseColor(value) {
+    if (typeof value === 'string') {
+        const hex = value.trim().replace(/^#/, '');
+        const expand = hex.length === 3 || hex.length === 4
+            ? hex.split('').map(c => c + c).join('')
+            : hex;
+
+        if ((expand.length !== 6 && expand.length !== 8) || !/^[0-9a-fA-F]+$/.test(expand)) {
+            return null;
+        }
+
+        const parts = expand.match(/../g).map(byte => parseInt(byte, 16) / 255);
+        return [parts[0], parts[1], parts[2], parts.length === 4 ? parts[3] : 1];
+    }
+
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value) || !Number.isInteger(value)) {
+            return null;
+        }
+
+        const alphaByte = (value >>> 24) & 0xFF;
+        return [
+            ((value >>> 16) & 0xFF) / 255,
+            ((value >>> 8) & 0xFF) / 255,
+            (value & 0xFF) / 255,
+            // QuPath stores RGB-only colors with a zero alpha byte; treat those as opaque.
+            alphaByte === 0 ? 1 : alphaByte / 255
+        ];
+    }
+
+    if (Array.isArray(value)) {
+        if ((value.length !== 3 && value.length !== 4) || !value.every(Number.isFinite)) {
+            return null;
+        }
+
+        const scale = value.every(component => component <= 1) ? 1 : 255;
+        return [
+            value[0] / scale,
+            value[1] / scale,
+            value[2] / scale,
+            value.length === 4 ? value[3] / scale : 1
+        ];
+    }
+
+    return null;
+}
+
+/**
+ * Read a dotted property path off an object.
+ *
+ * @param {*} object - Source object, possibly null or undefined.
+ * @param {string} path - Dotted path, for example 'classification.color'.
+ * @returns {*} The value at the path, or undefined when any segment is missing.
+ */
+function getPath(object, path) {
+    if (!object || typeof path !== 'string') {
+        return undefined;
+    }
+
+    let current = object;
+
+    for (const segment of path.split('.')) {
+        if (current === null || current === undefined || typeof current !== 'object') {
+            return undefined;
+        }
+
+        current = current[segment];
+    }
+
+    return current;
+}
+
+/**
+ * Sample a resolved colormap ramp.
+ *
+ * Stops arrive pre-resolved from the tile source as literal RGBA arrays, because
+ * src/colormaps.js needs the OpenSeadragon global and this worker is standalone.
+ *
+ * @param {object} colormap - Normalized colormap spec with domain and stops.
+ * @param {number} value - Raw score value.
+ * @returns {?number[]} Interpolated color as [r, g, b, a], or null when value is not numeric.
+ */
+function sampleColormap(colormap, value) {
+    if (!Number.isFinite(value)) {
+        return null;
+    }
+
+    const [min, max] = colormap.domain;
+    const stops = colormap.stops;
+
+    if (max === min) {
+        return stops[0];
+    }
+
+    const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+    const scaled = t * (stops.length - 1);
+    const lower = Math.floor(scaled);
+    const upper = Math.min(lower + 1, stops.length - 1);
+    const frac = scaled - lower;
+
+    const a = stops[lower];
+    const b = stops[upper];
+
+    return [
+        a[0] + (b[0] - a[0]) * frac,
+        a[1] + (b[1] - a[1]) * frac,
+        a[2] + (b[2] - a[2]) * frac,
+        a[3] + (b[3] - a[3]) * frac
+    ];
+}
+
+/**
+ * Resolve a feature's color from its properties.
+ *
+ * Precedence, first hit wins:
+ *   1. classes[properties[classProperty]] - a label lookup, which lets a caller
+ *      recolor at runtime via setStyle without re-exporting the source data.
+ *   2. colorProperties - the first listed path holding a parseable color. This is
+ *      the color the producer baked into the file.
+ *   3. colormap - ramp a numeric property through pre-resolved stops.
+ *   4. fallbackColor - the source-level flat color, which is the historical behavior.
+ *
+ * Never throws: an unparseable value falls through to the next tier so one bad
+ * feature cannot fail a tile.
+ *
+ * @param {object|null|undefined} properties - Feature properties.
+ * @param {number[]} fallbackColor - Per-geometry-type default color.
+ * @returns {number[]} Color as [r, g, b, a] in 0..1.
+ */
+function resolveFeatureColor(properties, fallbackColor) {
+    const style = STATE.style;
+
+    if (!properties) {
+        return fallbackColor;
+    }
+
+    if (style.classes && style.classProperty) {
+        const label = getPath(properties, style.classProperty);
+
+        if (label !== undefined && label !== null && Object.prototype.hasOwnProperty.call(style.classes, label)) {
+            // Class colors are normalized to RGBA arrays by the tile source.
+            return style.classes[label];
+        }
+    }
+
+    if (style.colorProperties) {
+        for (const path of style.colorProperties) {
+            const parsed = parseColor(getPath(properties, path));
+
+            if (parsed) {
+                return parsed;
+            }
+        }
+    }
+
+    if (style.colormap) {
+        const sampled = sampleColormap(style.colormap, getPath(properties, style.colormap.property));
+
+        if (sampled) {
+            return sampled;
+        }
+    }
+
+    return fallbackColor;
+}
+
+/**
+ * Resolve a geometry record's color, memoized on the record.
+ *
+ * A feature spanning many tiles would otherwise re-resolve on every tile build.
+ * The cache is keyed by STATE.styleEpoch so setStyle invalidates it without
+ * having to walk every record.
+ *
+ * @param {object} geometry - Internal geometry record.
+ * @param {number[]} fallbackColor - Per-geometry-type default color.
+ * @returns {number[]} Color as [r, g, b, a] in 0..1.
+ */
+function getGeometryColor(geometry, fallbackColor) {
+    if (geometry._colorEpoch !== STATE.styleEpoch) {
+        geometry._color = resolveFeatureColor(geometry.properties, fallbackColor);
+        geometry._colorEpoch = STATE.styleEpoch;
+    }
+
+    return geometry._color;
 }
 
 /**
@@ -1284,16 +1703,18 @@ function buildGeometryTile(tile, depth, visibleGeometries, output, transfers) {
 
         switch (geometry.type) {
             case 'Point': {
-                const mesh = makePointMesh(geometry.coordinates, tile, depth, STATE.style.pointSize, STATE.style.pointColor);
+                const color = getGeometryColor(geometry, STATE.style.pointColor);
+                const mesh = makePointMesh(geometry.coordinates, tile, depth, STATE.style.pointSize, color);
                 pushMesh(output.points, transfers, mesh);
                 break;
             }
 
             case 'LineString': {
                 const target = STATE.useNativeLines ? output.linePrimitives : output.lines;
+                const color = getGeometryColor(geometry, STATE.style.lineColor);
 
                 for (const clippedLine of item.clippedLines) {
-                    const mesh = makeLineMesh(clippedLine, tile, depth, STATE.style.lineWidth, STATE.style.lineColor);
+                    const mesh = makeLineMesh(clippedLine, tile, depth, STATE.style.lineWidth, color);
                     pushMesh(target, transfers, mesh);
                 }
 
@@ -1301,7 +1722,8 @@ function buildGeometryTile(tile, depth, visibleGeometries, output, transfers) {
             }
 
             case 'Polygon': {
-                const mesh = makePolygonMesh(item.clippedPolygon, tile, depth, STATE.style.fillColor);
+                const color = getGeometryColor(geometry, STATE.style.fillColor);
+                const mesh = makePolygonMesh(item.clippedPolygon, tile, depth, color);
                 pushMesh(output.fills, transfers, mesh);
                 break;
             }
