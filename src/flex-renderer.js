@@ -779,6 +779,37 @@
         }
 
         /**
+         * Convert a client-space point ({clientX, clientY}) into renderer
+         * framebuffer pixels. Returned coordinates are physical pixels with
+         * bottom-left origin, directly comparable to `gl_FragCoord.xy`, and
+         * are devicePixelRatio-aware.
+         *
+         * Forwards to the attached drawer when available (the drawer owns the
+         * on-page event target). Falls back to using the presentation canvas
+         * as both the framebuffer source and the bounding-rect source, which
+         * is correct when the presentation canvas is the DOM-attached canvas.
+         *
+         * @param {{clientX: number, clientY: number}} point
+         * @return {{x: number, y: number}}
+         */
+        clientPointToFramebufferPx(point) {
+            if (this.drawer && typeof this.drawer.clientPointToFramebufferPx === "function") {
+                return this.drawer.clientPointToFramebufferPx(point);
+            }
+            const canvas = this.presentationCanvas;
+            if (!canvas || typeof canvas.getBoundingClientRect !== "function") {
+                return { x: 0, y: 0 };
+            }
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width ? canvas.width / rect.width : 1;
+            const scaleY = rect.height ? canvas.height / rect.height : 1;
+            return {
+                x: (point.clientX - rect.left) * scaleX,
+                y: (rect.bottom - point.clientY) * scaleY,
+            };
+        }
+
+        /**
          * Return whether this renderer is attached to a page-global shared WebGL context.
          *
          * @return {boolean}
@@ -1352,12 +1383,11 @@
             program._webGLProgram = webglProgram;
             program._justCreated = true;
 
-            // TODO inner control type udpates are not checked here
-            for (let shaderId in this._shaders) {
-                const shader = this._shaders[shaderId];
+            // TODO inner control type udpates are not checked here (this todo comment might be outdated, verify)
+            const reinstantiateIfTypeChanged = (shaderId, shader, parent) => {
                 const config = shader.getConfig();
-                // Check explicitly type of the config, if updated, recreate shader
-                if (shader.constructor.type() !== config.type) {
+                let current = shader;
+                if (current.constructor.type() !== config.type) {
                     const NewShader = $.FlexRenderer.ShaderLayerRegistry.get(config.type);
                     if (NewShader) {
                         // Drop orphan params from the previous shader type before re-instantiation,
@@ -1365,8 +1395,33 @@
                         // ride along and trigger parseChannel warnings or sample()-time incompatibilities.
                         this._sanitizeShaderParams(config, NewShader);
                     }
-                    this.createShaderLayer(shaderId, config, false);
+                    if (parent) {
+                        const previous = parent.shaderLayers[shaderId];
+                        current = parent.createShaderLayer(shaderId, config);
+                        parent.shaderLayers[shaderId] = current;
+                        if (previous && previous !== current) {
+                            try {
+                                previous.destroy();
+                            } catch (e) {
+                                $.console.warn(`Shader ${shaderId} destroy() during type change failed.`, e);
+                            }
+                        }
+                    } else {
+                        this.createShaderLayer(shaderId, config, false);
+                        current = this._shaders[shaderId];
+                    }
                 }
+                if (current && current.shaderLayers && current.shaderLayerOrder) {
+                    for (const childId of current.shaderLayerOrder) {
+                        const child = current.shaderLayers[childId];
+                        if (child) {
+                            reinstantiateIfTypeChanged(childId, child, current);
+                        }
+                    }
+                }
+            };
+            for (let shaderId in this._shaders) {
+                reinstantiateIfTypeChanged(shaderId, this._shaders[shaderId], null);
             }
             // Needs reference early
             this._programImplementations[key] = program;
@@ -1410,10 +1465,22 @@
                 program = this.getProgram(program);
             }
 
-            if (this._program) {
-                const reused = !program._justCreated;
+            if (!program || !program.webGLProgram) {
+                throw new Error("$.FlexRenderer::useProgram: invalid program.");
+            }
 
+            const reused = !program._justCreated;
+
+            if (this._program) {
                 if (this.running && this._program === program && reused) {
+                    // Do not trust renderer-local `_program` as proof that WebGL has this
+                    // program currently bound. In shared-context mode, another renderer may
+                    // have changed the context-global CURRENT_PROGRAM. `registerProgram()`
+                    // can also change CURRENT_PROGRAM without updating `_program`.
+                    //
+                    // We still return false so callers skip program.load(...), but we must
+                    // re-bind before any subsequent uniform uploads.
+                    this.gl.useProgram(program.webGLProgram);
                     return false;
                 }
 
@@ -1599,7 +1666,41 @@
 
         getShaderLayer(id) {
             id = $.FlexRenderer.sanitizeKey(id);
-            return this._shaders[id];
+            return this._shaders[id] || this._findNestedShaderLayer(id);
+        }
+
+        _findNestedShaderLayer(sanitizedId) {
+            const walk = (map) => {
+                if (!map) {
+                    return null;
+                }
+                for (const cid in map) {
+                    const s = map[cid];
+                    if (!s) {
+                        continue;
+                    }
+                    if (cid === sanitizedId) {
+                        return s;
+                    }
+                    if (s.shaderLayers) {
+                        const r = walk(s.shaderLayers);
+                        if (r) {
+                            return r;
+                        }
+                    }
+                }
+                return null;
+            };
+            for (const id in this._shaders) {
+                const s = this._shaders[id];
+                if (s && s.shaderLayers) {
+                    const r = walk(s.shaderLayers);
+                    if (r) {
+                        return r;
+                    }
+                }
+            }
+            return null;
         }
 
         getShaderLayerConfig(id) {
@@ -1978,7 +2079,7 @@
          */
         changeShaderType(layerId, newType) {
             const id = $.FlexRenderer.sanitizeKey(layerId);
-            const shader = this._shaders[id];
+            const shader = this._shaders[id] || this._findNestedShaderLayer(id);
             if (!shader) {
                 throw new Error(`$.FlexRenderer::changeShaderType: Unknown layer '${layerId}'.`);
             }
@@ -3574,10 +3675,6 @@
 
         downloadTileStart(context) {
             return context.finish("_blank", undefined, "undefined");
-        }
-
-        getMetadata() {
-            return this;
         }
     }
 

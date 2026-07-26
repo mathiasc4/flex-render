@@ -372,6 +372,18 @@ to render transparent placeholder data at the position of the missing tile sourc
 index using ``addTiledImage`` to know it in advance. E.g., call this snipplet in `error` handler
 of a parent ``addTiledImage`` call. You can access the error message later as `viewer.world.getItemAt(toOpenIndex).source.error`.
 
+### Per-TiledImage Image Smoothing
+OpenSeadragon's `setImageSmoothingEnabled(enabled)` is a drawer-wide flag — it forces the same texture filter on every tiled image.
+FlexDrawer keeps that behavior as the default, but also exposes a per-`TiledImage` override:
+````js
+viewer.drawer.setTiledImageSmoothingEnabled(tiledImage, false); // gl.NEAREST for this image only
+viewer.drawer.setTiledImageSmoothingEnabled(tiledImage, true);  // gl.LINEAR for this image only
+viewer.drawer.setTiledImageSmoothingEnabled(tiledImage, null);  // inherit the drawer-wide default
+````
+Useful when one source needs crisp nearest-neighbor sampling (segmentation masks, label maps) while others stay smooth.
+Note: the filter is baked in at texture upload time, and OSD's tile cache is keyed by tile content. If two tiled images share the
+exact same source tiles, they will share the cached prepared textures and the first uploader wins the filter.
+
 ### Processing OffScreen
 This drawer supports off-screen processing. You can either use the renderer directly, which is a bit harder,
 or if you want to process current viewport in a different way, you can use ``$.makeStandaloneFlexDrawer(originalViewer)``

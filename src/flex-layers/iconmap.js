@@ -106,7 +106,7 @@
                                 default: layer._getDefaultIconName(index),
                                 size: 384,
                                 padding: 10,
-                                previewSize: 40
+                                previewSize: 27
                             },
                             accepts: (type) => type === "vec4"
                         })

@@ -1,6 +1,15 @@
 OPENSEADRAGON FLEX RENDERER
 ===========================
 
+0.0.2
+GeoJSONTileSource:
+ * style can now derive a color per feature, from a class label, a property path,
+   or a colormap over a numeric property. See GEOJSON.md. Defaults are unchanged.
+ * color fields accept hex strings, 0-255 and 0..1 arrays, and QuPath packed ints.
+ * new setStyle(), which re-meshes without refetching or reindexing the source.
+ * malformed features are now skipped and reported instead of permanently failing
+   every tile of the source.
+
 0.0.1
 This is a plugin for OpenSeadragon that adds the flex renderer.
 

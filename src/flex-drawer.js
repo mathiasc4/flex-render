@@ -382,6 +382,12 @@
          */
         rebuild() {
             if (this.options.handleNavigator) {
+                // Callers like UTILITIES.changeModeOfLayer, setFilterOfLayer, the
+                // shaderSideMenu visibility toggle, and shader-order reorders mutate
+                // only the main shader's config/params and then call rebuild().
+                // Mirror that state into the navigator's shader instances first so
+                // its rebuild doesn't re-emit the previous (stale) configuration.
+                this._syncNavigatorShaderState();
                 this.viewer.navigator.drawer.rebuild();
             }
             return this._requestRebuild();
@@ -445,6 +451,137 @@
             }
             this.viewer.forceRedraw();
             return $.Promise.resolve();
+        }
+
+        /**
+         * Mirror control state (encodedValue) from the main drawer's shaders into
+         * the navigator drawer's shader instances. Required because shader-internal
+         * UI controls (color picker, range sliders, etc.) mutate the main shader's
+         * controls directly via `owner.invalidate()` and never reach the navigator,
+         * whose shader instances are separate and have no DOM-bound handlers.
+         *
+         * Without this, fast control-driven changes leave the navigator's render
+         * with stale uniforms/params until something else (e.g. _applyShaderConfigMutationRequest)
+         * resyncs it. Visualization-change events from nav-side `set()` calls are
+         * suppressed so consumers don't see duplicates.
+         */
+        _syncNavigatorShaderState() {
+            const nav = this.viewer.navigator;
+            if (!nav || !nav.drawer || !nav.drawer.renderer) {
+                return;
+            }
+
+            // Mirror non-control state that bypasses _controls entirely:
+            //   - config.visible (layer checkbox in shaderSideMenu)
+            //   - config.params.use_mode / use_blend (UTILITIES.changeModeOfLayer, onChangeBlend)
+            //   - config.params.use_<filter>         (UTILITIES.setFilterOfLayer)
+            // For mode/blend we re-run resetMode on the nav shader; for filters, resetFilters.
+            // Both are idempotent and read directly from the params object.
+            const syncConfig = (mainShader, navShader) => {
+                const mainConfig = typeof mainShader.getConfig === "function" ? mainShader.getConfig() : null;
+                const navConfig = typeof navShader.getConfig === "function" ? navShader.getConfig() : null;
+                if (!mainConfig || !navConfig || mainConfig === navConfig) {
+                    return;
+                }
+
+                if (navConfig.visible !== mainConfig.visible) {
+                    navConfig.visible = mainConfig.visible;
+                }
+
+                const mainParams = mainConfig.params;
+                if (!mainParams) {
+                    return;
+                }
+                navConfig.params = navConfig.params || {};
+                const navParams = navConfig.params;
+
+                let modeOrBlendChanged = false;
+                let filterChanged = false;
+                for (const key in mainParams) {
+                    if (!key.startsWith("use_")) {
+                        continue;
+                    }
+                    if (navParams[key] === mainParams[key]) {
+                        continue;
+                    }
+                    navParams[key] = mainParams[key];
+                    if (key === "use_mode" || key === "use_blend") {
+                        modeOrBlendChanged = true;
+                    } else {
+                        filterChanged = true;
+                    }
+                }
+
+                if (modeOrBlendChanged && typeof navShader.resetMode === "function") {
+                    try {
+                        navShader.resetMode(navParams, true, false);
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetMode failed", mainShader.id, e);
+                    }
+                }
+                if (filterChanged && typeof navShader.resetFilters === "function") {
+                    try {
+                        navShader.resetFilters(navParams, true, false);
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetFilters failed", mainShader.id, e);
+                    }
+                }
+            };
+
+            const syncControls = (mainShader, navShader) => {
+                if (!mainShader || !navShader || !mainShader._controls || !navShader._controls) {
+                    return;
+                }
+                for (const controlName in mainShader._controls) {
+                    const mainControl = mainShader._controls[controlName];
+                    const navControl = navShader._controls[controlName];
+                    if (!navControl || typeof navControl.set !== "function" || !mainControl) {
+                        continue;
+                    }
+                    if (mainControl.encodedValue === undefined) {
+                        continue;
+                    }
+                    if (navControl.encodedValue === mainControl.encodedValue) {
+                        continue;
+                    }
+
+                    const prevSuppress = navControl._suppressVisualizationChanged;
+                    navControl._suppressVisualizationChanged = true;
+                    try {
+                        navControl.set(mainControl.encodedValue);
+                    } catch (e) {
+                        $.console.warn(
+                            "FlexDrawer: failed to sync navigator control state",
+                            mainShader.id, controlName, e
+                        );
+                    } finally {
+                        navControl._suppressVisualizationChanged = prevSuppress;
+                    }
+                }
+            };
+
+            // Group shaders (e.g. flex-layers/group.js) hold nested children under
+            // shader.shaderLayers (same map shape, keyed by sanitized id). renderer.getAllShaders()
+            // only returns the top-level map, so we walk recursively.
+            const walk = (mainMap, navMap) => {
+                if (!mainMap || !navMap) {
+                    return;
+                }
+                for (const id in mainMap) {
+                    const mainShader = mainMap[id];
+                    const navShader = navMap[id];
+                    if (!mainShader || !navShader) {
+                        continue;
+                    }
+                    syncConfig(mainShader, navShader);
+                    syncControls(mainShader, navShader);
+                    if (mainShader.shaderLayers && navShader.shaderLayers) {
+                        walk(mainShader.shaderLayers, navShader.shaderLayers);
+                    }
+                }
+            };
+
+            walk(this.renderer.getAllShaders(), nav.drawer.renderer.getAllShaders());
         }
 
         _handleRefetchRequest(request = undefined) {
@@ -938,13 +1075,17 @@
                 }
 
                 if (!this._configuredExternally) {
-                    this.renderer.setShaderLayerOrder(this.viewer.world._items.map(item => item.__shaderConfig.id));
+                    // __shaderConfig may be missing for an item mid-teardown during a reset window
+                    // (remove-item deletes it, then this rebuild fires deferred) — skip such items
+                    this.renderer.setShaderLayerOrder(
+                        this.viewer.world._items
+                            .filter(item => item.__shaderConfig)
+                            .map(item => item.__shaderConfig.id)
+                    );
                 }
 
                 this._buildStamp = Date.now();
-                this.renderer.setDimensions(
-                    0,
-                    0,
+                this._setOffscreenDimensions(
                     this.canvas.width,
                     this.canvas.height,
                     this._computeOffscreenLayerCount(),
@@ -1013,7 +1154,7 @@
                 // this._renderingCanvas.height = this._outputCanvas.height;
 
                 //todo batched?
-                this.renderer.setDimensions(0, 0, viewportSize.x, viewportSize.y, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
+                this._setOffscreenDimensions(viewportSize.x, viewportSize.y, this._computeOffscreenLayerCount(), this.viewer.world.getItemCount());
                 this._size = viewportSize;
                 this._refreshDrawReadyState();
             };
@@ -1169,16 +1310,22 @@
         }
 
         /**
-         * Convert a DOM pointer/mouse event into renderer framebuffer pixels.
+         * Convert a client-space point ({clientX, clientY} from a DOM event,
+         * or any object with those fields) into renderer framebuffer pixels.
          *
-         * Returned coordinates use physical framebuffer pixels with bottom-left origin,
-         * directly comparable to `gl_FragCoord.xy`.
+         * Returned coordinates use physical framebuffer pixels with bottom-left
+         * origin, directly comparable to `gl_FragCoord.xy`. The conversion is
+         * devicePixelRatio-aware because `canvas.width / rect.width` already
+         * folds DPR into the scale factor.
          *
-         * @private
-         * @param {PointerEvent|MouseEvent} event
+         * Intended for application code that drives `inspector.centerPx` from
+         * a pointer event. Returns `{x:0, y:0}` when no canvas or event target
+         * is available.
+         *
+         * @param {{clientX: number, clientY: number}} point
          * @return {{x: number, y: number}}
          */
-        _getInteractionPositionPx(event) {
+        clientPointToFramebufferPx(point) {
             const canvas = this.renderer && this.renderer.getPresentationCanvas();
             const target = this._getInteractionEventTarget();
 
@@ -1191,9 +1338,20 @@
             const scaleY = rect.height ? canvas.height / rect.height : 1;
 
             return {
-                x: (event.clientX - rect.left) * scaleX,
-                y: (rect.bottom - event.clientY) * scaleY,
+                x: (point.clientX - rect.left) * scaleX,
+                y: (rect.bottom - point.clientY) * scaleY,
             };
+        }
+
+        /**
+         * Convert a DOM pointer/mouse event into renderer framebuffer pixels.
+         *
+         * @private
+         * @param {PointerEvent|MouseEvent} event
+         * @return {{x: number, y: number}}
+         */
+        _getInteractionPositionPx(event) {
+            return this.clientPointToFramebufferPx(event);
         }
 
         /**
@@ -1940,6 +2098,7 @@
             const viewMatrix = scaleMatrix.multiply(rotMatrix).multiply(posMatrix);
 
             this._ensurePackLayout();
+            this._ensureOffscreenCapacity();
 
             const firstPass = this._collectFirstPassPayload(tiledImages, view, viewMatrix);
             const secondPass = this._collectSecondPassPayload(view);
@@ -2049,7 +2208,7 @@
                         if (tileInfo.texture) {
                             payload.push({
                                 transformMatrix,
-                                dataIndex: tiledImage.__flexBaseLayer || tiledImageIndex, // color layer index
+                                dataIndex: (typeof tiledImage.__flexBaseLayer === "number") ? tiledImage.__flexBaseLayer : tiledImageIndex, // color layer index
                                 stencilIndex: tiledImageIndex,
                                 texture: tileInfo.texture,
                                 position: tileInfo.position,
@@ -2074,6 +2233,10 @@
                             }
 
                             vecPayload.push(tileInfo.vectors);
+                        } else if (tileInfo.__flexEmpty) {
+                            // Legitimately empty vector tile (no geometry overlapped it):
+                            // nothing to draw, and NOT an error — never tint it.
+                            continue;
                         } else {
                             diagnosticPayload.push(this._makeTileDiagnosticRegion(
                                 tile,
@@ -2371,7 +2534,21 @@
                 this.options,
                 // Required
                 {
-                    redrawCallback: () => this.viewer.forceRedraw(),
+                    redrawCallback: () => {
+                        // Shader-internal UI controls (color picker, sliders, opacity, etc.)
+                        // mutate this drawer's shader instances directly and route the redraw
+                        // through here. The navigator's drawer has its own shader instances
+                        // with their own state, so we mirror the change AND kick the navigator's
+                        // own animation loop — without nav.forceRedraw(), glDrawing() never runs
+                        // on the nav controls and the _needsLoad=true left by .set() never flushes.
+                        // Gated on the (opt-in, default-true) handleNavigator option; skipped on
+                        // the navigator drawer itself which has handleNavigator forced to false.
+                        if (this.options.handleNavigator && this.viewer.navigator) {
+                            this._syncNavigatorShaderState();
+                            this.viewer.navigator.forceRedraw();
+                        }
+                        this.viewer.forceRedraw();
+                    },
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,
                     sharedContextKey: this.options.sharedContextKey,
@@ -2385,6 +2562,7 @@
                     }
                 });
             this.renderer = new $.FlexRenderer(rendererOptions);
+            this.renderer.drawer = this;
 
             this.renderer.setDataBlendingEnabled(true); // enable alpha blending
             this.webGLVersion = this.renderer.webglVersion;
@@ -2425,6 +2603,54 @@
                 this.setInternalCacheNeedsRefresh();
                 this.viewer.requestInvalidate(false);
             }
+        }
+
+        /**
+         * Override the image-smoothing flag for a single tiledImage. Falls back to the
+         * drawer-wide value when undefined.
+         *
+         * Note: the sampler filter is baked into prepared textures at upload time, and
+         * OpenSeadragon's tile cache is keyed by tile content, not tiledImage identity.
+         * If two tiledImages reference the same source tiles, they will share the
+         * cached prepared textures — the first uploader wins the filter. In the common
+         * case where the per-source flag matches the source's identity, this is fine;
+         * setInternalCacheNeedsRefresh() forces re-preparation when the flag flips.
+         *
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @param {Boolean|null|undefined} enabled true → gl.LINEAR, false → gl.NEAREST,
+         *     null/undefined → inherit drawer default
+         */
+        setTiledImageSmoothingEnabled(tiledImage, enabled){
+            if (!tiledImage) {
+                return;
+            }
+            const normalized = enabled === null || enabled === undefined ? undefined : !!enabled;
+            if (tiledImage.__flexImageSmoothingEnabled === normalized) {
+                return;
+            }
+            tiledImage.__flexImageSmoothingEnabled = normalized;
+            this.setInternalCacheNeedsRefresh();
+            if (typeof tiledImage.requestInvalidate === "function") {
+                tiledImage.requestInvalidate(true);
+            } else {
+                this.viewer.requestInvalidate(false);
+            }
+        }
+
+        /**
+         * Resolve the effective image-smoothing flag for a tiledImage, honoring the
+         * per-tiledImage override when present.
+         *
+         * @private
+         * @param {OpenSeadragon.TiledImage} [tiledImage]
+         * @returns {Boolean}
+         */
+        _resolveImageSmoothingEnabled(tiledImage){
+            const override = tiledImage && tiledImage.__flexImageSmoothingEnabled;
+            if (override === true || override === false) {
+                return override;
+            }
+            return !!this._imageSmoothingEnabled;
         }
 
         internalCacheCreate(cache, tile) {
@@ -2477,9 +2703,9 @@
          * @private
          * @returns {RasterTileTextureOptions}
          */
-        _getPreparedTileTextureOptions() {
+        _getPreparedTileTextureOptions(tiledImage) {
             return {
-                imageSmoothingEnabled: !!this._imageSmoothingEnabled
+                imageSmoothingEnabled: this._resolveImageSmoothingEnabled(tiledImage)
             };
         }
 
@@ -2575,7 +2801,14 @@
                 return null;
             }
 
-            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points))) {
+            if (type === "vector-mesh" || (data && (data.fills || data.lines || data.linePrimitives || data.points || data.__suspicious))) {
+                // The worker flags a tile where geometry with real coverage overlapped yet
+                // nothing meshed. That is "data expected here, none produced" — surface it as
+                // a diagnostic (amber when diagnostics are on) rather than a silent blank.
+                if (data && data.__suspicious) {
+                    return this._createDiagnosticTileInfo("expected-data-missing");
+                }
+
                 const result = await this.renderer.prepareVectorTile({
                     data: data
                 });
@@ -2588,7 +2821,10 @@
                     position: null,
                     texture: null,
                     resource: result.resource,
-                    vectors: result.vectors
+                    vectors: result.vectors,
+                    // ok but nothing uploaded: a genuinely empty (no-data) tile. Marked so the
+                    // draw loop skips it silently instead of tinting it as invalid.
+                    __flexEmpty: !result.vectors
                 };
             }
 
@@ -2597,7 +2833,7 @@
             if (isGpuTextureSet) {
                 const result = await this.renderer.prepareGpuTextureTile({
                     data: data,
-                    textureOptions: this._getPreparedTileTextureOptions()
+                    textureOptions: this._getPreparedTileTextureOptions(tiledImage)
                 });
 
                 if (!result.ok) {
@@ -2626,7 +2862,7 @@
 
             const result = await this.renderer.prepareBitmapTile({
                 data: data,
-                textureOptions: this._getPreparedTileTextureOptions()
+                textureOptions: this._getPreparedTileTextureOptions(tiledImage)
             });
 
             if (!result.ok) {
@@ -2755,6 +2991,53 @@
             if (this._packLayoutDirty) {
                 this._updatePackLayout();
                 this._packLayoutDirty = false;
+            }
+        }
+
+        /**
+         * Allocate the offscreen texture arrays and remember the layer depths that were
+         * requested. Every call that changes the array depth must go through here so the
+         * cached depths stay authoritative for _ensureOffscreenCapacity.
+         *
+         * @param {number} width - Offscreen width in pixels.
+         * @param {number} height - Offscreen height in pixels.
+         * @param {number} colorLayers - colorTextureA layer count (Σ pack counts).
+         * @param {number} stencilLayers - stencilTextureA layer count (world item count).
+         * @private
+         */
+        _setOffscreenDimensions(width, height, colorLayers, stencilLayers) {
+            this.renderer.setDimensions(0, 0, width, height, colorLayers, stencilLayers);
+            this._allocatedColorLayers = colorLayers;
+            this._allocatedStencilLayers = stencilLayers;
+        }
+
+        /**
+         * Grow the offscreen texture arrays before the first pass attaches their layers.
+         *
+         * Layer indices (dataIndex/stencilIndex) are recomputed at render time by
+         * _ensurePackLayout, but the arrays are otherwise only (re)allocated on the debounced
+         * rebuild and on resize. Adding a source or a source reporting more packs raises the
+         * indices first, so framebufferTextureLayer would attach a layer beyond the allocated
+         * depth and leave the framebuffer incomplete (every clear/draw for that source then
+         * fails -> the source renders blank until the next rebuild). Reallocating here closes
+         * that lag. Grow-only: the debounced rebuild handles shrinking. The first pass repaints
+         * these arrays every frame, so reallocating immediately before it loses nothing.
+         *
+         * @private
+         */
+        _ensureOffscreenCapacity() {
+            const neededColor = this._computeOffscreenLayerCount();
+            const neededStencil = this.viewer.world.getItemCount();
+            const haveColor = this._allocatedColorLayers || 0;
+            const haveStencil = this._allocatedStencilLayers || 0;
+
+            if (neededColor > haveColor || neededStencil > haveStencil) {
+                this._setOffscreenDimensions(
+                    this.canvas.width,
+                    this.canvas.height,
+                    Math.max(neededColor, haveColor),
+                    Math.max(neededStencil, haveStencil)
+                );
             }
         }
 

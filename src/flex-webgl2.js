@@ -29,27 +29,6 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
 
     init() {
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
-
-        // TODO: make icons dynamic
-
-        const countryIcon = new Image();
-        countryIcon.src = "/icons/place/country-icon.png";
-        countryIcon.onload = () => {
-            this.firstAtlas.addImage(countryIcon);
-        };
-
-        const cityIcon = new Image();
-        cityIcon.src = "/icons/place/city-icon.png";
-        cityIcon.onload = () => {
-            this.firstAtlas.addImage(cityIcon);
-        };
-
-        const villageIcon = new Image();
-        villageIcon.src = "/icons/place/village-icon.png";
-        villageIcon.onload = () => {
-            this.firstAtlas.addImage(villageIcon);
-        };
-
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
         this._presentationTransferScratch = {
@@ -1204,6 +1183,17 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 vectors.points = this._prepareVectorTileBatch(data.points);
             }
 
+            if (!this._isPreparedVectorTileResource(vectors)) {
+                // Empty-but-valid vector tile: nothing was uploaded. Don't
+                // track or emit an empty {} resource, otherwise release would
+                // mis-route it to the raster branch and call deleteTexture({}).
+                return {
+                    ok: true,
+                    resource: null,
+                    vectors: null
+                };
+            }
+
             this._preparedTileResources.add(vectors);
 
             return {
@@ -1228,6 +1218,9 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
             throw new TypeError("Vector tile batch requires at least one mesh.");
         }
 
+        // TODO consider drain errors, though overhead in time critical loop
+        //  for (let i = 0; i < 16 && gl.getError() !== gl.NO_ERROR; i++) { /* clear */ }
+
         let vCount = 0;
         let iCount = 0;
 
@@ -1238,6 +1231,14 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
 
             vCount += mesh.vertices.length / 4;
             iCount += mesh.indices.length;
+        }
+
+        // Per-tile aggregate size. All meshes of one kind are merged into a single buffer
+        // set, so this is what a coarse tile (many patches) pushes at the GPU. Logged under
+        // render diagnostics to pin oversized-buffer blanks.
+        const renderer = this.context && this.context.renderer;
+        if (renderer && typeof renderer.getRenderDiagnostics === "function" && renderer.getRenderDiagnostics()) {
+            $.console.warn(`FlexWebGL2: vector batch vertices=${vCount} indices=${iCount} meshes=${meshes.length}`);
         }
 
         const positions = new Float32Array(vCount * 4);
@@ -1299,6 +1300,13 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, batch.ibo);
             gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
+            // A too-large aggregate buffer raises GL_OUT_OF_MEMORY, which WebGL does NOT
+            // surface as a JS exception. Without this check the batch would be returned with
+            // a valid count but a bad/empty GPU buffer, and drawElementsInstanced would draw
+            // nothing — a silent blank tile. Turn that into a thrown failure so the tile is
+            // reported (prepareVectorTile -> "webgl-upload-failed") instead of blanking.
+            this._throwIfWebGLError("Vector tile buffer upload");
+
             const firstMesh = meshes[0] || {};
             batch.lineWidth = Number.isFinite(firstMesh.lineWidth) && firstMesh.lineWidth > 0
                 ? firstMesh.lineWidth
@@ -1306,6 +1314,11 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
 
             return batch;
         } catch (error) {
+            // Surface the size that failed regardless of the diagnostics flag — this is the
+            // signal that a tile aggregated more than the driver could upload in one buffer.
+            $.console.warn(
+                `FlexWebGL2: vector batch upload failed (vertices=${vCount} indices=${iCount} meshes=${meshes.length}): ${error && error.message}`
+            );
             this._releasePreparedVectorTileBatch(batch);
             throw error;
         } finally {
@@ -1407,7 +1420,11 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
             return;
         }
 
-        this.gl.deleteTexture(texture);
+        // Only real textures may be freed; a non-texture object slipping into
+        // this branch (e.g. a stray vector resource) would throw a TypeError.
+        if (texture instanceof WebGLTexture) {
+            this.gl.deleteTexture(texture);
+        }
 
         if (this._preparedTileResources) {
             this._preparedTileResources.delete(texture);
@@ -2658,6 +2675,18 @@ void main() {
 
             const targetColorLayer   = renderInfo.dataIndex;
             const targetStencilLayer = renderInfo.stencilIndex;
+
+            // Defensive: attaching a layer index >= the allocated array depth makes the
+            // framebuffer incomplete, which fails every clear/draw in this pass — not just
+            // this source. The drawer grows the arrays before rendering so this should never
+            // trigger; if it ever does, skip the offending source rather than blanking all.
+            if (targetColorLayer >= this._dataLayerCount || targetStencilLayer >= this._tiledImageCount) {
+                if (!this._layerOverflowWarned) {
+                    $.console.warn(`FlexWebGL2: first-pass layer out of range (color ${targetColorLayer}/${this._dataLayerCount}, stencil ${targetStencilLayer}/${this._tiledImageCount}); skipping source.`);
+                    this._layerOverflowWarned = true;
+                }
+                continue;
+            }
 
             // for (let i = 0; i < 1; i++) {
 
