@@ -990,6 +990,11 @@
                 this._rebuildHandle = null;
             }
 
+            if (this._deferredRedrawHandle) {
+                clearTimeout(this._deferredRedrawHandle);
+                this._deferredRedrawHandle = null;
+            }
+
             this.renderer.destroy();
             this.renderer = null;
 
@@ -1098,12 +1103,18 @@
                 this._refreshDrawReadyState();
 
                 if (!immediate) {
-                    setTimeout(() => {
+                    this._deferredRedrawHandle = setTimeout(() => {
+                        this._deferredRedrawHandle = null;
                         if (this._destroyed) {
                             return;
                         }
                         if (!this._isRenderingSuspended()) {
-                            this.viewer.forceRedraw();
+                            try {
+                                this.viewer.forceRedraw();
+                            } catch (_) {
+                                // viewer destroyed between schedule and fire — OSD's private
+                                // state slot is gone; post-teardown redraw is a no-op.
+                            }
                         }
                     });
                 }
