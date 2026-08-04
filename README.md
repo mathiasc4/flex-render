@@ -152,6 +152,66 @@ For GLSL, the second-pass shader already receives per-source runtime sampling me
 `overrideConfigureAll(...)` is therefore not required to "consume data first". The more precise rule is:
 ensure shaders can refresh when source metadata becomes known, and rebuild the program when metadata changes shader structure.
 
+### Render Precision
+
+The first pass stitches tile textures into an offscreen `TEXTURE_2D_ARRAY`, and the second pass runs
+`ShaderLayer` instances against it. By default that intermediate colour target is `RGBA8`, so **all** data
+reaching a shader is quantized to 8 bits and clamped to `[0,1]` — even when the tile itself was uploaded as
+`RGBA16F` (e.g. geotiff float packs). GPU-side rescale/VOI on real float data is impossible in that mode.
+
+Opt into a half-float target with the `precision` option:
+
+```js
+viewer.drawerOptions['flex-renderer'] = {
+    precision: 'auto'   // 'unorm8' (default) | 'auto' | 'float16'
+};
+```
+
+**Precision is a property of the data, not of the shader.** The same `single_channel` layer is used over an
+8-bit brightfield slide and over a 16-bit float plane, so it cannot know in advance what it will be pointed
+at. Under `'auto'` the negotiation therefore runs that way round: the *data* declares what it carries, a
+`ShaderLayer` may *veto*, and the renderer resolves.
+
+| `precision` | behaviour |
+|---|---|
+| `'unorm8'` (default) | `RGBA8` always. Float tile data is quantized and clamped; one `info` names the fix. |
+| `'auto'` | `RGBA16F` when the data carries float **and** nothing vetoes. |
+| `'float16'` | `RGBA16F` whenever the context supports it, ignoring data and vetoes. |
+
+Under `'auto'`:
+
+1. the drawer reports what the tiles carry — `FlexRenderer#setDataCarriesHighPrecision(bool)`, aggregated over
+   the world from each prepared tile's pack format, plus an optional early
+   `tileSource.getTileDataPrecision()` (`'unorm8' | 'float16'`) that lets a source answer from its header and
+   skip one mid-load program rebuild;
+2. a shader config declaring `precision: 'float16'` demands the upgrade even over 8-bit data;
+3. a `ShaderLayer` class whose `static supportsHighPrecision()` returns `false`, or a config declaring
+   `precision: 'unorm8'`, **vetoes** it for the whole renderer — there is only one colour target, so a mixed
+   verdict resolves to the clamped one;
+4. otherwise `RGBA8`.
+
+> **Removed:** `static requiresHighPrecision()`. A class still defining it gets a warning at registration time
+> and is otherwise ignored — use `static supportsHighPrecision()` to veto, or config `precision: 'float16'`
+> to demand.
+
+`float16` requires `EXT_color_buffer_half_float` or `EXT_color_buffer_float`
+(`renderer.backend.supportsHighPrecisionTargets` probes this). If neither is present the renderer **warns
+loudly and falls back to `RGBA8`** rather than downgrading silently. `RGBA16F` is the target rather than
+`RGBA32F` on purpose: it is filterable in WebGL2 core and blendable wherever it is colour-renderable, while
+32-bit float would additionally need `EXT_float_blend`.
+
+**Behaviour change under `precision: 'float16'`:** `RGBA8` used to clamp first-pass output implicitly, and
+`RGBA16F` does not. Values sampled through `sampleChannel()` / `osd_channel()` / `osd_texture()` are therefore
+**no longer guaranteed to be in `[0,1]`** — they can be negative or greater than one. Layers that relied on the
+old clamp must clamp explicitly. Tiles uploaded as 8-bit unorm are still clamped by the first-pass copy, so an
+8-bit background mixed with a float layer behaves exactly as before. The stencil/coverage target stays `RGBA8`.
+
+**Memory:** the colour array is `width × height × dataLayerCount`. At 3840×2160 with 8 data layers this grows
+from 66 MB to 133 MB per layer, 531 MB total — per renderer, and a viewer's navigator has one of its own.
+That cost is why `'auto'` is off by default: enabling the negotiation is a deployment decision, even though
+the negotiation itself then needs no per-shader configuration. Narrowing to `R16F`/`RG16F` when active layers
+need fewer channels is a possible follow-up.
+
 ### Lazy Shader Sources
 
 Some wrapper shaders need to switch between sources that are not already open as `TiledImage`s.

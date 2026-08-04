@@ -57,6 +57,18 @@
         }
 
         /**
+         * Whether this backend can render into a high-precision (float) color target.
+         *
+         * Backends that only support 8-bit unorm targets keep the default. The renderer uses
+         * this to decide whether a requested `precision: "float16"` is honored or downgraded.
+         *
+         * @return {boolean}
+         */
+        get supportsHighPrecisionTargets() {
+            return false;
+        }
+
+        /**
          * Init phase
          */
         init() {
