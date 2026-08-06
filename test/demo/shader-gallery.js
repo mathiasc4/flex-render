@@ -6,9 +6,10 @@
  * "config JSON" panel is exactly what produced the picture -- the demo and the
  * documentation cannot drift apart.
  *
- * Viewers are built lazily as cards scroll into view and torn down once too many
- * are live, because 25 simultaneous WebGL viewers is more than a browser will
- * give you. The surviving ones share a single context through `sharedContextKey`.
+ * Only selected cards are built, lazily as they scroll into view, and torn down
+ * once too many are live, because 25 simultaneous WebGL viewers is more than a
+ * browser will give you. The surviving ones share a single context through
+ * `sharedContextKey`.
  *
  * All data comes from ./synthetic-pathology-sources.js.
  */
@@ -164,11 +165,9 @@
     const VIEW_NUCLEAR = { x: 0.325, y: 0.385, size: 0.035 };
     const VIEW_TISSUE = { x: 0.26, y: 0.32, size: 0.16 };
     // The two threshold cards share this one so they are a fair comparison. It is
-    // deliberately lower magnification than VIEW_NUCLEAR: adaptive_threshold's
-    // window is measured in texture texels and caps at 11, so at 1:1 pixel zoom the
-    // whole window fits inside a single nucleus, the local mean equals the centre
-    // sample, and the layer outputs a flat field. Backing off to ~4 image pixels
-    // per screen pixel puts a nucleus at about 3 texels, which the window can see.
+    // deliberately lower magnification than VIEW_NUCLEAR: the adaptive threshold
+    // window is measured in source-image pixels and is capped at 11, so backing off
+    // slightly gives the local statistic enough tissue context to vary.
     const VIEW_CELLULAR = { x: 0.28, y: 0.34, size: 0.2 };
 
     const RECIPES = [
@@ -348,8 +347,8 @@
             title: "Adaptive threshold, same channel",
             types: ["adaptive_threshold"],
             blurb: "A local mean instead of a global cut-off — in principle the one that survives uneven " +
-                "illumination and stain gradients. In practice this card comes out as a single flat class, " +
-                "and that is a real finding, not a mis-configuration: see the note below.",
+                "illumination and stain gradients. The neighbourhood is measured in source-image pixels, " +
+                "so the decision boundary remains meaningful as the viewer changes zoom.",
             sources: [SLIDE],
             config: {
                 a: {
@@ -357,40 +356,29 @@
                     params: {
                         // Box mean, not Gaussian: a Gaussian window this small is
                         // dominated by its own centre sample, so the "local mean"
-                        // tracks the pixel it is being compared against and the
-                        // layer outputs one flat class.
+                        // tracks the pixel it is being compared against at very low
+                        // magnification.
                         use_channel0: "g", block_size: 11, c_value: 0.015, gaussian: false,
                         invert: true, fg_color: "#20304f", bg_color: "#faf7fb"
                     }
                 }
             },
-            note: "Renders one flat class at any zoom. The layer steps its neighbourhood by " +
-                "1 / osd_texture_size(), and that returns the size of the whole stitched first-pass " +
-                "texture array (src/flex-webgl2.js:1847), not the tile. The 11-texel window therefore " +
-                "collapses to well under a screen pixel, the local mean equals the centre sample, and " +
-                "every pixel lands on the same side of the threshold. No layer config can widen it; the " +
-                "shader needs a neighbourhood expressed in image or screen pixels."
+            note: "The neighbourhood is converted from source-image pixels into the current viewport " +
+                "coordinate space using the source dimensions and viewport zoom."
         },
         {
             id: "heatmap",
             title: "Tumour probability heatmap",
-            types: ["identity", "heatmap", "group"],
-            blurb: "A continuous probability map multiplied over the slide, so tissue detail survives " +
-                "underneath the overlay. Drag the threshold to sweep the decision boundary.",
+            types: ["heatmap"],
+            blurb: "A continuous probability map rendered on its own data. The dark background makes " +
+                "the thresholded colour and opacity easy to inspect. Drag the threshold to sweep the boundary.",
             sources: [SLIDE, scalar("tumour-prob")],
             config: {
-                stack: {
-                    name: "Slide + probability", type: "group",
-                    order: ["slide", "prob"],
-                    shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
-                        prob: {
-                            name: "P(tumour)", type: "heatmap", tiledImages: [1],
-                            params: {
-                                use_channel0: "r", color: "#c62828", threshold: 22,
-                                use_mode: "blend", use_blend: "source-over", opacity: 0.8
-                            }
-                        }
+                prob: {
+                    name: "P(tumour)", type: "heatmap", tiledImages: [1],
+                    params: {
+                        use_channel0: "r", color: "#c62828", threshold: 22,
+                        use_mode: "show", use_blend: "source-over", opacity: 1
                     }
                 }
             }
@@ -398,28 +386,19 @@
         {
             id: "colormap",
             title: "Four-class grade map",
-            types: ["identity", "colormap", "group"],
-            blurb: "A discrete class map through a 4-step palette. The layer enforces " +
+            types: ["colormap"],
+            blurb: "A discrete class map through a 4-step palette rendered on its own data. The layer enforces " +
                 "color.steps === threshold.breaks.length + 1, which is why the palette has four steps " +
                 "and the slider three breaks.",
             sources: [SLIDE, crisp(scalar("grade-classes"))],
             config: {
-                stack: {
-                    name: "Slide + grade", type: "group",
-                    order: ["slide", "grade"],
-                    shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
-                        grade: {
-                            name: "Grade", type: "colormap", tiledImages: [1],
-                            params: {
-                                color: { type: "colormap", default: "Spectral", steps: 4, mode: "diverging", continuous: false },
-                                // mask[0] = 0 hides the lowest class, so background
-                                // tissue stays visible instead of being painted over.
-                                threshold: { type: "advanced_slider", breaks: [0.25, 0.5, 0.75], mask: [0, 1, 1, 1] },
-                                connect: true,
-                                use_mode: "blend", use_blend: "source-over", opacity: 0.85
-                            }
-                        }
+                grade: {
+                    name: "Grade", type: "colormap", tiledImages: [1],
+                    params: {
+                        color: { type: "colormap", default: "Spectral", steps: 4, mode: "diverging", continuous: false },
+                        threshold: { type: "advanced_slider", breaks: [0.25, 0.5, 0.75], mask: [1, 1, 1, 1] },
+                        connect: true,
+                        use_mode: "show", use_blend: "source-over", opacity: 1
                     }
                 }
             }
@@ -427,27 +406,19 @@
         {
             id: "gridheatmap",
             title: "Nuclear density, grid cells",
-            types: ["identity", "gridheatmap", "group"],
+            types: ["gridheatmap"],
             blurb: "The same palette machinery as colormap, but drawn as cells whose interiors fade as you " +
-                "zoom in — the colour stays readable on the cell boundary while the tissue shows through. " +
-                "The lowest class is masked off entirely.",
+                "zoom in. The visualization is isolated from the WSI so the cell geometry stays readable.",
             sources: [SLIDE, scalar("nuclei-density")],
             config: {
-                stack: {
-                    name: "Slide + density", type: "group",
-                    order: ["slide", "density"],
-                    shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
-                        density: {
-                            name: "Nuclei / cell", type: "gridheatmap", tiledImages: [1],
-                            params: {
-                                color: { type: "colormap", default: "Viridis", steps: 5, mode: "sequential", continuous: false },
-                                threshold: { type: "advanced_slider", breaks: [0.2, 0.4, 0.6, 0.8], mask: [0, 1, 1, 1, 1] },
-                                connect: true,
-                                cell: 256, solid_px: 26, boundary_px: 2, adaptive_lod: true,
-                                opacity: 0.9
-                            }
-                        }
+                density: {
+                    name: "Nuclei / cell", type: "gridheatmap", tiledImages: [1],
+                    params: {
+                        color: { type: "colormap", default: "Viridis", steps: 5, mode: "sequential", continuous: false },
+                        threshold: { type: "advanced_slider", breaks: [0.2, 0.4, 0.6, 0.8], mask: [1, 1, 1, 1, 1] },
+                        connect: true,
+                        cell: 256, solid_px: 26, boundary_px: 2, adaptive_lod: true,
+                        opacity: 1
                     }
                 }
             }
@@ -455,16 +426,15 @@
         {
             id: "patternmap",
             title: "Three classes, stacked patterns",
-            types: ["identity", "patternmap", "group"],
+            types: ["patternmap", "group"],
             blurb: "Three overlapping class memberships at once. Solid fills would hide each other, so each " +
                 "gets a different pattern, spacing and phase — all in screen pixels, so density is zoom-stable.",
             sources: [SLIDE, scalar("class-stroma"), scalar("class-invasive"), scalar("class-core")],
             config: {
                 stack: {
-                    name: "Slide + 3 classes", type: "group",
-                    order: ["slide", "stroma", "invasive", "core"],
+                    name: "Three classes", type: "group",
+                    order: ["stroma", "invasive", "core"],
                     shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
                         stroma: {
                             name: "Stroma", type: "patternmap", tiledImages: [1],
                             params: {
@@ -496,17 +466,16 @@
         {
             id: "iconmap",
             title: "Class icons",
-            types: ["identity", "iconmap", "group"],
+            types: ["iconmap"],
             blurb: "The class map again, rendered as one repeated glyph per class instead of as colour. " +
                 "Icon controls are generated automatically — one per interval — and default to the built-in " +
                 "icon library, so no image assets are needed.",
             sources: [SLIDE, crisp(scalar("grade-classes"))],
             config: {
                 stack: {
-                    name: "Slide + icons", type: "group",
-                    order: ["slide", "icons"],
+                    name: "Grade icons", type: "group",
+                    order: ["icons"],
                     shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
                         icons: {
                             name: "Grade icons", type: "iconmap", tiledImages: [1],
                             params: {
@@ -514,7 +483,7 @@
                                 threshold: {
                                     type: "advanced_slider",
                                     breaks: [0.25, 0.5, 0.75],
-                                    mask: [0, 0, 1, 1],
+                                    mask: [1, 1, 1, 1],
                                     maskOnly: false
                                 },
                                 grid_layout: 2, cell_size: 30, jitter: 0.18,
@@ -528,16 +497,15 @@
         {
             id: "bipolar",
             title: "Expression, up and down",
-            types: ["identity", "bipolar-heatmap", "group"],
+            types: ["bipolar-heatmap"],
             blurb: "A diverging field centred on 0.5: up-regulated in the lesion, down-regulated in the " +
                 "reactive rim, transparent where there is no change. A sequential heatmap cannot show this.",
             sources: [SLIDE, scalar("expression-delta")],
             config: {
                 stack: {
-                    name: "Slide + delta", type: "group",
-                    order: ["slide", "delta"],
+                    name: "Expression delta", type: "group",
+                    order: ["delta"],
                     shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
                         delta: {
                             name: "Δ expression", type: "bipolar-heatmap", tiledImages: [1],
                             params: {
@@ -552,16 +520,15 @@
         {
             id: "edge",
             title: "Lesion contour",
-            types: ["identity", "edge", "group"],
+            types: ["edge"],
             blurb: "Only the iso-contour of a region mask is drawn, with separate colours for the inside " +
                 "and outside of the boundary. Thickness is derivative-aware, so the line holds up across zoom.",
             sources: [SLIDE, scalar("mask")],
             config: {
                 stack: {
-                    name: "Slide + contour", type: "group",
-                    order: ["slide", "contour"],
+                    name: "Contour", type: "group",
+                    order: ["contour"],
                     shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
                         contour: {
                             name: "Contour", type: "edge", tiledImages: [1],
                             params: {
@@ -663,16 +630,15 @@
         {
             id: "grid",
             title: "Image-anchored measurement grid",
-            types: ["identity", "grid", "group"],
+            types: ["grid"],
             blurb: "A grid in image pixels, not screen pixels: it pans and zooms with the slide, and " +
                 "adaptive_lod snaps the cell size so the on-screen spacing stays sane at every level.",
             sources: [SLIDE],
             config: {
                 stack: {
-                    name: "Slide + grid", type: "group",
-                    order: ["slide", "grid"],
+                    name: "Measurement grid", type: "group",
+                    order: ["grid"],
                     shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
                         grid: {
                             name: "Grid", type: "grid", tiledImages: [0],
                             params: {
@@ -705,8 +671,8 @@
             view: VIEW_TISSUE,
             title: "Fisheye magnifier",
             types: ["fisheye-lens"],
-            blurb: "Click and hold anywhere on the slide. A screen-space lens, which is what you want for " +
-                "reading nuclear detail without losing the low-power context.",
+            blurb: "Select this card, then move over the viewport and hold the primary mouse button. " +
+                "The screen-space lens magnifies nuclear detail without losing the low-power context.",
             sources: [SLIDE],
             interaction: true,
             config: {
@@ -718,23 +684,22 @@
                     }
                 }
             },
-            note: "Needs drawerOptions interaction: true. Mouse navigation is handed back on release."
+            note: "Pointer state is forwarded to the shader while normal viewer pan and zoom remain available."
         },
         {
             id: "interaction-debug",
             view: VIEW_TISSUE,
             title: "Interaction state",
-            types: ["identity", "interaction-debug", "group"],
-            blurb: "Visualises the pointer/click/drag uniforms the renderer forwards to shaders. Useful when " +
-                "you are writing an interactive layer of your own.",
+            types: ["interaction-debug"],
+            blurb: "Select this card and move, click, or drag in its viewport. It visualises the " +
+                "pointer/click/drag uniforms forwarded to shaders.",
             sources: [SLIDE],
             interaction: true,
             config: {
                 stack: {
-                    name: "Slide + pointer", type: "group",
-                    order: ["slide", "debug"],
+                    name: "Pointer", type: "group",
+                    order: ["debug"],
                     shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
                         debug: {
                             name: "Pointer", type: "interaction-debug", tiledImages: [],
                             params: { use_mode: "blend", use_blend: "screen" }
@@ -746,26 +711,20 @@
         {
             id: "blend-modes",
             title: "Blend-mode matrix",
-            types: ["identity", "heatmap", "group"],
-            blurb: "The same slide-plus-overlay pair through every supported use_blend value. " +
+            types: ["heatmap"],
+            blurb: "The same probability data through every supported use_blend value, rendered without " +
+                "the WSI so the shader output remains the focus. " +
                 "Two things worth knowing. \"add\" is not a supported mode, despite what the README " +
                 "example shows. And multiply / darken zero the slide out wherever the overlay is " +
                 "transparent rather than leaving it alone — so for an overlay that covers only part of " +
                 "the tissue, source-over and screen are the ones you want.",
-            sources: [SLIDE, scalar("tumour-prob")],
+            sources: [scalar("tumour-prob")],
             config: {
-                stack: {
-                    name: "Blend test", type: "group",
-                    order: ["slide", "prob"],
-                    shaders: {
-                        slide: { name: "H&E", type: "identity", tiledImages: [0], params: { use_channel0: "rgba" } },
-                        prob: {
-                            name: "P(tumour)", type: "heatmap", tiledImages: [1],
-                            params: {
-                                use_channel0: "r", color: "#c62828", threshold: 22,
-                                use_mode: "blend", use_blend: "source-over", opacity: 0.85
-                            }
-                        }
+                prob: {
+                    name: "P(tumour)", type: "heatmap", tiledImages: [0],
+                    params: {
+                        use_channel0: "r", color: "#c62828", threshold: 22,
+                        use_mode: "blend", use_blend: "source-over", opacity: 1
                     }
                 }
             },
@@ -775,7 +734,7 @@
                 options: ($.FlexRenderer.SUPPORTED_BLEND_MODES || ["source-over"]).slice(),
                 value: "source-over",
                 apply: (config, value) => {
-                    config.stack.shaders.prob.params.use_blend = value;
+                    config.prob.params.use_blend = value;
                 }
             }]
         },
@@ -813,6 +772,9 @@
     let slideInfo = null;
     let liveOrder = [];
     let annotationTextureUrl = null;
+    let selectionMode = "single";
+    const activeIds = new Set([RECIPES[0].id]);
+    const selectionInputs = new Map();
 
     function el(tag, className, text) {
         const node = document.createElement(tag);
@@ -842,6 +804,125 @@
 
             return { tileSource: tileSource, crisp: spec.crisp };
         });
+    }
+
+    function fitRecipeView(viewer, recipe) {
+        if (!recipe.view) {
+            return;
+        }
+
+        // OpenSeadragon uses image-width units for viewport coordinates. A real
+        // WSI is usually not square, so the square demo framings need clamping
+        // to the actual image height or they can land mostly outside the image.
+        const imageAspect = slideInfo.geometry
+            ? slideInfo.geometry.height / slideInfo.geometry.width
+            : 1;
+        const size = Math.min(recipe.view.size, 1, imageAspect);
+        const x = Math.min(Math.max(recipe.view.x, 0), Math.max(0, 1 - size));
+        const y = Math.min(Math.max(recipe.view.y, 0), Math.max(0, imageAspect - size));
+
+        viewer.viewport.fitBounds(new $.Rect(  // eslint-disable-line new-cap
+            x, y, size, size
+        ), true);
+    }
+
+    function interactionButtons(event) {
+        if (typeof event.buttons === "number") {
+            return event.buttons;
+        }
+        return event.button === 0 ? 1 : event.button === 1 ? 4 : event.button === 2 ? 2 : 0;
+    }
+
+    function interactionButton(event) {
+        return event.button === 0 ? 1 : event.button === 1 ? 4 : event.button === 2 ? 2 : 0;
+    }
+
+    // The drawer normally installs this bridge itself. The gallery also listens
+    // at the viewport boundary because OpenSeadragon can consume canvas pointer
+    // events before the drawer target sees them.
+    function installInteractionBridge(card, viewer) {
+        const drawer = viewer.drawer;
+        if (!drawer || typeof drawer.setInteractionState !== "function") {
+            return;
+        }
+
+        let dragging = false;
+        const point = (event) => typeof drawer.clientPointToFramebufferPx === "function"
+            ? drawer.clientPointToFramebufferPx(event)
+            : { x: 0, y: 0 };
+        const setState = (state, reason) => drawer.setInteractionState(state, {
+            notify: false,
+            reason: reason
+        });
+        const events = [];
+        const add = (type, handler) => {
+            card.viewport.addEventListener(type, handler, true);
+            events.push([type, handler]);
+        };
+
+        add("pointerenter", (event) => setState({
+            enabled: true, pointerInside: true, pointerPositionPx: point(event),
+            activeButtons: interactionButtons(event)
+        }, "gallery-pointerenter"));
+
+        add("pointermove", (event) => {
+            const p = point(event);
+            const state = {
+                enabled: true, pointerInside: true, pointerPositionPx: p,
+                activeButtons: interactionButtons(event)
+            };
+            if (dragging) {
+                state.dragCurrentPositionPx = p;
+            }
+            setState(state, "gallery-pointermove");
+        });
+
+        add("pointerdown", (event) => {
+            const p = point(event);
+            const buttons = interactionButtons(event);
+            dragging = true;
+            setState({
+                enabled: true, pointerInside: true, pointerPositionPx: p,
+                activeButtons: buttons, dragActive: true,
+                dragStartPositionPx: p, dragCurrentPositionPx: p, dragButtons: buttons
+            }, "gallery-pointerdown");
+        });
+
+        add("pointerup", (event) => {
+            const p = point(event);
+            const previous = typeof drawer.getInteractionState === "function"
+                ? drawer.getInteractionState() : {};
+            const completed = dragging || previous.dragActive;
+            dragging = false;
+            setState({
+                enabled: true, pointerInside: true, pointerPositionPx: p,
+                activeButtons: interactionButtons(event), dragActive: false,
+                dragCurrentPositionPx: p, dragEndPositionPx: p,
+                dragSerial: completed ? (previous.dragSerial || 0) + 1 : previous.dragSerial
+            }, "gallery-pointerup");
+        });
+
+        const leave = () => {
+            dragging = false;
+            setState({ pointerInside: false, activeButtons: 0, dragActive: false }, "gallery-pointerleave");
+        };
+        add("pointerleave", leave);
+        add("pointercancel", leave);
+
+        add("click", (event) => {
+            const previous = typeof drawer.getInteractionState === "function"
+                ? drawer.getInteractionState() : {};
+            const p = point(event);
+            setState({
+                enabled: true, pointerInside: true, pointerPositionPx: p,
+                lastClickPositionPx: p, lastClickButtons: interactionButton(event),
+                clickSerial: (previous.clickSerial || 0) + 1
+            }, "gallery-click");
+        });
+
+        card.interactionBridgeCleanup = () => {
+            events.forEach(([type, handler]) => card.viewport.removeEventListener(type, handler, true));
+        };
     }
 
     function buildCard(recipe) {
@@ -881,6 +962,9 @@
             json: json,
             viewer: null,
             visible: false,
+            active: false,
+            interactionContextMenuGuard: null,
+            interactionBridgeCleanup: null,
             // Deep clone so live edits from the extras UI never mutate the recipe
             // shared with the JSON panel of another card.
             config: JSON.parse(JSON.stringify(recipe.config)),
@@ -946,7 +1030,85 @@
         card.viewer.drawer.overrideConfigureAll(card.config, orderOf(card.config));
     }
 
+    function updateSelectionSummary() {
+        const count = document.getElementById("selection-count");
+        if (count) {
+            count.textContent = `${activeIds.size} selected / ${cards.length}`;
+        }
+    }
+
+    function refreshSelectionInputs() {
+        selectionInputs.forEach((input, id) => {
+            input.checked = activeIds.has(id);
+            input.parentElement.classList.toggle("active", input.checked);
+        });
+        updateSelectionSummary();
+    }
+
+    function syncSelection() {
+        cards.forEach((card) => {
+            card.active = activeIds.has(card.recipe.id);
+            card.root.hidden = !card.active;
+
+            if (!card.active) {
+                teardown(card);
+            } else if (card.visible) {
+                activate(card);
+            }
+        });
+        refreshSelectionInputs();
+    }
+
+    function chooseVisualization(id, checked) {
+        if (selectionMode === "single") {
+            if (checked) {
+                activeIds.clear();
+                activeIds.add(id);
+            }
+        } else if (checked) {
+            activeIds.add(id);
+        } else {
+            activeIds.delete(id);
+        }
+        syncSelection();
+    }
+
+    function mountSelectionPicker() {
+        const list = document.getElementById("visualization-list");
+        RECIPES.forEach((recipe) => {
+            const label = el("label");
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.value = recipe.id;
+            input.checked = activeIds.has(recipe.id);
+            input.addEventListener("change", () => chooseVisualization(recipe.id, input.checked));
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(recipe.title));
+            list.appendChild(label);
+            selectionInputs.set(recipe.id, input);
+        });
+
+        document.querySelectorAll("input[name=selection-mode]").forEach((input) => {
+            input.addEventListener("change", () => {
+                if (!input.checked) {
+                    return;
+                }
+                selectionMode = input.value;
+                if (selectionMode === "single" && activeIds.size !== 1) {
+                    const first = activeIds.values().next().value || RECIPES[0].id;
+                    activeIds.clear();
+                    activeIds.add(first);
+                }
+                syncSelection();
+            });
+        });
+        refreshSelectionInputs();
+    }
+
     function activate(card) {
+        if (!card.active) {
+            return;
+        }
         if (card.viewer) {
             touch(card);
             return;
@@ -967,7 +1129,13 @@
                     webGLPreferredVersion: "2.0",
                     sharedContextKey: contextKeyFor(card),
                     precision: card.precision,
-                    interaction: recipe.interaction ? { enabled: true, preventContextMenu: true } : false,
+                    interaction: recipe.interaction ? {
+                        enabled: true,
+                        preventContextMenu: true,
+                        // Keep normal pan/zoom available. Pointer events are
+                        // still forwarded to the shader interaction state.
+                        viewerInputCaptureMode: "none"
+                    } : false,
                     htmlHandler: (shaderLayer, shaderConfig) => mountControls(card, shaderLayer, shaderConfig),
                     htmlReset: () => {
                         card.controls.innerHTML = "";
@@ -996,13 +1164,21 @@
                     // Frame once, off the first image: the viewport's home bounds
                     // are only known after an image has opened.
                     if (index === 0 && recipe.view) {
-                        viewer.viewport.fitBounds(new $.Rect(  // eslint-disable-line new-cap
-                            recipe.view.x, recipe.view.y, recipe.view.size, recipe.view.size
-                        ), true);
+                        fitRecipeView(viewer, recipe);
                     }
                 }
             });
         });
+
+        if (recipe.interaction) {
+            // Keep this at the card boundary as a browser-level fallback. It
+            // remains effective even if a viewer or browser stops propagation
+            // before the drawer's own contextmenu listener sees the event.
+            const contextMenuGuard = (event) => event.preventDefault();
+            card.interactionContextMenuGuard = contextMenuGuard;
+            card.viewport.addEventListener("contextmenu", contextMenuGuard, true);
+            installInteractionBridge(card, viewer);
+        }
 
         applyConfig(card);
 
@@ -1027,6 +1203,14 @@
         }
 
         card.viewer = null;
+        if (card.interactionBridgeCleanup) {
+            card.interactionBridgeCleanup();
+            card.interactionBridgeCleanup = null;
+        }
+        if (card.interactionContextMenuGuard) {
+            card.viewport.removeEventListener("contextmenu", card.interactionContextMenuGuard, true);
+            card.interactionContextMenuGuard = null;
+        }
         card.controls.innerHTML = "";
         card.viewport.innerHTML = "";
         card.viewport.appendChild(card.placeholder);
@@ -1210,23 +1394,30 @@
         const gallery = document.getElementById("gallery");
         RECIPES.forEach((recipe) => gallery.appendChild(buildCard(recipe)));
 
-        // Lazy card building is a progressive enhancement; where the observer is
-        // unavailable the only consequence is that no card activates.
-        // eslint-disable-next-line compat/compat
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach((entry) => {
-                const card = cards.find((c) => c.root === entry.target);
-                if (!card) {
-                    return;
-                }
-                card.visible = entry.isIntersecting;
-                if (entry.isIntersecting) {
-                    activate(card);
-                }
-            });
-        }, { rootMargin: "80px 0px" });
+        // Lazy card building is a progressive enhancement. Without an observer,
+        // selected cards are still usable; they simply build immediately.
+        if (typeof IntersectionObserver === "function") {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    const card = cards.find((c) => c.root === entry.target);
+                    if (!card) {
+                        return;
+                    }
+                    card.visible = entry.isIntersecting;
+                    if (entry.isIntersecting && card.active) {
+                        activate(card);
+                    }
+                });
+            }, { rootMargin: "80px 0px" });
 
-        cards.forEach((card) => observer.observe(card.root));
+            cards.forEach((card) => observer.observe(card.root));
+        } else {
+            cards.forEach((card) => {
+                card.visible = true;
+            });
+        }
+        mountSelectionPicker();
+        syncSelection();
 
         document.getElementById("toggle-configs").addEventListener("click", (e) => {
             const open = e.target.textContent.startsWith("Show");
