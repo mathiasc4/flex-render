@@ -213,9 +213,6 @@
             }
             this.renderer.setShaderLayerOrder(createdOrder);
 
-            shaderOrder = shaderOrder || Object.keys(shaders);
-            this.renderer.setShaderLayerOrder(shaderOrder);
-
             this.renderer.notifyVisualizationChanged({
                 reason: "external-config",
                 external: true
@@ -1108,10 +1105,19 @@
                     this.viewer.world.getItemCount()
                 );
                 this._updatePackLayout();
-                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
-                this.rebuildCounter++;
-                this._rebuildHandle = null;
-                this._refreshDrawReadyState();
+                try {
+                    this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+                } catch (e) {
+                    $.console.error("[flex-renderer] second-pass program build failed; " +
+                        "falling back to identity rendering.", e);
+                    this.overrideConfigureAll?.(undefined);
+                } finally {
+                    // The handle must be cleared no matter the outcome, otherwise every later
+                    // _requestRebuild() believes a rebuild is already pending and schedules nothing.
+                    this.rebuildCounter++;
+                    this._rebuildHandle = null;
+                    this._refreshDrawReadyState();
+                }
 
                 if (!immediate) {
                     this._deferredRedrawHandle = setTimeout(() => {

@@ -384,18 +384,40 @@
             }
         },
         {
-            id: "colormap",
-            title: "Four-class grade map",
+            id: "colormap-discrete",
+            title: "Four-class grade map (discrete)",
             types: ["colormap"],
             blurb: "A discrete class map through a 4-step palette rendered on its own data. The layer enforces " +
                 "color.steps === threshold.breaks.length + 1, which is why the palette has four steps " +
                 "and the slider three breaks.",
-            sources: [SLIDE, crisp(scalar("grade-classes"))],
+            sources: [SLIDE, scalar("grade-classes")],
             config: {
                 grade: {
                     name: "Grade", type: "colormap", tiledImages: [1],
                     params: {
                         color: { type: "colormap", default: "Spectral", steps: 4, mode: "diverging", continuous: false },
+                        threshold: { type: "advanced_slider", breaks: [0.25, 0.5, 0.75], mask: [1, 1, 1, 1] },
+                        connect: true,
+                        use_mode: "show", use_blend: "source-over", opacity: 1
+                    }
+                }
+            }
+        },
+        {
+            id: "colormap",
+            title: "Four-class palette, continuous ramp",
+            types: ["colormap"],
+            blurb: "The same 4-step palette with color.continuous = true, so the shader interpolates " +
+                "between neighbouring classes instead of stepping. It runs on the continuous " +
+                "probability field: grade-classes only emits one value per band, and a value at the " +
+                "centre of its band interpolates to exactly its own class colour, which would make " +
+                "this card identical to the discrete one.",
+            sources: [SLIDE, scalar("tumour-prob")],
+            config: {
+                grade: {
+                    name: "P(tumour)", type: "colormap", tiledImages: [1],
+                    params: {
+                        color: { type: "colormap", default: "Spectral", steps: 4, mode: "diverging", continuous: true },
                         threshold: { type: "advanced_slider", breaks: [0.25, 0.5, 0.75], mask: [1, 1, 1, 1] },
                         connect: true,
                         use_mode: "show", use_blend: "source-over", opacity: 1
