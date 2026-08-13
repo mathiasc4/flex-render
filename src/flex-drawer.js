@@ -73,7 +73,7 @@
             this._managedShaderSourceSlots = new Map();
             this._managedShaderSourceNextIndex = null;
             // We have 'undefined' extra format for blank tiles
-            this._supportedFormats = ["rasterBlob", "context2d", "image", "vector-mesh", "gpuTextureSet", "undefined"];
+            this._supportedFormats = ["rasterBlob", "context2d", "image", "imageBitmap", "vector-mesh", "gpuTextureSet", "undefined"];
             this.rebuildCounter = 0;
 
             // Capture the host-supplied HttpAdapter as a process-wide fallback so tile sources
