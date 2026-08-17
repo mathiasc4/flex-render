@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FlexRenderer — Pathology Shader Gallery</title>
+    <!--
+        The `advanced_slider` control (used by colormap / gridheatmap / iconmap) is
+        backed by noUiSlider. shader-gallery.js fetches it at start-up rather than
+        blocking here on a <script> tag: an unreachable CDN would otherwise stop the
+        page from loading at all. If it does not arrive, those three cards still
+        render correctly and only their break sliders go dead.
+    -->
+    <style>
+        :root {
+            --bg: #10131a;
+            --panel: #181c26;
+            --panel-2: #1f2431;
+            --line: #2c3242;
+            --text: #e6e9f0;
+            --muted: #9aa3b5;
+            --accent: #6ea8fe;
+            --warn: #ffb454;
+            --ok: #63d297;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+
+        header.page {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            padding: 14px 22px;
+            background: rgba(16, 19, 26, 0.94);
+            border-bottom: 1px solid var(--line);
+            backdrop-filter: blur(6px);
+        }
+
+        header.page h1 {
+            margin: 0 0 4px;
+            font-size: 17px;
+            font-weight: 650;
+            letter-spacing: 0.2px;
+        }
+
+        header.page .sub {
+            color: var(--muted);
+            font-size: 12.5px;
+        }
+
+        header.page .bar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .selection {
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid var(--line);
+        }
+
+        .selection-head {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .selection-head strong { color: var(--text); font-weight: 600; }
+
+        .selection-mode {
+            display: inline-flex;
+            gap: 9px;
+            align-items: center;
+        }
+
+        .selection-mode label,
+        .selection-items label {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+        }
+
+        .selection-items {
+            display: flex;
+            gap: 5px 12px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+            max-height: 96px;
+            overflow: auto;
+        }
+
+        .selection-items label {
+            padding: 2px 7px;
+            border: 1px solid transparent;
+            border-radius: 5px;
+            color: var(--muted);
+            font-size: 11.5px;
+        }
+
+        .selection-items label.active {
+            color: var(--text);
+            background: var(--panel-2);
+            border-color: var(--accent);
+        }
+
+        .selection-items input { accent-color: var(--accent); }
+
+        .selection-help {
+            margin-top: 5px;
+            color: #6d7688;
+            font-size: 11px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: var(--panel-2);
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .pill b { color: var(--text); font-weight: 600; }
+        .pill.real b { color: var(--ok); }
+        .pill.synthetic b { color: var(--warn); }
+
+        button, select {
+            font: inherit;
+            font-size: 12.5px;
+            color: var(--text);
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 4px 10px;
+            cursor: pointer;
+        }
+
+        button:hover, select:hover { border-color: var(--accent); }
+
+        a { color: var(--accent); }
+
+        main {
+            padding: 20px 22px 60px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 18px;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card[hidden] { display: none; }
+
+        .card > h2 {
+            margin: 0;
+            padding: 11px 14px 3px;
+            font-size: 14px;
+            font-weight: 620;
+        }
+
+        .card .types {
+            padding: 0 14px 9px;
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+
+        .card .types code {
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: 4px;
+            background: #263049;
+            color: #b9cdf5;
+        }
+
+        .card .blurb {
+            padding: 0 14px 11px;
+            color: var(--muted);
+            font-size: 12.5px;
+        }
+
+        .viewport {
+            position: relative;
+            aspect-ratio: 4 / 3;
+            background: #0b0e14;
+            border-top: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .viewport .placeholder {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #5b6478;
+            font-size: 12px;
+        }
+
+        .card footer {
+            padding: 9px 14px 12px;
+        }
+
+        .card footer .row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .controls {
+            margin-top: 9px;
+            padding-top: 9px;
+            border-top: 1px dashed var(--line);
+            display: none;
+        }
+
+        .controls.open { display: block; }
+
+        .controls .shader-block {
+            margin-bottom: 10px;
+        }
+
+        .controls .shader-block > h4 {
+            margin: 0 0 5px;
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        pre.config {
+            display: none;
+            margin: 9px 0 0;
+            padding: 9px 10px;
+            background: #0d1017;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 1.45;
+            max-height: 260px;
+            overflow: auto;
+            color: #cbd5e8;
+        }
+
+        pre.config.open { display: block; }
+
+        .note {
+            margin-top: 8px;
+            font-size: 11.5px;
+            color: var(--warn);
+        }
+
+        /* FlexRenderer-generated control markup. The renderer owns the markup;
+           the host owns the look (see STYLING.md). */
+        .controls .er-control__row,
+        .controls label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--muted);
+            margin: 3px 0;
+            flex-wrap: wrap;
+        }
+
+        .controls input[type="range"] { flex: 1 1 110px; min-width: 90px; }
+        .controls input[type="number"] { width: 74px; }
+        .controls input, .controls select {
+            background: var(--panel-2);
+            color: var(--text);
+            border: 1px solid var(--line);
+            border-radius: 5px;
+            padding: 2px 5px;
+            font-size: 12px;
+        }
+        .controls .er-control__hint { font-size: 11px; color: #6d7688; }
+    </style>
+</head>
+<body>
+
+<header class="page">
+    <h1>FlexRenderer — Pathology Shader Gallery</h1>
+    <div class="sub">
+        Every shader layer the renderer registers, on H&amp;E histology. Select one or more visualizations
+        above; overlay data is shown on its own so the rendering technique stays legible. Slide and
+        overlay data are
+        synthesized per tile in the browser — see <code>synthetic-pathology-sources.js</code>.
+        Run <code>test/data/synthetic/generate.py --slide</code> to swap in a real slide.
+    </div>
+    <div class="bar">
+        <span class="pill" id="slide-pill">slide: <b>resolving…</b></span>
+        <span class="pill" id="layer-pill">layers: <b>—</b></span>
+        <span class="pill" id="gl-pill">context: <b>—</b></span>
+        <span class="pill" id="slider-pill" hidden>break sliders: <b>—</b></span>
+        <button id="toggle-configs">Show all config JSON</button>
+        <button id="toggle-controls">Show all controls</button>
+        <a href="flex-renderer-playground.html">playground →</a>
+        <a href="shader-layer-groups.html">groups demo →</a>
+    </div>
+    <div class="selection" aria-label="Visualization selection">
+        <div class="selection-head">
+            <strong>Active visualizations</strong>
+            <span id="selection-count">1 selected</span>
+            <span class="selection-mode">
+                <label><input type="radio" name="selection-mode" value="multiple"> toggle multiple</label>
+                <label><input type="radio" name="selection-mode" value="single" checked> single viewer</label>
+            </span>
+        </div>
+        <div id="visualization-list" class="selection-items"></div>
+        <div class="selection-help">Only selected cards are built. In single-viewer mode, choosing one replaces the current viewer. Fisheye: select its card, then move over the viewport and hold the primary mouse button.</div>
+    </div>
+</header>
+
+<main id="gallery"></main>
+
+<script src="/openseadragon/openseadragon.js"></script>
+<script src="/build/openseadragon/flex-renderer.js"></script>
+<script src="./synthetic-pathology-sources.js"></script>
+<script src="./shader-gallery.js"></script>
+
+</body>
+</html>
