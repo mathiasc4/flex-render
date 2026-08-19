@@ -73,7 +73,7 @@
             this._managedShaderSourceSlots = new Map();
             this._managedShaderSourceNextIndex = null;
             // We have 'undefined' extra format for blank tiles
-            this._supportedFormats = ["rasterBlob", "context2d", "image", "vector-mesh", "gpuTextureSet", "undefined"];
+            this._supportedFormats = ["rasterBlob", "context2d", "image", "imageBitmap", "vector-mesh", "gpuTextureSet", "undefined"];
             this.rebuildCounter = 0;
 
             // Capture the host-supplied HttpAdapter as a process-wide fallback so tile sources
@@ -115,6 +115,10 @@
                         tiledImage.removeHandler('composite-operation-change', tiledImage.__wglCompositeHandler);
                     }
                 }
+                // The removed image may have been the only float-precision source in the world.
+                // Runs after OSD has already spliced it out of world._items.
+                this._refreshDataPrecision();
+
                 // if now managed externally, just request rebuild, also updates order
                 if (!this._configuredExternally) {
                     // Update keys
@@ -149,6 +153,11 @@
                 httpAdapter: null,
                 sharedContextKey: null,
                 interaction: false,
+                // "auto" | "unorm8" | "float16" — precision of the first-pass color target.
+                // See FlexRendererOptions.precision. Default off: "auto" lets the *data* upgrade
+                // the target to RGBA16F, which doubles the offscreen color array, so turning the
+                // negotiation on is a deployment decision.
+                precision: "unorm8",
                 // hex bg color, by default transparent
                 backgroundColor: undefined
             };
@@ -203,9 +212,6 @@
                 }
             }
             this.renderer.setShaderLayerOrder(createdOrder);
-
-            shaderOrder = shaderOrder || Object.keys(shaders);
-            this.renderer.setShaderLayerOrder(shaderOrder);
 
             this.renderer.notifyVisualizationChanged({
                 reason: "external-config",
@@ -281,6 +287,8 @@
             if (tiledImage.__wglCompositeHandler) {
                 tiledImage.removeHandler('composite-operation-change', tiledImage.__wglCompositeHandler);
             }
+
+            this._captureDeclaredDataPrecision(tiledImage);
 
             if (tiledImage.__flexManagedShaderSourceSlotKey) {
                 return this._requestRebuild();
@@ -990,6 +998,11 @@
                 this._rebuildHandle = null;
             }
 
+            if (this._deferredRedrawHandle) {
+                clearTimeout(this._deferredRedrawHandle);
+                this._deferredRedrawHandle = null;
+            }
+
             this.renderer.destroy();
             this.renderer = null;
 
@@ -1092,18 +1105,33 @@
                     this.viewer.world.getItemCount()
                 );
                 this._updatePackLayout();
-                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
-                this.rebuildCounter++;
-                this._rebuildHandle = null;
-                this._refreshDrawReadyState();
+                try {
+                    this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+                } catch (e) {
+                    $.console.error("[flex-renderer] second-pass program build failed; " +
+                        "falling back to identity rendering.", e);
+                    this.overrideConfigureAll(undefined);
+                } finally {
+                    // The handle must be cleared no matter the outcome, otherwise every later
+                    // _requestRebuild() believes a rebuild is already pending and schedules nothing.
+                    this.rebuildCounter++;
+                    this._rebuildHandle = null;
+                    this._refreshDrawReadyState();
+                }
 
                 if (!immediate) {
-                    setTimeout(() => {
+                    this._deferredRedrawHandle = setTimeout(() => {
+                        this._deferredRedrawHandle = null;
                         if (this._destroyed) {
                             return;
                         }
                         if (!this._isRenderingSuspended()) {
-                            this.viewer.forceRedraw();
+                            try {
+                                this.viewer.forceRedraw();
+                            } catch (_) {
+                                // viewer destroyed between schedule and fire — OSD's private
+                                // state slot is gone; post-teardown redraw is a no-op.
+                            }
                         }
                     });
                 }
@@ -2212,6 +2240,7 @@
                                 stencilIndex: tiledImageIndex,
                                 texture: tileInfo.texture,
                                 position: tileInfo.position,
+                                normalized: tileInfo.normalized !== false,
                                 tile: tile
                             });
                         } else if (tileInfo.vectors) {
@@ -2727,6 +2756,8 @@
                 position: this._computeTilePosition(tile, tiledImage, result.width, result.height),
                 texture: result.texture,
                 resource: result.resource,
+                // false only for float-formatted packs; drives the first-pass [0,1] clamp
+                normalized: result.normalized !== false,
                 vectors: undefined
             };
         }
@@ -2843,7 +2874,10 @@
                 this._updatePackMetadata(
                     tiledImage,
                     result.packCount || result.textureDepth || 1,
-                    result.channelCount || (result.packCount || result.textureDepth || 1) * 4
+                    result.channelCount || (result.packCount || result.textureDepth || 1) * 4,
+                    // `normalized: false` means the upload keeps raw float values -- exactly the
+                    // data that an RGBA8 first-pass target would quantize and clamp away.
+                    result.normalized === false ? "float16" : "unorm8"
                 );
 
                 if (this._packLayoutDirty) {
@@ -2869,10 +2903,13 @@
                 return this._createDiagnosticTileInfoFromPreparationFailure(result);
             }
 
+            // Bitmap tiles are always 8-bit unorm; stated rather than left undefined so an
+            // image swapped from a float source back to a bitmap one releases the upgrade.
             this._updatePackMetadata(
                 tiledImage,
                 result.packCount || 1,
-                result.channelCount || 4
+                result.channelCount || 4,
+                "unorm8"
             );
 
             return this._createPreparedRasterTileInfo(result, tile, tiledImage);
@@ -3095,9 +3132,81 @@
             };
         }
 
-        _updatePackMetadata(tiledImage, packCount, channelCount) {
+        /**
+         * Record the precision a tile source declares *before* any of its tiles decode.
+         *
+         * Optional tile-source contract: a source that already knows its sample precision from
+         * its header can say so, which spares the renderer a mid-load program rebuild when the
+         * first float tile arrives. Purely an optimization — `_updatePackMetadata` is the
+         * authoritative signal and will correct a source that guesses wrong.
+         *
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @private
+         */
+        _captureDeclaredDataPrecision(tiledImage) {
+            const source = tiledImage && tiledImage.source;
+            if (!source || typeof source.getTileDataPrecision !== "function") {
+                return;
+            }
+
+            let declared;
+            try {
+                declared = source.getTileDataPrecision();
+            } catch (e) {
+                $.console.warn("FlexDrawer: tile source getTileDataPrecision() threw, ignoring.", e);
+                return;
+            }
+
+            if (declared !== "unorm8" && declared !== "float16") {
+                return;
+            }
+
+            tiledImage.__flexDataPrecision = declared;
+            this._refreshDataPrecision(tiledImage);
+        }
+
+        /**
+         * Aggregate the per-image data precision over the whole world and tell the renderer.
+         *
+         * Aggregated here rather than tracked in the renderer because only the drawer sees the
+         * world, and recomputed by scanning rather than kept as a per-index array because world
+         * indices shift on removal and reorder (the same reason `__flexPackInfo` goes stale).
+         *
+         * `candidate` covers detached images an off-screen drawer renders without ever adding
+         * them to `viewer.world` (region mirrors). Those never produce a `remove-item`, so a
+         * float verdict from one is sticky for the drawer's lifetime — deliberately: staying on
+         * a float target costs memory, dropping off one costs correctness.
+         *
+         * @param {OpenSeadragon.TiledImage} [candidate] image that just reported, if any
+         * @private
+         */
+        _refreshDataPrecision(candidate) {
+            if (!this.renderer || typeof this.renderer.setDataCarriesHighPrecision !== "function") {
+                return;
+            }
+
+            const world = this.viewer && this.viewer.world;
+            const items = (world && world._items) || [];
+
+            if (candidate && candidate.__flexDataPrecision === "float16" &&
+                    (!world || world.getIndexOfItem(candidate) < 0)) {
+                this._detachedFloatDataSeen = true;
+            }
+
+            const anyFloat = !!this._detachedFloatDataSeen ||
+                items.some(item => item && item.__flexDataPrecision === "float16");
+            this.renderer.setDataCarriesHighPrecision(anyFloat);
+        }
+
+        _updatePackMetadata(tiledImage, packCount, channelCount, dataPrecision) {
             if (!tiledImage) {
                 return;
+            }
+
+            if ((dataPrecision === "unorm8" || dataPrecision === "float16") &&
+                tiledImage.__flexDataPrecision !== dataPrecision) {
+                tiledImage.__flexDataPrecision = dataPrecision;
+                this._refreshDataPrecision(tiledImage);
             }
 
             const metadataWasReady = !!tiledImage.__flexMetadataReady;

@@ -9,3 +9,5 @@ instrumented/
 .directory
 local-test
 .DS_Store
+test/data/synthetic/out/
+__pycache__/

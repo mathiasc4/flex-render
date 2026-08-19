@@ -16,6 +16,13 @@
      * @property {object} params          settings for the ShaderLayer
      * @property {object} _controls       storage for the ShaderLayer's controls
      * @property {object} cache          cache object used by the ShaderLayer's controls
+     * @property {"float16"|"unorm8"} [precision] per-instance override of the first-pass color
+     *      target precision, honored only while the renderer option `precision` is `"auto"`.
+     *      `"float16"` demands a high-precision (RGBA16F) target even over 8-bit data — any
+     *      active layer declaring it upgrades the target for the whole renderer. `"unorm8"`
+     *      is the veto: this layer requires values clamped to [0,1], and forces the whole
+     *      renderer back to 8-bit even when the data carries float. Under a float16 target,
+     *      sampleChannel()/osd_channel() no longer guarantee values in [0,1].
      */
 
     /**
@@ -159,6 +166,28 @@
          */
         static description() {
             return "This ShaderLayer has no description.";
+        }
+
+        /**
+         * Whether this ShaderLayer type can correctly render float data that is NOT clamped
+         * to [0,1] — negatives, values above 1, quantitative units.
+         *
+         * This is a VETO, not a request. Precision is a property of the data, not of the
+         * shader: the same layer is used over an 8-bit brightfield slide and over a 16-bit
+         * float plane, so it cannot know in advance what it will be pointed at. The renderer
+         * upgrades the first-pass color target when the *data* declares float precision (see
+         * FlexRendererOptions.precision), and a layer returning false forces the whole
+         * renderer back to 8-bit unorm.
+         *
+         * Return false only if the layer's math genuinely assumes a [0,1] input — a LUT index,
+         * a normalized threshold with no rescale. Most layers never need to override this:
+         * unorm sources stay clamped to [0,1] under a float target anyway (the first pass
+         * clamps them), so only a layer actually fed float data sees any difference.
+         *
+         * @returns {boolean}
+         */
+        static supportsHighPrecision() {
+            return true;
         }
 
         /**
@@ -1432,6 +1461,15 @@ ${code}
             if (!ShaderLayerClass || typeof ShaderLayerClass.type !== "function") {
                 throw new TypeError("Expected ShaderLayerClass to define a static type() method.");
             }
+
+            // Removed in favour of the data-driven negotiation (static supportsHighPrecision()
+            // + FlexRendererOptions.precision). An unknown static is simply never called, so
+            // without this the old opt-in fails silently.
+            if (typeof ShaderLayerClass.requiresHighPrecision === "function") {
+                console.warn(`OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayer ${ShaderLayerClass.type()} defines the removed static requiresHighPrecision(); it is ignored. Precision is now declared by the data (see FlexRendererOptions.precision); use static supportsHighPrecision() to veto, or config precision: "float16" to demand.`);
+            }
+
+            this._ShaderLayers[ShaderLayerClass.type()] = ShaderLayerClass;
 
             const type = ShaderLayerClass.type();
             if (typeof type !== "string" || type.trim().length === 0) {

@@ -332,6 +332,12 @@
         options.debug = false;
         options.htmlReset = undefined;
         options.htmlHandler = undefined;
+        // No htmlHandler and no DOM of its own, so this drawer must not bind controls
+        // to `document.getElementById(shaderId + "_" + control)`. A host passing
+        // `interactive: true` in its drawer options would otherwise have those ids
+        // resolve to ANOTHER renderer's live controls -- the standalone drawer would
+        // rewrite their values and leak a change listener into a throwaway shader.
+        options.interactive = false;
         // avoid modification on navigator
         options.handleNavigator = false;
         options.offScreen = true;
@@ -477,6 +483,21 @@
                         const ctx = canvas.getContext('2d');
                         canvas.width = size.x;
                         canvas.height = size.y;
+                        // Composite onto the renderer's own backdrop before copying.
+                        // A caller asking this drawer for a picture of the scene wants
+                        // what the viewport shows, and a translucent layer only reads
+                        // correctly over the colour it blends toward on screen.
+                        // Without this the result depends on the GL context mode --
+                        // a private context leaves the presentation canvas opaque,
+                        // a shared one clears the final target to [0,0,0,0] -- and the
+                        // transparent variant then picks up whatever the host happens
+                        // to place the image on.
+                        const [br, bg, bb, ba] = this.renderer.presentationClearColor;
+                        if (ba > 0) {
+                            ctx.fillStyle = `rgba(${Math.round(br * 255)}, ${Math.round(bg * 255)}, ` +
+                                `${Math.round(bb * 255)}, ${ba})`;
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        }
                         ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
                         return ctx;
                     }).catch(e => {
@@ -656,6 +677,7 @@
         backgroundColor = "#00000000",
         debug = false,
         interactive = false,
+        precision = "auto",
         canvasOptions = { stencil: true },
         sharedContextKey = null,
         sharedContextBusyPolicy = undefined
@@ -673,6 +695,7 @@
             debug: !!debug,
             interactive: !!interactive,
             backgroundColor,
+            precision,
             canvasOptions,
             sharedContextKey,
             sharedContextBusyPolicy
@@ -685,7 +708,10 @@
             key: null,
             count: 0,
             width,
-            height
+            height,
+            // 8-bit unorm data by default; a gpuTextureSet input can flip this
+            normalized: true,
+            usePackIndex: false
         };
 
         installExtractionApi(runtime, runtime.renderer, function(result = "imageData") {
@@ -704,10 +730,17 @@
         runtime._clearInputTextures = function() {
             const gl = this.renderer.gl;
             if (this._inputState.colorTexture) {
-                gl.deleteTexture(this._inputState.colorTexture);
+                if (this._inputState.usePackIndex) {
+                    // Came from prepareGpuTextureTile(...), so the backend tracks it
+                    this.renderer.releasePreparedTileResource(this._inputState.colorTexture);
+                } else {
+                    gl.deleteTexture(this._inputState.colorTexture);
+                }
             }
 
             this._inputState.colorTexture = null;
+            this._inputState.usePackIndex = false;
+            this._inputState.normalized = true;
             this.renderer.__firstPassResult = null;
         };
 
@@ -728,6 +761,11 @@
                 1, 1
             ]);
 
+            const normalized = this._inputState.normalized !== false;
+            // A prepared gpuTextureSet is one texture array whose layers are packs, so each
+            // synthetic source must select its own pack. Rasterized image inputs keep pack 0.
+            const perLayerPackIndex = !!this._inputState.usePackIndex;
+
             const source = [];
             for (let i = 0; i < this._inputState.count; i++) {
                 source.push({
@@ -737,13 +775,14 @@
                         stencilIndex: i,
                         texture: this._inputState.colorTexture,
                         position: fullUv,
+                        normalized: normalized,
                         tile: null
                     }],
                     vectors: [],
                     polygons: [],
                     dataIndex: i,
                     stencilIndex: i,
-                    packIndex: 0,
+                    packIndex: perLayerPackIndex ? i : 0,
                     _temp: { values: fullScreenMatrix }
                 });
             }
@@ -779,8 +818,54 @@
             return this.renderer.__firstPassResult;
         };
 
+        /**
+         * Upload a packed GPU texture-set (the shape prepareGpuTextureTile(...) accepts) as the
+         * standalone input. This is the only input path that can carry non-8-bit data — the
+         * rasterizing path below goes through a 2D canvas and is unorm8 by construction.
+         */
+        runtime._setGpuTextureSetInput = async function(textureSet) {
+            const result = await this.renderer.prepareGpuTextureTile({
+                data: textureSet,
+                textureOptions: { imageSmoothingEnabled: false }
+            });
+
+            if (!result || !result.ok) {
+                const reason = (result && result.reason) || "unknown";
+                throw new Error(`Standalone GPU texture-set input could not be prepared: ${reason}`);
+            }
+
+            this._clearInputTextures();
+
+            this._inputState.colorTexture = result.texture;
+            this._inputState.count = result.packCount || result.textureDepth || 1;
+            this._inputState.width = result.width;
+            this._inputState.height = result.height;
+            this._inputState.normalized = result.normalized !== false;
+            this._inputState.usePackIndex = true;
+            this._inputState.key = `${result.width}x${result.height}:${this._inputState.count}:gpu`;
+
+            // This runtime has no drawer and no world, so it plays the drawer's part in the
+            // `precision: "auto"` negotiation itself. Before setDimensions, so a resolution
+            // change reallocates the offscreen arrays once rather than twice.
+            this.renderer.setDataCarriesHighPrecision(!this._inputState.normalized);
+
+            this.renderer.setDimensions(0, 0, result.width, result.height,
+                this._inputState.count, this._inputState.count);
+        };
+
         runtime.setInputs = async function(inputs, options = {}) {
             const sourceList = Array.isArray(inputs) ? inputs.filter(Boolean) : (inputs ? [inputs] : []);
+
+            if (sourceList.length === 1 && sourceList[0] && typeof sourceList[0] === "object" &&
+                Array.isArray(sourceList[0].packs)) {
+                await this._setGpuTextureSetInput(sourceList[0]);
+                return;
+            }
+
+            // Everything below rasterizes through a 2D canvas, so it is unorm8 by construction —
+            // state it, so a runtime reused after a float input releases the upgrade.
+            this.renderer.setDataCarriesHighPrecision(false);
+
             const rasterized = await Promise.all(sourceList.map(source => rasterizeStandaloneSource(source)));
             if (!rasterized.length) {
                 this._clearInputTextures();
@@ -827,6 +912,8 @@
             this._inputState.count = layerCount;
             this._inputState.width = targetWidth;
             this._inputState.height = targetHeight;
+            this._inputState.normalized = true;
+            this._inputState.usePackIndex = false;
             this._inputState.key = `${targetWidth}x${targetHeight}:${layerCount}`;
 
             this.renderer.setDimensions(0, 0, targetWidth, targetHeight, layerCount, layerCount);
@@ -893,7 +980,9 @@
 
                 const gl = this.renderer.gl;
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-                gl.clearColor(1.0, 1.0, 1.0, 1.0);
+                // Same backdrop the on-screen renderer uses, for the same reason.
+                const [br, bg, bb, ba] = this.renderer.presentationClearColor;
+                gl.clearColor(br, bg, bb, ba);
                 gl.clear(gl.COLOR_BUFFER_BIT);
 
                 this._renderFirstPass();

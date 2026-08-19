@@ -27,6 +27,52 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
         return "inspectorCompositor";
     }
 
+    /**
+     * RGBA16F is not color-renderable in WebGL2 core — it needs one of the color-buffer
+     * extensions. Probed once and cached; getExtension() is not free.
+     *
+     * Half-float (not 32-bit float) is the target on purpose: RGBA16F is filterable in WebGL2
+     * core and blendable wherever it is color-renderable, while RGBA32F would additionally
+     * require OES_texture_float_linear and EXT_float_blend.
+     *
+     * @return {boolean}
+     */
+    get supportsHighPrecisionTargets() {
+        if (this._hpTargets === undefined) {
+            this._hpTargets = !!(this.gl.getExtension('EXT_color_buffer_half_float') ||
+                                 this.gl.getExtension('EXT_color_buffer_float'));
+        }
+        return this._hpTargets;
+    }
+
+    /**
+     * Resolved precision of the first-pass color target.
+     * @return {"unorm8"|"float16"}
+     */
+    get colorTargetPrecision() {
+        return this.renderer.getColorTargetPrecision();
+    }
+
+    /**
+     * Storage format for the first-pass color target.
+     * @return {GLenum}
+     */
+    get colorTargetInternalFormat() {
+        return this.colorTargetPrecision === "float16" ? this.gl.RGBA16F : this.gl.RGBA8;
+    }
+
+    /**
+     * GLSL precision qualifier matching the first-pass color target.
+     *
+     * Kept at mediump for RGBA8 so mobile GPUs do not regress; promoted to highp only when the
+     * target actually carries values a mediump float/sampler would destroy.
+     *
+     * @return {"mediump"|"highp"}
+     */
+    get colorTargetGlslPrecision() {
+        return this.colorTargetPrecision === "float16" ? "highp" : "mediump";
+    }
+
     init() {
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
@@ -958,7 +1004,9 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 height: height,
                 textureDepth: 1,
                 packCount: 1,
-                channelCount: 4
+                channelCount: 4,
+                // Bitmaps are always 8-bit unorm: the first pass keeps the [0,1] clamp for them.
+                normalized: true
             };
         } catch (error) {
             if (texture) {
@@ -1022,7 +1070,8 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 formatInfo = {
                     internalFormat: gl.RGBA8,
                     format: gl.RGBA,
-                    type: gl.UNSIGNED_BYTE
+                    type: gl.UNSIGNED_BYTE,
+                    normalized: true
                 };
                 break;
 
@@ -1030,7 +1079,8 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 formatInfo = {
                     internalFormat: gl.RGBA16F,
                     format: gl.RGBA,
-                    type: gl.HALF_FLOAT
+                    type: gl.HALF_FLOAT,
+                    normalized: false
                 };
                 break;
 
@@ -1070,6 +1120,12 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 );
             }
         }
+
+        // No precision diagnostic here on purpose. Tile preparation knows the format but not
+        // whether anything could have used it -- the renderer decides that, and warns there
+        // with the actual reason (master switch off, a vetoing layer, or a missing extension).
+        // `formatInfo.normalized` is reported back to the drawer, which is what drives that
+        // decision; see FlexDrawer#_updatePackMetadata.
 
         const packCount = packs.length;
         const channelCount = Number(gpu.channelCount) || packCount * 4;
@@ -1112,7 +1168,9 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 height: height,
                 textureDepth: packCount,
                 packCount: packCount,
-                channelCount: channelCount
+                channelCount: channelCount,
+                // Float packs must not be clamped to [0,1] by the first-pass copy.
+                normalized: formatInfo.normalized
             };
         } catch (error) {
             if (texture) {
@@ -1491,6 +1549,12 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
     }
 
     _clearWebGLErrors() {
+        // gl.getError() forces a synchronous CPU<->GPU sync; skip in the hot
+        // tile-prep path unless WebGL debugging is explicitly enabled.
+        if (!this.renderer.debug) {
+            return;
+        }
+
         const gl = this.gl;
 
         // cap the amount of errors to avoid an infinite loop
@@ -1502,6 +1566,12 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
     }
 
     _throwIfWebGLError(operation) {
+        // gl.getError() forces a synchronous CPU<->GPU sync; skip in the hot
+        // tile-prep path unless WebGL debugging is explicitly enabled.
+        if (!this.renderer.debug) {
+            return;
+        }
+
         const gl = this.gl;
         const errors = [];
 
@@ -1572,9 +1642,11 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
      * @returns {string} vertex shader's glsl code
      */
     _getVertexShaderSource() {
+        // Must match _getFragmentShaderSource(): mismatched precision on the shared
+        // varying is a link error on some drivers.
         const vertexShaderSource = `#version 300 es
 precision mediump int;
-precision mediump float;
+precision ${this.context.colorTargetGlslPrecision} float;
 
 out vec2 v_texture_coords;
 
@@ -1603,10 +1675,15 @@ void main() {
      * @returns {string} fragment shader's glsl code
      */
     _getFragmentShaderSource(definition, execution, customBlendFunctions, globalScopeCode) {
+        // u_inputTextures is the first-pass color target. Sampling an RGBA16F array through a
+        // mediump sampler2DArray re-clamps to ~±16384 with a ~10-bit mantissa, so promoting only
+        // the first pass would give a float target that this pass then mangles.
+        const targetPrecision = this.context.colorTargetGlslPrecision;
+
         const fragmentShaderSource = `#version 300 es
 precision mediump int;
-precision mediump float;
-precision mediump sampler2DArray;
+precision ${targetPrecision} float;
+precision ${targetPrecision} sampler2DArray;
 
 
 // UNIFORMS
@@ -2349,9 +2426,15 @@ $.FlexRenderer.WebGL20.FirstPassProgram = class extends $.FlexRenderer.WGLProgra
     }
 
     build(shaderMap, shaderKeys) {
+        // Sampling and writing RGBA16F through mediump would re-clamp to ~±16384 with a ~10-bit
+        // mantissa, silently undoing the float target. Stays mediump for RGBA8.
+        const targetPrecision = this.context.colorTargetGlslPrecision;
+
+        // Vertex stage matches the fragment stage: mismatched precision on the shared
+        // varyings is a link error on some drivers.
         this.vertexShader = `#version 300 es
 precision mediump int;
-precision mediump float;
+precision ${targetPrecision} float;
 
 layout(location = 0) in mat3 a_transform_matrix;
 // Generic payload args. Used for texture positions, vector positions and colors.
@@ -2399,9 +2482,9 @@ void main() {
 
         this.fragmentShader = `#version 300 es
 precision mediump int;
-precision mediump float;
-precision mediump sampler2D;
-precision mediump sampler2DArray;
+precision ${targetPrecision} float;
+precision ${targetPrecision} sampler2D;
+precision ${targetPrecision} sampler2DArray;
 
 uniform vec2 u_renderClippingParams;
 
@@ -2413,6 +2496,12 @@ in vec4 v_vecColor;
 
 uniform sampler2DArray u_textures[${this._maxTextures}];
 uniform int u_tileLayer;
+
+// 1.0 while copying unorm-sourced tiles, 0.0 for float-sourced tiles.
+// An RGBA8 target clamped pass-1 output implicitly; RGBA16F does not. Keeping the clamp for
+// unorm sources preserves the old [0,1] contract for them, so an 8-bit background mixed with a
+// float layer behaves exactly as before, while float data passes through untouched.
+uniform float u_clampColorOutput;
 
 ${this.atlas.getFragmentShaderDefinition()}
 
@@ -2463,6 +2552,10 @@ void main() {
                  }
                  break;
             }
+        }
+
+        if (u_clampColorOutput > 0.5) {
+            outputColor = clamp(outputColor, 0.0, 1.0);
         }
 
         outputStencil = vec4(1.0);
@@ -2536,6 +2629,7 @@ void main() {
         this._inputTexturesLoc = gl.getUniformLocation(program, "u_textures");
         this._renderClipping = gl.getUniformLocation(program, "u_renderClippingParams");
         this._tileLayerLoc = gl.getUniformLocation(program, "u_tileLayer");
+        this._clampColorOutputLoc = gl.getUniformLocation(program, "u_clampColorOutput");
 
         // Alias names to avoid confusion
         this._positionsBuffer = gl.getAttribLocation(program, "a_payload0");
@@ -2627,6 +2721,8 @@ void main() {
      */
     load() {
         this.gl.uniform1iv(this._inputTexturesLoc, this._textureIndexes);
+        // Legacy-compatible default; overridden per raster batch in use(...)
+        this.gl.uniform1f(this._clampColorOutputLoc, 1.0);
 
         this.gl.enable(this.gl.BLEND);
         this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
@@ -2752,7 +2848,18 @@ void main() {
                 gl.bindVertexArray(this.firstPassVao);
                 let currentIndex = 0;
                 while (currentIndex < tileCount) {
-                    const batchSize = Math.min(this._maxTextures, tileCount - currentIndex);
+                    const maxBatchSize = Math.min(this._maxTextures, tileCount - currentIndex);
+
+                    // The [0,1] clamp is a per-draw uniform, so a batch must be homogeneous in
+                    // source kind. Tiles of one source always are, so this normally never splits.
+                    const batchNormalized = rasterTiles[currentIndex].normalized !== false;
+                    let batchSize = 1;
+                    while (batchSize < maxBatchSize &&
+                        (rasterTiles[currentIndex + batchSize].normalized !== false) === batchNormalized) {
+                        batchSize++;
+                    }
+
+                    gl.uniform1f(this._clampColorOutputLoc, batchNormalized ? 1.0 : 0.0);
 
                     for (let i = 0; i < batchSize; i++) {
                         const tile = rasterTiles[currentIndex + i];
@@ -2953,9 +3060,12 @@ void main() {
         }
 
         // Double swapping required else collisions
-        this._createOffscreenTexture("colorTextureA", width, height, dataLayerCount, this.gl.LINEAR);
+        this._createOffscreenTexture("colorTextureA", width, height, dataLayerCount, this.gl.LINEAR,
+            this.context.colorTargetInternalFormat);
         // this._createOffscreenTexture("colorTextureB", width, height, dataLayerCount, this.gl.LINEAR);
 
+        // Coverage mask only (the shader writes vec4(1.0)/vec4(0.0)) — no precision needed, and
+        // keeping it RGBA8 halves the memory added by a high-precision color target.
         this._createOffscreenTexture("stencilTextureA", width, height, tiledImageCount, this.gl.LINEAR);
         // this._createOffscreenTexture("stencilTextureB", width, height, dataLayerCount, this.gl.LINEAR);
 
@@ -3015,7 +3125,7 @@ void main() {
         this.positionsBufferClip = null;
     }
 
-    _createOffscreenTexture(name, width, height, layerCount, filter) {
+    _createOffscreenTexture(name, width, height, layerCount, filter, internalFormat = undefined) {
         const gl = this.gl;
         const previousActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
 
@@ -3028,7 +3138,7 @@ void main() {
 
         this[name] = texRef = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, texRef);
-        gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, layerCount);
+        gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, internalFormat || gl.RGBA8, width, height, layerCount);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
