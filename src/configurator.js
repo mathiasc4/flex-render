@@ -3029,12 +3029,12 @@
         wrap.innerHTML = `
 <label class="form-control col-span-2">
     <div class="label"><span class="label-text">Default icon query</span></div>
-    <input class="input input-bordered input-sm" data-k="default" type="text" value="${escapeHtml(controlConfig.default || "")}" placeholder="fa-house, &#xf015;, ★">
+    <input class="input input-bordered input-sm" data-k="default" type="text" value="${escapeHtml(controlConfig.default || "")}" placeholder="ph-house, fa-house, &#xf015;, ★">
 </label>
 <label class="form-control">
     <div class="label"><span class="label-text">Icon set</span></div>
     <select class="select select-bordered select-sm" data-k="iconSet">
-        ${iconSets.map(name => `<option value="${escapeHtml(name)}" ${name === (controlConfig.iconSet || "core") ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        ${iconSets.map(name => `<option value="${escapeHtml(name)}" ${name === (controlConfig.iconSet || "html-glyphs") ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
     </select>
 </label>
 <label class="form-control">

@@ -76,6 +76,71 @@
         }
 
         /**
+         * Conservatively estimate the default-block fragment uniform cost of assembled GLSL.
+         *
+         * Counts DECLARED uniforms, because that is what the driver measures against
+         * MAX_FRAGMENT_UNIFORM_VECTORS before it decides whether the program links, and drivers
+         * disagree about whether unused uniforms are eliminated first. In GLSL ES packing every
+         * element of an array occupies a full vector, so `float x[13]` costs 13, not 4.
+         *
+         * Pure and GL-free so it can be unit tested and so it can run *before* the source is
+         * handed to the driver.
+         *
+         * @param {string} source assembled fragment shader source
+         * @return {{total: number, items: {name: string, type: string, length: number, vectors: number}[]}}
+         */
+        static estimateFragmentUniformVectors(source) {
+            const ROWS = {
+                float: 1, int: 1, uint: 1, bool: 1,
+                vec2: 1, vec3: 1, vec4: 1, ivec2: 1, ivec3: 1, ivec4: 1,
+                uvec2: 1, uvec3: 1, uvec4: 1, bvec2: 1, bvec3: 1, bvec4: 1,
+                mat2: 2, mat3: 3, mat4: 4,
+                mat2x2: 2, mat2x3: 2, mat2x4: 2,
+                mat3x2: 3, mat3x3: 3, mat3x4: 3,
+                mat4x2: 4, mat4x3: 4, mat4x4: 4
+            };
+
+            if (typeof source !== "string" || !source) {
+                return { total: 0, items: [] };
+            }
+
+            // Array lengths are frequently written as macros or macro arithmetic
+            // (COLORMAP_ARRAY_LEN_8+1, ADVANCED_SLIDER_LEN), so resolve #defines first.
+            const defines = {};
+            source.replace(/^[ \t]*#define[ \t]+(\w+)[ \t]+(\d+)[ \t]*$/gm, (match, key, value) => {
+                defines[key] = Number.parseInt(value, 10);
+                return match;
+            });
+
+            const resolveLength = (expression) => {
+                let total = 0;
+                for (const term of String(expression).split("+")) {
+                    const trimmed = term.trim();
+                    const value = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : defines[trimmed];
+                    if (!Number.isInteger(value)) {
+                        return 0; // unresolvable; reported as 0 rather than guessed low
+                    }
+                    total += value;
+                }
+                return total;
+            };
+
+            const declaration = /^[ \t]*uniform[ \t]+(?:(?:lowp|mediump|highp)[ \t]+)?(\w+)[ \t]+(\w+)[ \t]*(?:\[([^\]]+)\])?[ \t]*;/gm;
+            const items = [];
+            let total = 0;
+            let match;
+            while ((match = declaration.exec(source)) !== null) {
+                const rows = ROWS[match[1]] !== undefined ? ROWS[match[1]] : 1; // samplers count as 1
+                const length = match[3] === undefined ? 1 : Math.max(1, resolveLength(match[3]));
+                const vectors = rows * length;
+                items.push({ name: match[2], type: match[1], length: length, vectors: vectors });
+                total += vectors;
+            }
+            items.sort((a, b) => b.vectors - a.vectors);
+            return { total: total, items: items };
+        }
+
+        /**
          * Attach shaders and link WebGLProgram, catch errors.
          * @param {WebGLProgram} program
          * @param {WebGLRenderingContext|WebGL2RenderingContext} gl

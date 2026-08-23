@@ -1837,6 +1837,32 @@
             // Used also to re-compile, set requiresLoad to true
             program.requiresLoad = true;
 
+            // Check the fragment uniform budget before the driver does. Left to the driver this
+            // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
+            // MAX_FRAGMENT_UNIFORM_VECTORS(256)" with no indication of which declarations are
+            // responsible — and only on the devices that are too small, which are rarely the ones
+            // being developed on.
+            const uniformBudget = this.backend && this.backend.maxFragmentUniformVectors;
+            if (uniformBudget && typeof program.fragmentShader === "string") {
+                const estimate = $.FlexRenderer.WebGLImplementation
+                    .estimateFragmentUniformVectors(program.fragmentShader);
+                program.__uniformVectorEstimate = estimate;
+
+                if (estimate.total > uniformBudget) {
+                    const worst = estimate.items.slice(0, 8)
+                        .map(item => `    ${String(item.vectors).padStart(4)}  ${item.type} ${item.name}` +
+                            `${item.length > 1 ? `[${item.length}]` : ""}`)
+                        .join("\n");
+                    $.console.error(
+                        `[FlexRenderer] Program "${key}" declares ~${estimate.total} fragment uniform ` +
+                        `vectors but this device allows ${uniformBudget}; the link is expected to fail.\n` +
+                        `Largest consumers:\n${worst}\n` +
+                        `Reduce the number of shader layers, or the number of colormap / ` +
+                        `advanced_slider controls — those are the largest per-control consumers.`
+                    );
+                }
+            }
+
             const errMsg = program.getValidateErrorMessage();
             if (errMsg) {
                 this.gl.deleteProgram(webglProgram);

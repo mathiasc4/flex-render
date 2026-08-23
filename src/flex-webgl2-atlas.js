@@ -73,6 +73,48 @@
         }
 
         /**
+         * Replace the pixels of an existing entry in place, keeping its id and its rectangle.
+         *
+         * addImage() allocates a new id per call, which is right for immutable content but wrong
+         * for anything that changes while the user interacts with it — a colormap re-baked on
+         * every palette or breakpoint change would leak an id per change and hit maxIds. Such a
+         * caller owns exactly one slot and overwrites it through here.
+         *
+         * The rectangle and layer are unchanged, so the metadata rows do not need rewriting.
+         *
+         * @param {number} id id previously returned by addImage
+         * @param {ImageBitmap|HTMLImageElement|HTMLCanvasElement|ImageData|Uint8Array} source
+         * @param {{width?: number, height?: number}} [opts]
+         * @returns {boolean} false if the id is unknown or the size differs — caller should addImage instead
+         */
+        updateImage(id, source, opts) {
+            const entry = this._entries[id];
+            if (!entry) {
+                return false;
+            }
+
+            const width = (opts && opts.width) || entry.w;
+            const height = (opts && opts.height) || entry.h;
+            if (width !== entry.w || height !== entry.h) {
+                return false;
+            }
+
+            // Keep the entry's own source current too, so any later repack/re-upload replays the
+            // pixels that are actually on screen rather than the ones first registered.
+            entry.source = source;
+            this._pendingUploads.push({
+                source: source,
+                w: width,
+                h: height,
+                layer: entry.layer,
+                x: entry.x,
+                y: entry.y
+            });
+            this.version++;
+            return true;
+        }
+
+        /**
          * Texture atlas works as a single texture unit. Bind the atlas before using it at desired texture unit.
          * @param textureUnit
          */

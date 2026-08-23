@@ -74,6 +74,21 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
     }
 
     init() {
+        const gl = this.gl;
+
+        // Resolved before any program is registered below, so the budget check in
+        // registerProgram() has a limit to compare against from the very first build.
+        this.maxFragmentUniformVectors = gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS);
+
+        // Test hook: reproduce a 256-vector (or the 224-vector GLES3 minimum) phone on a desktop
+        // GPU that reports 1024+, which is why this class of failure went unnoticed for so long.
+        const override = this.renderer.__uniformVectorBudgetOverride;
+        if (Number.isInteger(override) && override > 0) {
+            this.maxFragmentUniformVectors = override;
+        }
+        $.console.log(`FlexWebGL2: MAX_FRAGMENT_UNIFORM_VECTORS=${this.maxFragmentUniformVectors}, ` +
+            `MAX_TEXTURE_IMAGE_UNITS=${gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)}`);
+
         this.firstAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
@@ -1630,8 +1645,22 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
     constructor(context, gl, atlas) {
         super(context, gl, atlas);
         this._maxTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), 32) - 1; // subtracting 1 to allow texture atlas to be bound; TODO: only bind texture atlas when it is needed
-        //todo this might be limiting in some wild cases... make it configurable..? or consider 1d texture
-        this.textureMappingsUniformSize = 64;
+
+        // Per-instance uniform arrays are sized to what the current layer set actually needs.
+        // Every element of a GLSL ES array costs a full uniform vector, so a fixed upper bound
+        // (this used to be a hardcoded 64 for all four arrays) spends the entire
+        // MAX_FRAGMENT_UNIFORM_VECTORS budget of a 256-vector mobile GPU before a single shader
+        // layer is added. Recomputed in build(); see _ensureUniformSlots for the growth path.
+        //
+        // The floor is 4 rather than 1: GLSL ES 3.00 forbids a zero-length array, and a little
+        // slack absorbs one or two added layers without forcing a relink. 16 vectors is noise
+        // against the budget this change frees up.
+        this.UNIFORM_ARRAY_FLOOR = 4;
+        this._uInstanceSlots = this.UNIFORM_ARRAY_FLOOR;   // u_instanceOffsets, u_shaderVariables (per shader layer)
+        this._uTexIndexSlots = this.UNIFORM_ARRAY_FLOOR;   // u_instanceTextureIndexes (total tiledImages across layers)
+        this._uTiInfoSlots = this.UNIFORM_ARRAY_FLOOR;     // u_tiInfo (per tiled image)
+        this._relinkScheduled = false;
+
         this._bgColor = 'vec4(.0)';
     }
 
@@ -1689,20 +1718,20 @@ precision ${targetPrecision} sampler2DArray;
 // UNIFORMS
 
 // Stores shader index -> pointer to u_instanceTextureIndexes
-uniform int u_instanceOffsets[${this.textureMappingsUniformSize}];
+uniform int u_instanceOffsets[${this._uInstanceSlots}];
 
 // Stores texture indexes for each shader, beginning at index obtained from u_instanceOffsets
-uniform int u_instanceTextureIndexes[${this.textureMappingsUniformSize}];
+uniform int u_instanceTextureIndexes[${this._uTexIndexSlots}];
 
 // Carries shader global attributes (opacity, pixelSize, imageOriginPx.xy)
-uniform vec4 u_shaderVariables[${this.textureMappingsUniformSize}];
+uniform vec4 u_shaderVariables[${this._uInstanceSlots}];
 
 // Viewport zoom — identical across all shaders this frame, so kept as a scalar
 // instead of duplicating per slot in u_shaderVariables.
 uniform float u_zoom;
 
 // For each tiled image, we store (base texture offset, pack count, channel count)
-uniform ivec3 u_tiInfo[${this.textureMappingsUniformSize}];
+uniform ivec3 u_tiInfo[${this._uTiInfoSlots}];
 
 uniform sampler2DArray u_inputTextures;
 uniform sampler2DArray u_stencilTextures;
@@ -1991,9 +2020,47 @@ ${execution}
         return fragmentShaderSource;
     }
 
+    /**
+     * Size the per-instance uniform arrays to the current layer set.
+     *
+     * GLSL ES gives every array element its own uniform vector, so these four arrays are the
+     * single largest consumer of the fragment uniform budget. Sizing them to demand instead of a
+     * fixed upper bound is what keeps the program linkable on GPUs reporting the GLES3 minimum of
+     * 224 MAX_FRAGMENT_UNIFORM_VECTORS.
+     *
+     * @param {Array} flatShaders flattened shader layers, one per render slot
+     * @return {boolean} true if any size changed (the program must be recompiled)
+     */
+    _ensureUniformSlots(flatShaders) {
+        let texIndexCount = 0;
+        for (const shader of flatShaders) {
+            const config = typeof shader.getConfig === "function" ? shader.getConfig() : null;
+            const tiledImages = config && config.tiledImages;
+            texIndexCount += (tiledImages && tiledImages.length) || 0;
+        }
+
+        // Sized off the FLAT layer count, not keyOrder.length: nested groups flatten to more
+        // render slots than there are top-level keys, and undersizing here would silently
+        // truncate u_shaderVariables for every child layer.
+        const floor = this.UNIFORM_ARRAY_FLOOR;
+        const instanceSlots = Math.max(floor, flatShaders.length);
+        const texIndexSlots = Math.max(floor, texIndexCount);
+        const tiInfoSlots = Math.max(floor, this._tiledImageCount || 0);
+
+        const changed = instanceSlots !== this._uInstanceSlots ||
+            texIndexSlots !== this._uTexIndexSlots ||
+            tiInfoSlots !== this._uTiInfoSlots;
+
+        this._uInstanceSlots = instanceSlots;
+        this._uTexIndexSlots = texIndexSlots;
+        this._uTiInfoSlots = tiInfoSlots;
+        return changed;
+    }
+
     build(shaderMap, keyOrder) {
         if (!keyOrder.length) {
             // Todo prevent unimportant first init build call
+            this._ensureUniformSlots([]);
             this.vertexShader = this._getVertexShaderSource();
             this.fragmentShader = this._getFragmentShaderSource("", "", "", $.FlexRenderer.ShaderLayer.__globalIncludes);
             return;
@@ -2010,6 +2077,7 @@ ${execution}
         for (let slot = 0; slot < flatShaders.length; slot++) {
             flatShaders[slot].__renderSlot = slot;
         }
+        this._ensureUniformSlots(flatShaders);
 
         const stackSource = this.context.composeShaderLayerStack(shaderMap, keyOrder, {
             ownerShader: null,
@@ -2118,6 +2186,22 @@ ${execution}
         // Guard against empty arrays — WebGL2 raises INVALID_VALUE on uniform1iv with a zero-length array.
         // This happens for shaders with no tiledImages (e.g. the grid shader); leaving the GLSL fixed-size
         // uniform arrays at their defaults is fine since those shaders don't read these uniforms.
+        //
+        // The upper clamp matters just as much now that the arrays are sized to demand rather than
+        // to a fixed 64: renderArray can be longer than the layer set this program was compiled
+        // for, and overrunning a declared array length is INVALID_OPERATION. Clamping keeps the
+        // frame stale instead of erroring, and the scheduled relink widens the arrays for the next
+        // one.
+        if (instanceOffsets.length > this._uInstanceSlots ||
+            instanceTextureIndexes.length > this._uTexIndexSlots) {
+            this._scheduleRelink(
+                `arrays hold (${this._uInstanceSlots}, ${this._uTexIndexSlots}), frame needs ` +
+                `(${instanceOffsets.length}, ${instanceTextureIndexes.length})`);
+            instanceOffsets.length = Math.min(instanceOffsets.length, this._uInstanceSlots);
+            instanceTextureIndexes.length = Math.min(instanceTextureIndexes.length, this._uTexIndexSlots);
+            shaderVariables.length = Math.min(shaderVariables.length, this._uInstanceSlots * 4);
+        }
+
         if (instanceOffsets.length > 0) {
             gl.uniform1iv(this._instanceOffsets, instanceOffsets);
         }
@@ -2125,7 +2209,10 @@ ${execution}
             gl.uniform1iv(this._instanceTextureIndexes, instanceTextureIndexes);
         }
         // todo changes dynamically, but could be stored per tiled image instead of per-shader layer
-        gl.uniform4fv(this._shaderVariables, shaderVariables);
+        // Guarded for the same reason as the two above: uniform4fv with an empty array is INVALID_VALUE.
+        if (shaderVariables.length > 0) {
+            gl.uniform4fv(this._shaderVariables, shaderVariables);
+        }
         gl.uniform1f(this._zoomLoc, renderArray.length > 0 ? renderArray[0].zoom : 1);
 
         gl.activeTexture(gl.TEXTURE0);
@@ -2225,7 +2312,11 @@ ${execution}
         const packCount = layout.packCount || [];
         const channelCount = packInfo.channelCount || [];
 
-        const maxTI = this._tiledImageCount;
+        // u_tiInfo is declared with exactly _uTiInfoSlots entries. setDimensions() can raise
+        // _tiledImageCount after the program was compiled; uploading more than the declared
+        // length is an INVALID_VALUE, so clamp here and let the rebuild triggered by
+        // setDimensions() widen the array.
+        const maxTI = Math.min(this._tiledImageCount || 0, this._uTiInfoSlots);
         const tiInfo = new Int32Array(maxTI * 3);
 
         for (let i = 0; i < maxTI; i++) {
@@ -2237,7 +2328,9 @@ ${execution}
             tiInfo[i * 3 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
         }
 
-        this.gl.uniform3iv(this._tiInfoLoc, tiInfo);
+        if (maxTI > 0) {
+            this.gl.uniform3iv(this._tiInfoLoc, tiInfo);
+        }
     }
 
     /**
@@ -2247,10 +2340,44 @@ ${execution}
         this.gl.deleteVertexArray(this.vao);
     }
 
+    /**
+     * Relink the second pass because a uniform array is too short for what the scene now needs.
+     *
+     * Deferred to a microtask on purpose: registerProgram() deletes and recreates the
+     * WebGLProgram and changes CURRENT_PROGRAM, which must not happen underneath an in-flight
+     * draw or from inside setDimensions(). Until it runs, use() clamps its uploads, so the
+     * intervening frames are stale rather than broken.
+     *
+     * @param {string} reason human-readable cause, logged once per relink
+     */
+    _scheduleRelink(reason) {
+        if (this._relinkScheduled) {
+            return;
+        }
+        this._relinkScheduled = true;
+        $.console.warn(`FlexWebGL2 second pass: relinking, ${reason}.`);
+
+        const renderer = this.context && this.context.renderer;
+        const key = this.context && this.context.secondPassProgramKey;
+        Promise.resolve().then(() => {
+            this._relinkScheduled = false;
+            if (renderer && key !== undefined) {
+                renderer.registerProgram(null, key);
+            }
+        });
+    }
+
     // TODO we might want to fire only for active program and do others when really encesarry or with some delay, best at some common implementation level
     setDimensions(x, y, width, height, levels, tiledImageCount) {
         this._dataLayerCount = levels;
+        // u_tiInfo is sized to the tiled-image count known at compile time. This is the one size
+        // that can grow behind the program's back — adding a tiled image does not otherwise
+        // rebuild the shader the way adding a layer does.
+        const grew = (tiledImageCount || 0) > this._uTiInfoSlots;
         this._tiledImageCount = tiledImageCount;
+        if (grew) {
+            this._scheduleRelink(`u_tiInfo holds ${this._uTiInfoSlots}, world now has ${tiledImageCount} tiled images`);
+        }
     }
 };
 
