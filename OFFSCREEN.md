@@ -90,10 +90,16 @@ const { data, fullyLoaded, timedOut, stalled } = await drawer.extract({
 * ``fullyLoaded`` means every **waited** tiled image reported all tiles **for this viewport** loaded.
   It says nothing about tiles OpenSeadragon deliberately discards - a tile that fails permanently is
   excluded from the computation, so a source with missing tiles can report ``fullyLoaded`` with holes.
+  An image that contributes nothing to the pass is excluded too: one that is hidden (``opacity: 0``
+  and not preloading) or lies outside the rendered region draws no tile and requests none, so it can
+  neither complete nor block. A pass in which *no* waited image is in the view reports incomplete -
+  nothing was observed.
 * ``waitImages`` narrows what completeness means, it does not narrow what is drawn. Pass the images
-  whose pixels the caller actually consumes: otherwise a single hidden or errored overlay that can
-  never load makes every render of that slide report incomplete forever. Entries that this pass does
-  not draw are ignored (only a pumped image can ever complete).
+  whose pixels the caller actually consumes, when an overlay that *is* in the view can never finish -
+  a source whose tiles error out, say. Entries that this pass does not draw are ignored (only a
+  pumped image can ever complete). It applies to both paths - when ``view`` is omitted the pass has
+  no images of its own, so the entries are live world items and entries the live world does not hold
+  are ignored.
 * ``stalled`` is what separates "finished" from "gave up because nothing more could arrive": no tile
   of the waited images is loading and none of their tiles arrived for ``stallTimeoutMs``. Every
   signal is scoped to the pass, so the user navigating the live viewer neither suppresses this exit
@@ -106,3 +112,22 @@ Only ``mode: "second-pass"`` (the default) returns this envelope; ``"viewport-co
 completeness. When the pass re-uses the live drawer's first-pass texture instead of drawing the tiled
 images itself (``view`` omitted or a drawer reference), completeness is that of the live viewer's
 world at the moment the texture was copied.
+
+The returned ``waited`` (also written into ``options.status`` by ``drawWithConfiguration``) is the
+**effective** wait, not the one that was asked for: an image too old to expose ``getFullyLoaded()``
+downgrades the pass to best-effort, and ``waited: false`` is how the caller sees that.
+
+### Which images to pass
+
+The wait on the live-texture path is purely observational - the live viewer drives its own loop, so
+this only polls it. Its ``stalled`` verdict is therefore arrival-based (the ``_tilesLoading`` counter
+is zeroed every frame by the live drawer) and deliberately conservative: a non-empty ImageLoader
+queue, which the user's own browsing keeps busy, suppresses it. It can be late, it will not be wrong.
+
+A custom-``view`` pass is the opposite: it must drive ``TiledImage.update()`` itself, against the
+standalone viewport, which is only possible by pointing ``tiledImage.viewport`` at it. That binding
+is held for a synchronous block at a time and never across an ``await``, so the live viewer never
+observes it - but the pump still loads the off-screen region through the same tile cache and the same
+per-frame load budget as the user's view. Prefer handing such a pass **detached region mirrors**
+(tiled images never added to ``viewer.world``) over the live world items that ``extract()`` defaults
+to; ``extract({tiledImages: [...]})`` takes them.

@@ -136,81 +136,206 @@
     }
 
     /**
-     * Instantaneous completeness of a live World. Public API only; an item too old to expose the
-     * flag reports incomplete, because an unknown completeness must degrade closed.
+     * Resolve the timings of a wait, shared by the off-screen and the live path.
+     *
+     * The stall threshold - "nothing can arrive anymore" - is floored at one poll interval: the
+     * first iteration of any wait runs with no evidence yet (a batch of tiles is dispatched by
+     * _updateLevelsForViewport AFTER it counted _tilesLoading), so a smaller threshold, an explicit
+     * 0 above all, reports 'stalled' having waited on nothing.
+     *
+     * It is then raised by the retry delay, because a failed tile is dropped from every per-image
+     * counter (tile.exists = false), so a retry sleeping out tileRetryDelay is invisible to us and
+     * reads as a stall. These are viewer configuration values, not live shared state, so this
+     * couples us to nothing.
+     *
+     * Clamped to the deadline last: a threshold that outlives the wait makes the early exit dead
+     * code, and a caller asking for a short deadline would silently get the full one instead.
      * @private
      */
-    function isWorldFullyLoaded(world) {
-        const count = world && world.getItemCount ? world.getItemCount() : 0;
-        if (!count) {
-            return false;
+    function resolveWaitTimings(viewer, opts) {
+        const timeoutMs = Number.isFinite(opts.loadTimeoutMs) ?
+            Math.max(0, opts.loadTimeoutMs) : FLEX_DEFAULT_LOAD_TIMEOUT_MS;
+        const pollIntervalMs = Number.isFinite(opts.pollIntervalMs) ?
+            Math.max(1, opts.pollIntervalMs) : FLEX_DEFAULT_POLL_INTERVAL_MS;
+
+        let stallTimeoutMs = Number.isFinite(opts.stallTimeoutMs) ?
+            opts.stallTimeoutMs : Math.min(1500, timeoutMs / 2);
+        stallTimeoutMs = Math.max(pollIntervalMs, stallTimeoutMs);
+        if (viewer && viewer.tileRetryMax > 0) {
+            stallTimeoutMs = Math.max(stallTimeoutMs, (viewer.tileRetryDelay || 0) + pollIntervalMs);
         }
+
+        return {
+            timeoutMs: timeoutMs,
+            pollIntervalMs: pollIntervalMs,
+            stallTimeoutMs: Math.min(stallTimeoutMs, timeoutMs)
+        };
+    }
+
+    /**
+     * Items of a live World, holes dropped.
+     * @private
+     */
+    function liveWorldItems(world) {
+        const count = world && world.getItemCount ? world.getItemCount() : 0;
+        const items = [];
         for (let i = 0; i < count; i++) {
             const item = world.getItemAt(i);
-            if (!item || typeof item.getFullyLoaded !== "function" || !item.getFullyLoaded()) {
+            if (item) {
+                items.push(item);
+            }
+        }
+        return items;
+    }
+
+    /**
+     * Can this image contribute anything to the view its viewport currently describes?
+     *
+     * getDrawArea() is falsy in exactly the two cases where the image is not part of the pass: it is
+     * hidden (opacity 0 and not preloading), or its clipped bounds do not intersect the viewport.
+     * Both matter here because they are also the cases where _updateLevelsForViewport bails out
+     * early and returns the PREVIOUS _fullyLoaded - which is false for an image never yet in view,
+     * and can never flip, since nothing of that image is ever requested. Waiting for such an image
+     * to 'finish' means waiting forever: it must be waited on only if it can move at all.
+     *
+     * An image too old to expose getDrawArea() is assumed to contribute, so an unknown keeps the
+     * historical behaviour of waiting rather than silently reporting complete.
+     * @private
+     */
+    function contributesToPass(tiledImage) {
+        return typeof tiledImage.getDrawArea !== "function" || !!tiledImage.getDrawArea();
+    }
+
+    /**
+     * Instantaneous completeness of a set of tiled images, over the images of that set which are
+     * actually part of the pass. Public API only; an item too old to expose the flag reports
+     * incomplete, because an unknown completeness must degrade closed. A set with nothing in the
+     * view is incomplete for the same reason: nothing was observed.
+     *
+     * MUST be called with the images bound to the viewport of the pass - getDrawArea() reads it.
+     * @private
+     */
+    function areImagesFullyLoaded(images) {
+        let inPass = 0;
+        for (const image of images) {
+            if (typeof image.getFullyLoaded !== "function") {
+                return false;
+            }
+            if (!contributesToPass(image)) {
+                continue;
+            }
+            inPass++;
+            if (!image.getFullyLoaded()) {
                 return false;
             }
         }
-        return true;
+        return inPass > 0;
+    }
+
+    /**
+     * Narrow a live wait to `waitImages`, defaulting to the whole world.
+     *
+     * Same contract as the off-screen path: this narrows what completeness MEANS, and an entry the
+     * live world does not hold could never complete, so it is dropped rather than waited on.
+     * @private
+     */
+    function resolveLiveWaitSet(world, waitImages) {
+        const items = liveWorldItems(world);
+        if (!Array.isArray(waitImages) || !waitImages.length) {
+            return items;
+        }
+        const requested = waitImages.filter(ti => items.indexOf(ti) !== -1);
+        if (!requested.length) {
+            $.console.warn('waitImages holds no image of the live world, waiting on all of them!');
+            return items;
+        }
+        return requested;
     }
 
     /**
      * Wait for a LIVE viewer to finish loading the view it is already showing.
      *
-     * Purely event driven: the live viewer runs its own update loop, so its tiled images refresh
-     * their 'fully loaded' flag every frame without us touching them. Never call update() on a live
-     * image from here - it belongs to the on-screen viewport, not to this pass.
+     * Never call update() on a live image from here - it belongs to the on-screen viewport, not to
+     * this pass. The live viewer runs its own loop, so the flags refresh on every frame by
+     * themselves; this only polls them. Polling rather than subscribing to 'fully-loaded-change' is
+     * deliberate: a handler set fixed at call time misses an image ADDED during the wait, and the
+     * event that completes the world then fires on an item nobody listens to.
      *
-     * @returns {Promise<{fullyLoaded: boolean, timedOut: boolean}>}
+     * `waitSet` is a snapshot, so the pass means what it meant when it started: an image added
+     * halfway through neither completes it nor brands it incomplete.
+     *
+     * The stall signal is asymmetric on purpose. `_tilesLoading` is useless here - the live drawer
+     * calls getTilesToDraw() every frame and _updateTilesInViewport() zeroes that counter without
+     * recounting it - so progress is measured by tile ARRIVALS of the waited images alone. Because
+     * an arrival can legitimately take longer than the threshold on a slow network, a non-empty
+     * ImageLoader queue suppresses the stall verdict; that queue is shared with the user's own
+     * browsing, so it can only ever delay the exit (a false negative), never fire it early.
+     *
+     * @param {OpenSeadragon.Viewer} host
+     * @param {Array<OpenSeadragon.TiledImage>} waitSet live images completeness is defined over
+     * @param {{timeoutMs: number, stallTimeoutMs: number, pollIntervalMs: number}} timings
+     * @returns {Promise<{fullyLoaded: boolean, timedOut: boolean, stalled: boolean, waited: boolean}>}
      * @private
      */
-    function waitForLiveViewerFullLoad(host, timeoutMs) {
-        const world = host && host.world;
-        if (isWorldFullyLoaded(world)) {
-            return $.Promise.resolve({ fullyLoaded: true, timedOut: false });
-        }
-        if (!world || !world.getItemCount || !world.getItemCount()) {
-            return $.Promise.resolve({ fullyLoaded: false, timedOut: false });
+    async function waitForLiveViewerFullLoad(host, waitSet, timings) {
+        if (!waitSet.length) {
+            return { fullyLoaded: false, timedOut: false, stalled: false, waited: false };
         }
 
-        return new $.Promise(resolve => {
-            const items = [];
-            let timer = null;
-            let settled = false;
+        // An image too old to report its load state must not be waited on - we would spin to the
+        // timeout every single pass - and must not be reported complete either.
+        if (!waitSet.every(ti => typeof ti.getFullyLoaded === "function")) {
+            $.console.warn('A waited live image cannot report its load state, not waiting for it!');
+            return { fullyLoaded: false, timedOut: false, stalled: false, waited: false };
+        }
 
-            const finish = (timedOut) => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                if (timer !== null) {
-                    clearTimeout(timer);
-                    timer = null;
-                }
-                for (const item of items) {
-                    item.removeHandler('fully-loaded-change', onChange);
-                }
-                resolve({ fullyLoaded: isWorldFullyLoaded(world), timedOut: timedOut });
-            };
+        // Live images are already bound to the live viewport, so the getDrawArea() test inside
+        // answers for the view this wait is about: an image hidden or off the live view can never
+        // move, and must not be waited on.
+        const allLoaded = () => areImagesFullyLoaded(waitSet);
+        if (allLoaded()) {
+            return { fullyLoaded: true, timedOut: false, stalled: false, waited: true };
+        }
 
-            function onChange() {
-                if (isWorldFullyLoaded(world)) {
-                    finish(false);
+        const started = $.now();
+        const deadline = started + timings.timeoutMs;
+        let lastProgressAt = started;
+        let timedOut = false;
+        let stalled = false;
+
+        const latch = createTileTrafficLatch(host, new Set(waitSet));
+        const sampleKey = () => latch.count() + "/" +
+            waitSet.reduce((count, ti) => count + (ti.getFullyLoaded() ? 1 : 0), 0);
+        let key = sampleKey();
+
+        try {
+            while (!allLoaded()) {
+                const now = $.now();
+
+                if (now >= deadline) {
+                    timedOut = true;
+                    break;
                 }
+
+                const loaderBusy = !!(host.imageLoader && host.imageLoader.jobsInProgress > 0);
+                if (!loaderBusy && (now - lastProgressAt) >= timings.stallTimeoutMs) {
+                    stalled = true;
+                    break;
+                }
+
+                await waitTick(Math.min(timings.pollIntervalMs, Math.max(1, deadline - now)), latch);
+
+                const next = sampleKey();
+                if (next !== key) {
+                    lastProgressAt = $.now();
+                }
+                key = next;
             }
+        } finally {
+            latch.dispose();
+        }
 
-            for (let i = 0; i < world.getItemCount(); i++) {
-                const item = world.getItemAt(i);
-                if (item && typeof item.addHandler === "function") {
-                    items.push(item);
-                    item.addHandler('fully-loaded-change', onChange);
-                }
-            }
-
-            timer = setTimeout(() => finish(true), timeoutMs);
-            // The flag may have flipped between the first check and subscribing.
-            onChange();
-        });
+        return { fullyLoaded: allLoaded(), timedOut: timedOut, stalled: stalled, waited: true };
     }
 
     function installExtractionApi(target, renderer, readCurrentCanvas) {
@@ -564,6 +689,25 @@
             }
         };
 
+        /**
+         * Bind, run, restore - SYNCHRONOUSLY.
+         *
+         * `fn` MUST NOT await. A tiled image handed to this drawer may be a LIVE world item, and the
+         * live viewer's own rAF loop runs between tasks: every await inside the bound window hands
+         * that loop an image whose `viewport` points at the standalone one, so it recomputes
+         * _tilesToDraw / _tilesLoading / _fullyLoaded for the off-screen region and paints it on
+         * screen. Only code that actually reads `tiledImage.viewport` belongs in here.
+         * @private
+         */
+        drawer._withBoundViewport = function(tiledImages, fn) {
+            const bindings = this._bindTiledImagesToViewport(tiledImages);
+            try {
+                return fn();
+            } finally {
+                this._restoreTiledImageViewports(bindings);
+            }
+        };
+
         drawer._syncViewerViewport = async function(view, size) {
             if (!view || view instanceof OpenSeadragon.FlexDrawer) {
                 return;
@@ -599,19 +743,21 @@
          * @param {boolean} [options.waitFullLoad=false] wait for completeness instead of first tile
          * @param {Array<OpenSeadragon.TiledImage>} [options.waitImages] wait on these images only,
          *      defaulting to `tiledImages`. All of `tiledImages` are still DRAWN and still pumped;
-         *      this narrows what completeness MEANS for the pass. A caller rendering only the
-         *      background passes the reference image, so an unrelated overlay that can never load
-         *      does not make every render report incomplete forever.
+         *      this narrows what completeness MEANS for the pass. Needed only for an image that IS
+         *      in the view and still cannot finish (a source whose tiles error out): one that draws
+         *      nothing here is dropped from the verdict anyway, see areImagesFullyLoaded().
          * @param {number} [options.loadTimeoutMs=10000] hard upper bound of that wait
          * @param {number} [options.stallTimeoutMs] give up this much earlier when nothing is moving;
          *      defaults to min(1500, loadTimeoutMs / 2)
          * @param {number} [options.pollIntervalMs=50] upper bound between two update() pumps
-         * @returns {Promise<{tiles: Array, fullyLoaded: boolean, timedOut: boolean, stalled: boolean}>}
+         * @returns {Promise<{tiles: Array, fullyLoaded: boolean, timedOut: boolean, stalled: boolean,
+         *      waited: boolean}>} `waited` is the EFFECTIVE wait: an image unable to report its load
+         *      state downgrades the pass to best-effort, and the caller must be able to see that.
          * @private
          */
         drawer._collectReadyTiles = async function(tiledImages, view, size, options = {}) {
             if (!tiledImages || !tiledImages.length) {
-                return { tiles: [], fullyLoaded: false, timedOut: false, stalled: false };
+                return { tiles: [], fullyLoaded: false, timedOut: false, stalled: false, waited: false };
             }
 
             await this._syncViewerViewport(view, size);
@@ -637,29 +783,12 @@
             const canReportLoad = waitSet.every(ti => typeof ti.getFullyLoaded === "function");
             const waitFullLoad = !!opts.waitFullLoad && canReportLoad;
 
-            const timeoutMs = Number.isFinite(opts.loadTimeoutMs) ?
-                Math.max(0, opts.loadTimeoutMs) : FLEX_DEFAULT_LOAD_TIMEOUT_MS;
-            const pollIntervalMs = Number.isFinite(opts.pollIntervalMs) ?
-                Math.max(1, opts.pollIntervalMs) : FLEX_DEFAULT_POLL_INTERVAL_MS;
-            let stallTimeoutMs = Number.isFinite(opts.stallTimeoutMs) ?
-                Math.max(0, opts.stallTimeoutMs) : Math.min(1500, timeoutMs / 2);
+            const { timeoutMs, pollIntervalMs, stallTimeoutMs } = resolveWaitTimings(viewer, opts);
 
-            // A failed tile is dropped from every per-image counter (tile.exists = false), so a retry
-            // sleeping out tileRetryDelay is invisible to us and would read as a stall. These are
-            // viewer configuration values, not live shared state, so this couples us to nothing.
-            if (viewer.tileRetryMax > 0) {
-                stallTimeoutMs = Math.max(stallTimeoutMs, (viewer.tileRetryDelay || 0) + pollIntervalMs);
-            }
-
-            const pump = () => {
-                for (const tiledImage of tiledImages) {
-                    tiledImage.update(true);
-                }
-            };
-
-            const allLoaded = () => canReportLoad && waitSet.every(ti => ti.getFullyLoaded());
-
-            const collect = () => tiledImages.map(ti => ti.getTilesToDraw()).flat();
+            // getTilesToDraw() runs _updateTilesInViewport() against tiledImage.viewport, so the
+            // collect belongs in a bound window just like the pump does.
+            const collect = () => drawer._withBoundViewport(tiledImages,
+                () => tiledImages.map(ti => ti.getTilesToDraw()).flat());
 
             // Progress fingerprint over the wait set. MUST be sampled straight after update():
             // getTilesToDraw() runs _updateTilesInViewport(), which zeroes _tilesLoading without
@@ -692,29 +821,51 @@
                 };
             };
 
-            pump();
-
-            if (!waitFullLoad) {
-                let tiles = collect();
-                for (let attempt = 0; !tiles.length && attempt < 3; attempt++) {
-                    await waitTick(pollIntervalMs);
-                    pump();
-                    tiles = collect();
+            // One pump of every drawn image plus the progress sample it produces, in a single bound
+            // window. The completeness verdict MUST be taken in here: between two pumps the live
+            // viewer's own loop recomputes _fullyLoaded for ITS viewport, so a getFullyLoaded() read
+            // taken outside this block describes the on-screen view, not this pass.
+            const pumpAndSample = (latch) => drawer._withBoundViewport(tiledImages, () => {
+                for (const tiledImage of tiledImages) {
+                    tiledImage.update(true);
                 }
-                return { tiles: tiles, fullyLoaded: allLoaded(), timedOut: false, stalled: false };
-            }
+                const progress = sampleProgress(latch ? latch.count() : 0);
+                // Bound, so getDrawArea() inside answers for THIS view: an image the requested
+                // region does not touch is not something this pass can ever be waiting for.
+                progress.allLoaded = areImagesFullyLoaded(waitSet);
+                return progress;
+            });
 
-            const started = $.now();
-            const deadline = started + timeoutMs;
-            let lastProgressAt = started;
-            let timedOut = false;
-            let stalled = false;
+            // Created before the first pump: its arrival counter IS the progress signal. Nothing can
+            // arrive during the pump itself - it is synchronous - so the first sample still reads 0.
+            const latch = waitFullLoad ? createTileTrafficLatch(viewer, new Set(waitSet)) : null;
 
-            // Created before the first sample: its arrival counter IS the progress signal.
-            const latch = createTileTrafficLatch(viewer, new Set(waitSet));
-            let progress = sampleProgress(latch.count());
             try {
-                while (!allLoaded()) {
+                let progress = pumpAndSample(latch);
+
+                if (!waitFullLoad) {
+                    let tiles = collect();
+                    for (let attempt = 0; !tiles.length && attempt < 3; attempt++) {
+                        await waitTick(pollIntervalMs);
+                        progress = pumpAndSample(latch);
+                        tiles = collect();
+                    }
+                    return {
+                        tiles: tiles,
+                        fullyLoaded: progress.allLoaded,
+                        timedOut: false,
+                        stalled: false,
+                        waited: false
+                    };
+                }
+
+                const started = $.now();
+                const deadline = started + timeoutMs;
+                let lastProgressAt = started;
+                let timedOut = false;
+                let stalled = false;
+
+                while (!progress.allLoaded) {
                     const now = $.now();
 
                     if (now >= deadline) {
@@ -730,8 +881,8 @@
                     //
                     // _updateLevelsForViewport dispatches its batch after it counts _tilesLoading, so
                     // a fresh batch is invisible for exactly one iteration - pollIntervalMs against a
-                    // stall threshold an order of magnitude larger, and the moment any of those tiles
-                    // lands the latch counter moves.
+                    // stall threshold at least as large (resolveWaitTimings floors it there), and
+                    // the moment any of those tiles lands the latch counter moves.
                     if (progress.loading === 0 && (now - lastProgressAt) >= stallTimeoutMs) {
                         stalled = true;
                         break;
@@ -739,23 +890,61 @@
 
                     await waitTick(Math.min(pollIntervalMs, Math.max(1, deadline - now)), latch);
 
-                    pump();
-
-                    const next = sampleProgress(latch.count());
+                    const next = pumpAndSample(latch);
                     if (next.key !== progress.key) {
                         lastProgressAt = $.now();
                     }
                     progress = next;
                 }
+
+                return {
+                    tiles: collect(),
+                    fullyLoaded: progress.allLoaded,
+                    timedOut: timedOut,
+                    stalled: stalled,
+                    waited: true
+                };
             } finally {
-                latch.dispose();
+                if (latch) {
+                    latch.dispose();
+                }
+            }
+        };
+
+        /**
+         * Live-path counterpart of `_collectReadyTiles`: resolve what completeness means for a pass
+         * that re-uses the LIVE drawer's first-pass texture, and wait for it if asked to.
+         *
+         * Nothing here touches renderer state, so the caller runs it OUTSIDE the drawer mutex.
+         *
+         * @param {OpenSeadragon.Viewer} liveHost viewer owning the texture this pass steals
+         * @param {object} [options] same option surface as `drawWithConfiguration`
+         * @returns {Promise<{waitSet: Array<OpenSeadragon.TiledImage>, fullyLoaded: boolean,
+         *      timedOut: boolean, stalled: boolean, waited: boolean}>}
+         * @private
+         */
+        drawer._waitForLiveFullLoad = async function(liveHost, options) {
+            const opts = options || {};
+            const waitSet = resolveLiveWaitSet(liveHost.world, opts.waitImages);
+
+            if (!opts.waitFullLoad) {
+                return {
+                    waitSet: waitSet,
+                    fullyLoaded: areImagesFullyLoaded(waitSet),
+                    timedOut: false,
+                    stalled: false,
+                    waited: false
+                };
             }
 
+            const result = await waitForLiveViewerFullLoad(liveHost, waitSet,
+                resolveWaitTimings(liveHost, opts));
             return {
-                tiles: collect(),
-                fullyLoaded: allLoaded(),
-                timedOut: timedOut,
-                stalled: stalled
+                waitSet: waitSet,
+                fullyLoaded: result.fullyLoaded,
+                timedOut: result.timedOut,
+                stalled: result.stalled,
+                waited: result.waited
             };
         };
 
@@ -772,14 +961,18 @@
          * @param {object} [options] off-screen pass options
          * @param {boolean} [options.waitFullLoad=false] do not settle for the tiles that happen to be
          *      resident: wait until every waited image reports getFullyLoaded()
-         * @param {Array<OpenSeadragon.TiledImage>} [options.waitImages] wait on these images only,
-         *      defaulting to all of `tiledImages`; every image is drawn either way
+         * @param {Array<OpenSeadragon.TiledImage>} [options.waitImages] wait on these images only;
+         *      every image is drawn either way. Defaults to all of `tiledImages` on a full draw
+         *      pass, and to the whole live world when the pass re-uses the live first-pass texture -
+         *      where completeness is the live world's, so the entries are live world items.
          * @param {number} [options.loadTimeoutMs=10000] upper bound of that wait
          * @param {number} [options.stallTimeoutMs] early exit when no progress is possible
          * @param {number} [options.pollIntervalMs=50] upper bound between two update() pumps
          * @param {object} [options.status] OUT parameter, filled before the returned promise settles:
          *      {fullyLoaded, timedOut, stalled, waited}. Completeness is per call by construction -
-         *      the caller owns the object, so two passes cannot read each other's flag.
+         *      the caller owns the object, so two passes cannot read each other's flag. `waited` is
+         *      the EFFECTIVE wait: an image that cannot report its load state downgrades the pass to
+         *      best-effort and `waited` is then false even though `waitFullLoad` was asked for.
          * @returns {Promise<CanvasRenderingContext2D>}
          */
         drawer.drawWithConfiguration = (async function (tiledImages, configuration = undefined,
@@ -787,7 +980,6 @@
                                                        options = undefined) {
             let tiles;
             let tasks;
-            let viewportBindings = null;
 
             const opts = options || {};
             const status = opts.status || {};
@@ -811,30 +1003,48 @@
                 $.console.warn('size is required when drawing a viewport!');
             }
 
-            // The lock is taken BEFORE the tiled images are rebound. With waitFullLoad the collect
-            // phase can hold the rebinding for seconds instead of ~50ms, and two overlapping passes
-            // would then have the second one snapshot the STANDALONE viewport as the 'original' and
-            // restore the mirrors to it permanently. Single-flight the whole pass.
+            // This branch does not draw the tiled images it was handed: it re-uses the LIVE drawer's
+            // first-pass texture. Its completeness is therefore the completeness of the live world,
+            // not of the mirrors - the mirrors are never bound to this viewport for this pass, and
+            // their flags still describe whatever view they were last driven to.
+            //
+            // The wait runs BEFORE the mutex on purpose: it touches only the on-screen viewer, never
+            // renderer state, so holding the lock across it is pure contention - a world that can
+            // never complete would block every other pass of this drawer for the whole timeout.
+            let liveWaitSet = null;
+            if (!fullDrawPass) {
+                const liveHost = (view && view.viewer) || viewer;
+                const waited = await drawer._waitForLiveFullLoad(liveHost, opts);
+                liveWaitSet = waited.waitSet;
+                status.waited = waited.waited;
+                status.timedOut = waited.timedOut;
+                status.stalled = waited.stalled;
+
+                if (waited.waited) {
+                    // The tiles that just arrived only reach the first-pass texture on the live
+                    // drawer's next frame; the texture is stolen by reference below.
+                    if (typeof liveHost.forceRedraw === "function") {
+                        liveHost.forceRedraw();
+                    }
+                    await waitTick(FLEX_DEFAULT_POLL_INTERVAL_MS);
+                }
+            }
+
+            // Single-flight the pass: the renderer state it drives - dimensions, the stolen
+            // first-pass result, the shader configuration - is drawer-wide, not per call.
             await lock();
             try {
                 if (fullDrawPass) {
-                    viewportBindings = drawer._bindTiledImagesToViewport(tiledImages);
-                    try {
-                        const ready = await drawer._collectReadyTiles(tiledImages, view, size, opts);
-                        tiles = ready.tiles;
-                        status.fullyLoaded = ready.fullyLoaded;
-                        status.timedOut = ready.timedOut;
-                        status.stalled = ready.stalled;
-                        status.waited = !!opts.waitFullLoad;
-                        if (!tiles.length) {
-                            throw new Error("Standalone extraction found no tiles to draw for the requested view.");
-                        }
-                        tasks = tiles.map(t => t.tile.getCache().prepareForRendering(drawer));
-                    } catch (e) {
-                        drawer._restoreTiledImageViewports(viewportBindings);
-                        viewportBindings = null;
-                        throw e;
+                    const ready = await drawer._collectReadyTiles(tiledImages, view, size, opts);
+                    tiles = ready.tiles;
+                    status.fullyLoaded = ready.fullyLoaded;
+                    status.timedOut = ready.timedOut;
+                    status.stalled = ready.stalled;
+                    status.waited = ready.waited;
+                    if (!tiles.length) {
+                        throw new Error("Standalone extraction found no tiles to draw for the requested view.");
                     }
+                    tasks = tiles.map(t => t.tile.getCache().prepareForRendering(drawer));
                 }
 
                 if (configuration) {
@@ -844,10 +1054,17 @@
                 // todo: tiledImages.length is not reliable! we can have TI that produces more layers in the color part!
 
                 if (fullDrawPass) {
+                    // The cache preparation is awaited OUTSIDE the viewport binding: it is
+                    // cache-level work that never reads tiledImage.viewport, and an await inside a
+                    // binding hands the live viewer's loop an image pointing at the standalone
+                    // viewport. A tile evicted during this await simply drops from the frame -
+                    // draw() re-collects under the binding - the same best-effort behaviour the
+                    // non-waiting path has always had.
+                    //
                     // Awaited, not returned: `return promise` inside try/finally lets the finally
                     // (and with it unlock()) run before the chain settles, which would release the
-                    // mutex while the mirrors are still bound to the standalone viewport.
-                    return await Promise.all(tasks).then(() => {
+                    // mutex mid-draw.
+                    return await Promise.all(tasks).then(() => drawer._withBoundViewport(tiledImages, () => {
                         // Sum of packs across all TIs:
                         const colorLayers = drawer._computeOffscreenLayerCount();
                         const stencilLayers = tiledImages.length;
@@ -876,44 +1093,22 @@
                         }
                         ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
                         return ctx;
-                    }).catch(e => {
+                    })).catch(e => {
                         console.error(e);
                         throw e;
                     }).finally(() => {
                         // free data
                         const dId = drawer.getId();
                         tiles.forEach(t => t.tile.getCache().destroyInternalCache(dId));
-                        drawer._restoreTiledImageViewports(viewportBindings);
-                        viewportBindings = null;
                     });
                 }
 
                 let colorLayers   = tiledImages.length;
                 let stencilLayers = tiledImages.length;
 
-                // This branch does not draw the tiled images it was handed: it re-uses the LIVE
-                // drawer's first-pass texture. Its completeness is therefore the completeness of the
-                // live world, not of the mirrors - the mirrors were never bound to this viewport for
-                // this pass, and their flags still describe whatever view they were last driven to.
-                const liveHost = (view && view.viewer) || viewer;
-
-                if (opts.waitFullLoad) {
-                    status.waited = true;
-                    const liveTimeout = Number.isFinite(opts.loadTimeoutMs) ?
-                        Math.max(0, opts.loadTimeoutMs) : FLEX_DEFAULT_LOAD_TIMEOUT_MS;
-                    // Event driven: the live viewer drives its own update loop, so its images refresh
-                    // their flag on every frame. Do NOT call update() on them from here.
-                    const waited = await waitForLiveViewerFullLoad(liveHost, liveTimeout);
-                    status.timedOut = waited.timedOut;
-                    // The tiles that just arrived only reach the first-pass texture on the live
-                    // drawer's next frame; the texture is stolen by reference below.
-                    if (typeof liveHost.forceRedraw === "function") {
-                        liveHost.forceRedraw();
-                    }
-                    await waitTick(FLEX_DEFAULT_POLL_INTERVAL_MS);
-                }
-
-                status.fullyLoaded = isWorldFullyLoaded(liveHost.world);
+                // Reported over the set the wait was defined on, so `waitImages` narrows the verdict
+                // here exactly as it does off-screen. The wait itself already ran, before the lock.
+                status.fullyLoaded = areImagesFullyLoaded(liveWaitSet);
 
                 if (view.renderer.__firstPassResult) {
                     const srcFP = view.renderer.__firstPassResult;
@@ -966,9 +1161,6 @@
                 ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
                 return ctx;
             } finally {
-                if (viewportBindings) {
-                    drawer._restoreTiledImageViewports(viewportBindings);
-                }
                 unlock();
             }
         }).bind(drawer);
@@ -1043,7 +1235,8 @@
          * @param {Array<OpenSeadragon.TiledImage>} [opts.waitImages] narrow what completeness means:
          *      wait on these images only, defaulting to every image drawn. All images are still
          *      drawn either way - this only keeps an overlay that can never load from branding every
-         *      render incomplete.
+         *      render incomplete. Applies to both paths: with `view` omitted, where the pass re-uses
+         *      the live first-pass texture, the entries are live world items.
          * @param {number} [opts.loadTimeoutMs=10000] upper bound of that wait
          * @param {number} [opts.stallTimeoutMs] early exit once no progress is possible
          * @param {number} [opts.pollIntervalMs=50]
