@@ -404,8 +404,43 @@
             return model;
         },
 
-        compileConfigSchemaModel() {
+        /**
+         * Builds the published JSON Schema.
+         *
+         * The schema is generated from the shader classes and is always returned: bundled
+         * `examples` are optional, decorative data and must never take the document down.
+         * When an example does not validate against its own schema (or violates a coupling)
+         * it is dropped from the returned schema and reported via `console.warn` — a missing
+         * example is strictly better than one a consumer would copy and then fail on.
+         *
+         * @param {object} [options]
+         * @param {boolean} [options.strict=false] throw instead of degrading when a bundled
+         *   example is inconsistent. Off by default; intended for build/CI checks. See also
+         *   {@link validatePublishedExamples} / {@link assertPublishedExamplesValid}.
+         */
+        compileConfigSchemaModel(options = {}) {
+            const strict = options.strict === true;
             const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
+            const schema = this._buildConfigSchema(availableShaders);
+
+            const compiledShaders = this._compileExampleConsistencyInputs(availableShaders);
+            const issues = this._collectPublishedExampleIssues(availableShaders, schema, compiledShaders);
+            if (issues.length) {
+                if (strict) {
+                    throw new Error(this._formatPublishedExampleIssues(issues));
+                }
+                this._warnIfExampleParamsInconsistent(compiledShaders);
+                this._dropInvalidPublishedExamples(schema, issues);
+            }
+            return schema;
+        },
+
+        /**
+         * Pure schema construction, no example validation and no degradation.
+         * The result is deterministic for a given shader registry — no timestamps —
+         * so consumers can content-hash it and diff two dumps.
+         */
+        _buildConfigSchema(availableShaders) {
             const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
             const shaderLayerRefs = availableShaders.map(Shader => ({
                 $ref: `#/$defs/shaderLayers/${Shader.type()}`
@@ -448,16 +483,36 @@
                     uiControlEnvelopes,
                     shaderLayers
                 },
-                "x-schemaVersion": 2,
-                "x-generatedAt": new Date().toISOString()
+                "x-schemaVersion": 2
             };
 
-            this._assertPublishedExamplesValid(availableShaders, schema);
             return schema;
         },
 
-        async compileConfigSchemaModelAsync() {
-            return this.compileConfigSchemaModel();
+        async compileConfigSchemaModelAsync(options = {}) {
+            return this.compileConfigSchemaModel(options);
+        },
+
+        /**
+         * Strict verdict on the bundled examples, without punishing schema consumers.
+         * @returns {{ok: boolean, issues: Array<object>}}
+         */
+        validatePublishedExamples() {
+            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
+            // Validate the undegraded document, not the one compile() already pruned.
+            const schema = this._buildConfigSchema(availableShaders);
+            const issues = this._collectPublishedExampleIssues(availableShaders, schema);
+            return { ok: issues.length === 0, issues };
+        },
+
+        /**
+         * Throwing form of {@link validatePublishedExamples}, for build/CI use.
+         */
+        assertPublishedExamplesValid() {
+            const { ok, issues } = this.validatePublishedExamples();
+            if (!ok) {
+                throw new Error(this._formatPublishedExampleIssues(issues));
+            }
         },
 
         /**
@@ -562,9 +617,14 @@
             });
         },
 
-        _assertPublishedExamplesValid(ShaderClasses, schemaModel) {
+        /**
+         * Collects every inconsistency between the bundled examples and the schema they
+         * are published under. Pure: never throws, never mutates `schemaModel`. Callers
+         * decide whether to warn, prune, or fail.
+         */
+        _collectPublishedExampleIssues(ShaderClasses, schemaModel, compiledShaders) {
             const issues = [];
-            const compiledShaders = this._compileExampleConsistencyInputs(ShaderClasses);
+            compiledShaders = compiledShaders || this._compileExampleConsistencyInputs(ShaderClasses);
             const keyIssues = this.checkExampleParamsConsistency(compiledShaders);
             for (const issue of keyIssues) {
                 issues.push({
@@ -575,7 +635,9 @@
                 });
             }
 
-            const ajv = this._createSchemaAjv();
+            // Ajv is optional at runtime: without it we still report key and coupling
+            // issues rather than failing the whole collection.
+            const ajv = AjvConstructor ? this._createSchemaAjv() : null;
             for (const Shader of ShaderClasses || []) {
                 const type = Shader && typeof Shader.type === "function" ? Shader.type() : Shader && Shader.type;
                 if (!type) {
@@ -588,16 +650,26 @@
                     continue;
                 }
 
-                const validate = ajv.compile({
-                    ...layerSchema,
-                    $defs: deepClone((schemaModel && schemaModel.$defs) || {})
-                });
-                if (!validate(exampleLayer)) {
-                    issues.push({
-                        kind: "schema",
-                        type,
-                        errors: deepClone(validate.errors || [])
-                    });
+                if (ajv) {
+                    try {
+                        const validate = ajv.compile({
+                            ...layerSchema,
+                            $defs: deepClone((schemaModel && schemaModel.$defs) || {})
+                        });
+                        if (!validate(exampleLayer)) {
+                            issues.push({
+                                kind: "schema",
+                                type,
+                                errors: deepClone(validate.errors || [])
+                            });
+                        }
+                    } catch (e) {
+                        issues.push({
+                            kind: "schema",
+                            type,
+                            errors: [{ message: `example validation could not run: ${e && e.message}` }]
+                        });
+                    }
                 }
 
                 for (const coupling of this.getShaderCouplingValidators(type)) {
@@ -647,13 +719,37 @@
                 }
             }
 
-            if (!issues.length) {
-                return;
+            return issues;
+        },
+
+        _formatPublishedExampleIssues(issues) {
+            return "[FlexRenderer.ShaderConfigurator] published examples failed validation:\n" +
+                (issues || []).map(issue => `  ${JSON.stringify(issue)}`).join("\n");
+        },
+
+        /**
+         * Removes `examples[0]` from every shader layer schema that has a reported issue,
+         * so no consumer copies a sample known to fail its own validation. Mutates
+         * `schemaModel` in place and warns once per dropped example.
+         */
+        _dropInvalidPublishedExamples(schemaModel, issues) {
+            const shaderLayers = (schemaModel && schemaModel.$defs && schemaModel.$defs.shaderLayers) || {};
+            const affected = new Set((issues || []).map(issue => issue && issue.type).filter(Boolean));
+            for (const type of affected) {
+                const layerSchema = shaderLayers[type];
+                if (!layerSchema || !Array.isArray(layerSchema.examples) || !layerSchema.examples.length) {
+                    continue;
+                }
+                layerSchema.examples.shift();
+                if (!layerSchema.examples.length) {
+                    delete layerSchema.examples;
+                }
+                console.warn(
+                    `[FlexRenderer.ShaderConfigurator] dropped invalid published example for shader "${type}"; ` +
+                    `schema is still served. Details: ` +
+                    JSON.stringify((issues || []).filter(issue => issue && issue.type === type))
+                );
             }
-            throw new Error(
-                "[FlexRenderer.ShaderConfigurator] published examples failed validation:\n" +
-                issues.map(issue => `  ${JSON.stringify(issue)}`).join("\n")
-            );
         },
 
         _createSchemaAjv() {
@@ -1733,6 +1829,7 @@
             return couplings.map(coupling => ({
                 name: coupling.name,
                 summary: coupling.summary,
+                corrective: coupling.corrective,
                 controls: deepClone(coupling.controls || [])
             }));
         },

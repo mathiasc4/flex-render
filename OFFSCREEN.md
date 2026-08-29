@@ -48,6 +48,27 @@ you intentionally need shared-context behavior.
 Shared-context presentation currently uses `readPixels` for the final transfer into the presentation
 canvas. This avoids using the shared default framebuffer as an intermediate output target.
 
+## The Backdrop
+
+Every off-screen pass clears its output to `renderer.presentationClearColor` before its second pass.
+This is not cosmetic: the second pass composites with `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`, so without
+it a region shows the previous pass through wherever it is transparent, and a pass with nothing to
+draw leaves the previous region entirely intact.
+
+A consumer composing its own passes should call `renderer.clearOutput()` — or `drawer.clearOutput()`
+/ `runtime.clearOutput()` on the standalone facades — and should not reach into `renderer.gl` for it.
+A bare `gl.clear(gl.COLOR_BUFFER_BIT)` there clears to whatever `clearColor` was last set, which the
+first pass leaves at `(0, 0, 0, 0)`, not to the backdrop. `clearOutput()` also binds the target for
+itself: the first-pass program leaves its own framebuffer bound on exit, so "whatever is current" is
+not reliably the canvas.
+
+`clearOutput()` is not `clear()`. `clear()` drops the renderer's pass results and, in shared-context
+mode, clears the presentation canvas to fully transparent; `clearOutput()` keeps the pass results and
+clears to the backdrop, which is what a caller re-running only the second pass wants.
+
+A translucent `presentationClearColor` must be supplied with RGB already premultiplied by alpha —
+the context is created with `premultipliedAlpha: true`.
+
 ## Rendering Different Parts of the Viewer
 
 ````js

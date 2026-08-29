@@ -552,6 +552,45 @@
         throw new Error("Unsupported standalone input source.");
     }
 
+    /**
+     * Copy a renderer's presentation canvas into a fresh 2D context, on the renderer's
+     * own backdrop.
+     *
+     * A caller asking for a picture of the scene wants what the viewport shows, and a
+     * translucent layer only reads correctly over the colour it blends toward on screen.
+     * The backdrop is applied HERE only where the GL clear could not reach:
+     *
+     * - private context: `clearOutput()` cleared the default framebuffer - which IS the
+     *   presentation canvas - to the backdrop before the second pass, so the pixels
+     *   already carry it. A 2D fill underneath would apply it a SECOND time: invisible
+     *   for the opaque default, but plainly wrong the moment `presentationClearColor` is
+     *   translucent, where alpha 0.5 would read back as 0.75.
+     * - shared context: the second pass lands in a color target that is cleared to
+     *   [0,0,0,0], and the transfer into the presentation canvas is a putImageData, which
+     *   overwrites. The backdrop exists nowhere else.
+     *
+     * @param {OpenSeadragon.FlexRenderer} renderer
+     * @param {number} width
+     * @param {number} height
+     * @returns {CanvasRenderingContext2D}
+     */
+    function copyPresentationToContext(renderer, width, height) {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+
+        const [br, bg, bb, ba] = renderer.presentationClearColor;
+        if (ba > 0 && renderer.isSharedContext()) {
+            ctx.fillStyle = `rgba(${Math.round(br * 255)}, ${Math.round(bg * 255)}, ` +
+                `${Math.round(bb * 255)}, ${ba})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        ctx.drawImage(renderer.getPresentationCanvas(), 0, 0);
+        return ctx;
+    }
+
     function createStandaloneViewportHost(viewer) {
         return {
             navigator: null,
@@ -1070,29 +1109,17 @@
                         const stencilLayers = tiledImages.length;
 
                         this.renderer.setDimensions(0, 0, size.x, size.y, colorLayers, stencilLayers);
+
+                        // draw() clears again through renderer.render(), but it also has an
+                        // early return that draws nothing at all when the drawer is not ready,
+                        // and setDimensions has by then reset the drawing buffer to transparent
+                        // black rather than to the backdrop. Called directly on the renderer,
+                        // not through drawer.clearOutput(): the facade mutex is not reentrant
+                        // and we already hold it.
+                        this.renderer.clearOutput();
                         this.draw(tiledImages, view);
 
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        canvas.width = size.x;
-                        canvas.height = size.y;
-                        // Composite onto the renderer's own backdrop before copying.
-                        // A caller asking this drawer for a picture of the scene wants
-                        // what the viewport shows, and a translucent layer only reads
-                        // correctly over the colour it blends toward on screen.
-                        // Without this the result depends on the GL context mode --
-                        // a private context leaves the presentation canvas opaque,
-                        // a shared one clears the final target to [0,0,0,0] -- and the
-                        // transparent variant then picks up whatever the host happens
-                        // to place the image on.
-                        const [br, bg, bb, ba] = this.renderer.presentationClearColor;
-                        if (ba > 0) {
-                            ctx.fillStyle = `rgba(${Math.round(br * 255)}, ${Math.round(bg * 255)}, ` +
-                                `${Math.round(bb * 255)}, ${ba})`;
-                            ctx.fillRect(0, 0, canvas.width, canvas.height);
-                        }
-                        ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
-                        return ctx;
+                        return copyPresentationToContext(this.renderer, size.x, size.y);
                     })).catch(e => {
                         console.error(e);
                         throw e;
@@ -1151,15 +1178,28 @@
                     this.viewer.forceRedraw();
                 }
 
-                this.renderer.renderSecondPass(sources);
+                // This path bypasses renderer.render(), so nothing else clears: with blending
+                // on, the previous pass shows through wherever the composed alpha is < 1, and
+                // on an empty `sources` the second pass draws nothing at all and the whole
+                // previous region survives. setDimensions does not cover it either - it only
+                // GROWS the canvas in shared-context mode, and in private mode it resets the
+                // drawing buffer to transparent black, not to the backdrop.
+                //
+                // It must sit here and not earlier: copyRenderOutputToContext and the debug
+                // preview above bind framebuffers of their own, and renderSecondPassToOutput
+                // is called without width/height so the second-pass program will NOT set a
+                // viewport - this call is what leaves the correct one bound.
+                //
+                // Direct on the renderer, not drawer.clearOutput(): the mutex is not reentrant.
+                this.renderer.clearOutput();
+
+                // ...ToOutput, not renderSecondPass: in shared-context mode the presentation
+                // canvas is a separate 2D canvas that only the color-target transfer writes,
+                // so a raw second pass would leave the copy below reading a blank canvas.
+                this.renderer.renderSecondPassToOutput(sources);
                 this.renderer.gl.finish();
 
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                canvas.width = size.x;
-                canvas.height = size.y;
-                ctx.drawImage(this.renderer.getPresentationCanvas(), 0, 0);
-                return ctx;
+                return copyPresentationToContext(this.renderer, size.x, size.y);
             } finally {
                 unlock();
             }
@@ -1172,6 +1212,29 @@
         installExtractionApi(drawer, drawer.renderer, function(result = "imageData") {
             return this._readCurrentCanvas(viewer.drawer.canvas, result);
         });
+
+        /**
+         * Clear this drawer's renderer output to the presentation backdrop.
+         *
+         * Every pass this drawer runs already clears, so a caller should not need this. It
+         * exists so a consumer composing its own passes has a supported call and never has
+         * to reach into `drawer.renderer.gl` - a bare `gl.clear` there inherits whatever
+         * clearColor the first pass left set, which is (0,0,0,0), not the backdrop.
+         *
+         * Never call this from inside another facade method: the mutex is not reentrant,
+         * and doing so deadlocks the drawer permanently. Internal call sites use
+         * `drawer.renderer.clearOutput()` directly.
+         *
+         * @returns {Promise<boolean>} False when there was nothing to clear.
+         */
+        drawer.clearOutput = async function() {
+            await lock();
+            try {
+                return this.renderer.clearOutput();
+            } finally {
+                unlock();
+            }
+        }.bind(drawer);
 
         /**
          * Extract a single first-pass layer directly from the standalone renderer state.
@@ -1314,6 +1377,7 @@
         debug = false,
         interactive = false,
         precision = "auto",
+        presentationClearColor = undefined,
         canvasOptions = { stencil: true }
     } = {}) {
         const runtime = {};
@@ -1330,6 +1394,9 @@
             interactive: !!interactive,
             backgroundColor,
             precision,
+            // Every pass this runtime draws clears to it, so a caller that wants a backdrop
+            // other than opaque white has to be able to say so here.
+            presentationClearColor,
             canvasOptions
         });
         runtime.renderer.setDataBlendingEnabled(true);
@@ -1613,12 +1680,9 @@
                     await this.overrideConfigureAll(configuration);
                 }
 
-                const gl = this.renderer.gl;
-                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 // Same backdrop the on-screen renderer uses, for the same reason.
-                const [br, bg, bb, ba] = this.renderer.presentationClearColor;
-                gl.clearColor(br, bg, bb, ba);
-                gl.clear(gl.COLOR_BUFFER_BIT);
+                // Direct on the renderer, not runtime.clearOutput(): the mutex is not reentrant.
+                this.renderer.clearOutput();
 
                 this._renderFirstPass();
 
@@ -1627,16 +1691,30 @@
                     throw new Error("Standalone renderer has no configured shader layers.");
                 }
 
-                this.renderer.renderSecondPass(renderArray);
+                this.renderer.renderSecondPassToOutput(renderArray);
                 this.renderer.gl.finish();
 
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
                 const presentationCanvas = this.renderer.getPresentationCanvas();
-                canvas.width = presentationCanvas.width;
-                canvas.height = presentationCanvas.height;
-                ctx.drawImage(presentationCanvas, 0, 0);
-                return ctx;
+                return copyPresentationToContext(
+                    this.renderer, presentationCanvas.width, presentationCanvas.height);
+            } finally {
+                unlock();
+            }
+        };
+
+        /**
+         * Clear this runtime's renderer output to the presentation backdrop.
+         *
+         * `drawWithConfiguration` already clears; this exists so a consumer composing its
+         * own passes never has to reach into `runtime.renderer.gl`. Never call it from
+         * inside another facade method - the mutex is not reentrant.
+         *
+         * @returns {Promise<boolean>} False when there was nothing to clear.
+         */
+        runtime.clearOutput = async function() {
+            await lock();
+            try {
+                return this.renderer.clearOutput();
             } finally {
                 unlock();
             }

@@ -66,6 +66,11 @@ OpenSeadragon drawer state, render dimensions, renderer-local presentation canva
 Calling `clear()` on one shared renderer clears only that renderer's presentation canvas; it must not
 clear another renderer's visible output.
 
+`clear()` drops the renderer's pass results and, in shared-context mode, clears the presentation
+canvas to fully transparent. `clearOutput()` is the other one: it clears the output surface to the
+presentation backdrop and keeps the pass results, which is what a caller re-running only the second
+pass wants.
+
 Important constraints:
 
 - all renderers using the same `sharedContextKey` must request the same WebGL version;
