@@ -4,6 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Shader Configurator Scheme Demo</title>
+    <!--
+        Icon webfonts are not shipped with flex-renderer. Loaded here so an
+        `icon` control added through the configurator can render its Phosphor
+        and Font Awesome sets; the default "html-glyphs" set needs neither.
+    -->
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.2/src/regular/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.2/src/fill/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
     <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/ajv/8.17.1/ajv7.min.js"></script>
     <script type="text/javascript">
         (function() {

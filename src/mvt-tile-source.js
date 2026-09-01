@@ -146,7 +146,7 @@ class AbstractMVTTileSource extends $.TileSource {
                     className,
                     spec: {
                         icon: cls.icon,
-                        iconSet: cls.iconSet || 'fa-solid-common',
+                        iconSet: cls.iconSet || 'html-glyphs',
                         size: Number.isFinite(cls.iconSize) ? cls.iconSize : iconSize,
                         padding: Number.isFinite(cls.padding) ? cls.padding : 4,
                         color: cls.color || '#111111',
@@ -454,8 +454,10 @@ function defaultStyle() {
             poi:            { type: 'point', color: [0.00, 0.00, 0.00, 1.00], size: 10.0 },
             housenumber:    { type: 'point', color: [0.50, 0.00, 0.50, 1.00], size: 8.0 },
             // Place labels from OpenMapTiles schema (country/city/village/...).
-            // Uses HTML-glyph icons so it works without external fonts; switch
-            // iconSet to "fa-solid-common" (etc.) to use Font Awesome.
+            // Uses HTML-glyph icons so it works without external fonts. Switch
+            // iconSet to "ph-regular-common" / "ph-fill-common" (Phosphor) or
+            // "fa-solid-common" (Font Awesome) once the host page loads that
+            // webfont — see the "Icon fonts" section of the README.
             place: {
                 type: 'icon',
                 size: 0.4,

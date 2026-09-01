@@ -357,6 +357,10 @@
      *      canvas is cleared to each frame — the backdrop a translucent layer blends toward.
      *      Readable back via `renderer.presentationClearColor`, which is what an offscreen
      *      render must composite onto to reproduce the on-screen picture.
+     *      A translucent backdrop must be supplied with RGB already premultiplied by alpha:
+     *      the context is created with `premultipliedAlpha: true`, so `[1, 1, 1, 0.5]` writes
+     *      a pixel the compositor treats as out of range, and a 2D composite of the same
+     *      nominal colour would not match it.
      *
      * @property {boolean} interactive             if true (default), the layers are configured for interactive changes (not applied by default)
      *
@@ -1545,6 +1549,88 @@
         }
 
         /**
+         * Render the second pass into this renderer's presentation canvas.
+         *
+         * `renderSecondPass(...)` renders into whatever framebuffer it is handed, which
+         * defaults to the default one. That is the presentation canvas in private-context
+         * mode, but in shared-context mode the presentation canvas is a separate 2D canvas
+         * that only the color-target transfer ever writes - so a caller re-running only the
+         * second pass gets a stale or blank picture there. This method encapsulates that
+         * routing, exactly as `render(...)` does it, so a caller composing its own passes
+         * does not have to branch on the context mode.
+         *
+         * Call `clearOutput()` first: this method does not clear, and with blending enabled
+         * a second pass composites over whatever the surface already holds.
+         *
+         * An empty `renderArray` is not a no-op here. `renderSecondPass(...)` draws nothing
+         * in that case, but in shared-context mode the transfer must still run, or the
+         * presentation canvas keeps the previous pass while the color target - which
+         * `clearOutput()` just zeroed - says otherwise.
+         *
+         * @param {Array<SPRenderPackage>} renderArray - Second-pass render packages.
+         * @param {object} [options=undefined] - Optional backend-specific render options.
+         *      `framebuffer`, `width` and `height` are supplied by this method in
+         *      shared-context mode and must not be set by the caller.
+         * @returns {RenderOutput} Second-pass render output descriptor.
+         * @throws {TypeError} Thrown when `renderArray` is not an array.
+         * @throws {Error} Thrown when a shared context's backend cannot present a color target.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
+         */
+        renderSecondPassToOutput(renderArray, options = undefined) {
+            if (!this._sharedContextEntry) {
+                this.__finalPassResult = this.renderSecondPass(renderArray, options);
+                return this.__finalPassResult;
+            }
+
+            if (!this.backend || typeof this.backend.ensureColorTarget !== "function") {
+                throw new Error("$.FlexRenderer::renderSecondPassToOutput: active backend does not support shared-context final color targets.");
+            }
+
+            if (typeof this.backend.presentColorTargetToCanvas !== "function") {
+                throw new Error("$.FlexRenderer::renderSecondPassToOutput: active backend does not support shared-context presentation transfer.");
+            }
+
+            const width = Math.max(1, this._renderWidth || this.getPresentationCanvas().width || 1);
+            const height = Math.max(1, this._renderHeight || this.getPresentationCanvas().height || 1);
+
+            this._finalColorTarget = this.backend.ensureColorTarget(
+                this._finalColorTarget,
+                width,
+                height,
+                { filter: this.gl.LINEAR }
+            );
+
+            let result;
+
+            if (Array.isArray(renderArray) && renderArray.length) {
+                result = this.renderSecondPass(renderArray, $.extend(true, {}, options || {}, {
+                    framebuffer: this._finalColorTarget.framebuffer,
+                    width: width,
+                    height: height
+                }));
+            } else {
+                // Keeps the shape renderSecondPass returns for an empty array, so a caller
+                // cannot tell the two entry points apart by their result.
+                result = this.renderSecondPass([], options);
+            }
+
+            this.__finalPassResult = this._finalColorTarget;
+
+            // Runs on the empty path too: the transfer is what makes the cleared target
+            // visible on the presentation canvas.
+            this.backend.presentColorTargetToCanvas(
+                this._finalColorTarget,
+                this.getPresentationCanvas(),
+            );
+
+            this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+
+            return result;
+        }
+
+        /**
          * The colour the presentation canvas is cleared to, as `[r, g, b, a]` in
          * `[0,1]`. A consumer rendering this scene offscreen must composite onto the
          * same backdrop, or a translucent layer blends toward a different colour than
@@ -1562,6 +1648,9 @@
         /**
          * Clear the currently bound framebuffer to the presentation backdrop.
          *
+         * Binds nothing and sets no viewport: the caller must already own the target.
+         * Prefer `clearOutput()`, which resolves the target itself.
+         *
          * @returns {void}
          * @private
          */
@@ -1569,6 +1658,84 @@
             const [r, g, b, a] = this._presentationClearColor;
             this.gl.clearColor(r, g, b, a);
             this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+        }
+
+        /**
+         * Clear this renderer's output surface to the presentation backdrop.
+         *
+         * This is the "prepare a surface for a second pass" operation, and it is the only
+         * supported way for an external caller to do it: it binds the target and sets the
+         * viewport itself, because the caller cannot know what is currently bound. The
+         * first-pass program leaves its offscreen framebuffer bound on exit, and
+         * `renderSecondPass(...)` binds nothing at all on an empty render array, so
+         * "whatever happens to be current" is not the canvas often enough to rely on.
+         *
+         * Unlike `clear()`, this does NOT drop `__firstPassResult` / `__finalPassResult`.
+         * A caller that has just installed a first-pass result - the standalone
+         * live-texture path steals one - must be able to wipe the output without losing
+         * the input it is about to compose from.
+         *
+         * Which surface "output" means follows `render(...)` exactly:
+         * - private context: the default framebuffer, which IS the presentation canvas,
+         *   cleared to the presentation backdrop;
+         * - shared context: the renderer-owned final color target, cleared to [0,0,0,0]
+         *   the way `render(...)` clears it, plus the shared default framebuffer cleared
+         *   to the backdrop. The shared default framebuffer is scratch owned by no single
+         *   renderer and the durable output is the color target; clearing both leaves the
+         *   surfaces in exactly the state `render(...)` leaves them in immediately before
+         *   its second pass.
+         *
+         * Note that `gl.clear` is not viewport-scoped - this renderer never enables the
+         * scissor test - so the clear covers the whole attached surface. The viewport is
+         * set for the draw that follows, not for the clear.
+         *
+         * @returns {boolean} False when there was nothing to clear: no context, a lost
+         *      context, or a zero-sized output.
+         *
+         * @instance
+         * @memberof OpenSeadragon.FlexRenderer#
+         */
+        clearOutput() {
+            const gl = this.gl;
+
+            if (!gl || this._contextLost) {
+                return false;
+            }
+
+            const sharedEntry = this._sharedContextEntry;
+
+            if (sharedEntry && sharedEntry.lost) {
+                return false;
+            }
+
+            const presentationCanvas = this.getPresentationCanvas();
+            const width = Math.max(0, this._renderWidth || (presentationCanvas && presentationCanvas.width) || 0);
+            const height = Math.max(0, this._renderHeight || (presentationCanvas && presentationCanvas.height) || 0);
+
+            if (!width || !height) {
+                return false;
+            }
+
+            if (sharedEntry && this.backend && typeof this.backend.ensureColorTarget === "function") {
+                this._finalColorTarget = this.backend.ensureColorTarget(
+                    this._finalColorTarget,
+                    width,
+                    height,
+                    { filter: gl.LINEAR }
+                );
+
+                if (typeof this.backend.clearColorTarget === "function") {
+                    // The same [0,0,0,0] render(...) uses: the backdrop is composited by the
+                    // consumer of the presentation canvas, not baked into the target.
+                    this.backend.clearColorTarget(this._finalColorTarget, [0, 0, 0, 0]);
+                }
+            }
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(this._renderX || 0, this._renderY || 0, width, height);
+            this._clearToPresentationBackdrop();
+
+            return true;
         }
 
         /**
@@ -1611,7 +1778,11 @@
             const sharedEntry = this._sharedContextEntry;
 
             if (!sharedEntry) {
-                this._clearToPresentationBackdrop();
+                // clearOutput, not _clearToPresentationBackdrop: the previous frame does not
+                // reliably leave the default framebuffer bound. The first-pass program never
+                // rebinds on exit, and renderSecondPass binds nothing on an empty render
+                // array, so a bare clear here can land on the offscreen color attachment.
+                this.clearOutput();
 
                 this.renderFirstPass(frame.firstPass);
                 this.__finalPassResult = this.renderSecondPass(frame.secondPass, options.secondPassOptions);
@@ -1681,9 +1852,7 @@
                     { filter: this.gl.LINEAR }
                 );
 
-                this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
-                this.gl.viewport(this._renderX, this._renderY, width, height);
-                this._clearToPresentationBackdrop();
+                this.clearOutput();
 
                 this.renderFirstPass(frame.firstPass);
 
@@ -1725,6 +1894,11 @@
          * This is used when the owning drawer has no renderer-ready frame to submit,
          * for example when the OpenSeadragon world is empty or when no ShaderLayer
          * contributes a second-pass output.
+         *
+         * This drops `__firstPassResult` and `__finalPassResult`, and in shared-context
+         * mode clears the presentation canvas to fully transparent rather than to the
+         * backdrop. A caller that wants a clean surface to render a second pass into -
+         * and that must keep the pass results it just installed - wants `clearOutput()`.
          *
          * @returns {void}
          */
@@ -1836,6 +2010,32 @@
             program.build(this._shaders, this.getShaderLayerOrder());
             // Used also to re-compile, set requiresLoad to true
             program.requiresLoad = true;
+
+            // Check the fragment uniform budget before the driver does. Left to the driver this
+            // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
+            // MAX_FRAGMENT_UNIFORM_VECTORS(256)" with no indication of which declarations are
+            // responsible — and only on the devices that are too small, which are rarely the ones
+            // being developed on.
+            const uniformBudget = this.backend && this.backend.maxFragmentUniformVectors;
+            if (uniformBudget && typeof program.fragmentShader === "string") {
+                const estimate = $.FlexRenderer.WebGLImplementation
+                    .estimateFragmentUniformVectors(program.fragmentShader);
+                program.__uniformVectorEstimate = estimate;
+
+                if (estimate.total > uniformBudget) {
+                    const worst = estimate.items.slice(0, 8)
+                        .map(item => `    ${String(item.vectors).padStart(4)}  ${item.type} ${item.name}` +
+                            `${item.length > 1 ? `[${item.length}]` : ""}`)
+                        .join("\n");
+                    $.console.error(
+                        `[FlexRenderer] Program "${key}" declares ~${estimate.total} fragment uniform ` +
+                        `vectors but this device allows ${uniformBudget}; the link is expected to fail.\n` +
+                        `Largest consumers:\n${worst}\n` +
+                        `Reduce the number of shader layers, or the number of colormap / ` +
+                        `advanced_slider controls — those are the largest per-control consumers.`
+                    );
+                }
+            }
 
             const errMsg = program.getValidateErrorMessage();
             if (errMsg) {

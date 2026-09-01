@@ -462,7 +462,7 @@
         }
 
         /**
-         * Mirror control state (encodedValue) from the main drawer's shaders into
+         * Mirror control state (IControl.encoded) from the main drawer's shaders into
          * the navigator drawer's shader instances. Required because shader-internal
          * UI controls (color picker, range sliders, etc.) mutate the main shader's
          * controls directly via `owner.invalidate()` and never reach the navigator,
@@ -546,17 +546,17 @@
                     if (!navControl || typeof navControl.set !== "function" || !mainControl) {
                         continue;
                     }
-                    if (mainControl.encodedValue === undefined) {
+                    if (mainControl.encoded === undefined) {
                         continue;
                     }
-                    if (navControl.encodedValue === mainControl.encodedValue) {
+                    if (navControl.encoded === mainControl.encoded) {
                         continue;
                     }
 
                     const prevSuppress = navControl._suppressVisualizationChanged;
                     navControl._suppressVisualizationChanged = true;
                     try {
-                        navControl.set(mainControl.encodedValue);
+                        navControl.set(mainControl.encoded);
                     } catch (e) {
                         $.console.warn(
                             "FlexDrawer: failed to sync navigator control state",

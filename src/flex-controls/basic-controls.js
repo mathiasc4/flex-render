@@ -633,7 +633,6 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * TODO: improve overall setter API
      * Allows to set the control value programatically.
      * Does not trigger canvas re-rednreing, must be done manually (e.g. control.owner.invalidate()).
-     * You should raise the 'change' event when the value is changed.
      * @param encodedValue any value the given control can support, encoded
      *  (e.g. as the control acts on the GUI - for input number of
      *    values between 5 and 42, the value can be '6' or 6 or 6.15
@@ -873,8 +872,8 @@ $.FlexRenderer.UIControls.IControl = class IControl {
             shaderType: this.owner.constructor.type(),
             controlName: this.name,
             controlVariableName: event,  // we use here event for names of the control vars like 'default', 'breaks'
-            encodedValue: this.encodedValue,
-            value: this.value
+            encodedValue: encodedValue,
+            value: value
         });
     }
 
@@ -977,6 +976,15 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
     set(encodedValue) {
         this.encodedValue = encodedValue;
         this.value = this.component.normalize(this.component.decode(this.encodedValue), this.params);
+
+        if (this.params.interactive) {
+            let node = document.getElementById(this.id);
+            if (node) {
+                // TODO: some elements do not have 'value' attribute, but 'checked' or 'selected' instead
+                // no synthetic 'change' event dispatched here: the listener from init() would re-enter set()
+                node.value = this.encodedValue;
+            }
+        }
 
         this.changed("default", this.value, this.encodedValue, this);
         this.store(this.encodedValue);
@@ -1083,6 +1091,7 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
                 c2.value = encoded;
             }
             _this._c2.value = value;
+            _this._c2.encodedValue = encoded;
             _this.changed("default", value, encoded, owner);
         }, true); //silently fail if registered
         this._c2.on("default", function(value, encoded, owner) {
@@ -1091,10 +1100,19 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
                 c1.value = encoded;
             }
             _this._c1.value = value;
+            _this._c1.encodedValue = encoded;
             // Only C1 loads values to gpu, request change
             _this._c1._needsLoad = true;
             _this.changed("default", value, encoded, owner);
         }, true); //silently fail if registered
+    }
+
+    /**
+     * Writing the range half is enough: its "default" handler registered in init()
+     * mirrors the value into _c2 (and its DOM node) and raises the change event on this control.
+     */
+    set(encodedValue) {
+        this._c1.set(encodedValue);
     }
 
     glDrawing(program, dimension, gl) {

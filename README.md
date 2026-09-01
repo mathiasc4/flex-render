@@ -66,6 +66,11 @@ OpenSeadragon drawer state, render dimensions, renderer-local presentation canva
 Calling `clear()` on one shared renderer clears only that renderer's presentation canvas; it must not
 clear another renderer's visible output.
 
+`clear()` drops the renderer's pass results and, in shared-context mode, clears the presentation
+canvas to fully transparent. `clearOutput()` is the other one: it clears the output surface to the
+presentation backdrop and keeps the pass results, which is what a caller re-running only the second
+pass wants.
+
 Important constraints:
 
 - all renderers using the same `sharedContextKey` must request the same WebGL version;
@@ -397,6 +402,66 @@ Shader layer defines ``color`` as a name for UI control:
 But since it does not hardcode any specific properties (missing `required` property map),
 we can provide any values we want (including type change) as long as we pass the ``accepts`` check,
 which in this case verifies the control outputs ``vec3`` type.
+
+### Icon Fonts
+The `icon` control and the `iconmap` shader layer draw glyphs into the WebGL
+texture atlas. FlexRenderer ships **icon metadata only** — names, aliases, tags
+and codepoints. **No webfont is bundled or downloaded by the library.** Loading
+a font is the host page's job, and it only needs to do so for the sets it wants.
+
+| Set | Font family | Host must load |
+| --- | --- | --- |
+| `html-glyphs` *(default)* | system emoji / symbol fonts | nothing |
+| `ph-regular-common` | `Phosphor` | Phosphor regular |
+| `ph-fill-common` | `Phosphor-Fill` | Phosphor fill |
+| `ph-brands-common` | `Phosphor` | Phosphor regular |
+| `fa-solid-common` | `Font Awesome 6 Free` (900) | Font Awesome 6 Free |
+| `fa-regular-common` | `Font Awesome 6 Free` (400) | Font Awesome 6 Free |
+| `fa-brands-common` | `Font Awesome 6 Brands` | Font Awesome 6 Free |
+
+`html-glyphs` is the default precisely because it renders with no setup. To use
+the others, add the stylesheet (or an equivalent local `@font-face`):
+
+````html
+<!-- Phosphor -->
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/fill/style.css">
+<!-- Font Awesome -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+````
+
+Then select the set per control or per vector-tile class:
+
+````js
+{ type: 'icon', iconSet: 'ph-fill-common', default: 'map-pin', color: '#c03030' }
+````
+
+Loading order does not matter. Because codepoints are known ahead of time, only
+the *font* is required — not the stylesheet's CSS classes. Icons whose font has
+not arrived yet stay unrendered and resolve themselves once `document.fonts`
+reports the family, so a late or slow CDN costs nothing but a short delay.
+
+Both families are addressed by plain names (`house`, `map-pin`, `star`), and
+Font Awesome names are registered as aliases on the Phosphor sets, so a style
+written as `icon: 'fa-house'` resolves against Phosphor too. Font Awesome is
+kept for the brand icons Phosphor has no counterpart for: `docker`, `npm`,
+`node-js`, `firefox`, `edge`, `python`.
+
+To contribute your own font, register a set:
+
+````js
+OpenSeadragon.FlexRenderer.UIControls.IconLibrary.registerSet('my-icons', {
+   kind: 'font-class',
+   fontFamily: "'My Icon Font'",
+   fontWeight: '400',
+   items: [{ name: 'logo', className: 'mi mi-logo', aliases: [], tags: [] }]
+});
+````
+
+Entries without a codepoint fall back to probing the icon stylesheet in the
+DOM, so a set defined this way works as long as its CSS is loaded. The bundled
+sets get their codepoints from `src/flex-controls/icon-sets/icon-codepoints.generated.js`,
+regenerated with `npm run icons`.
 
 ### Changing Configuration Values
 Config values can be changed anytime. It is a good idea to not to force the renderer to copy the object,

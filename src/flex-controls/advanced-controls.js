@@ -101,7 +101,9 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
     prepare() {
         //Note that builtin colormap must support 2->this.MAX_SAMPLES color arrays
         this.MAX_SAMPLES = 8;
-        this.GLOBAL_GLSL_KEY = 'colormap';
+        this.GLOBAL_GLSL_KEY = 'colormap_lut';
+
+        this._prepareLut();
 
         this.parser = $.FlexRenderer.UIControls.getUiElement("color").decode;
         if (this.params.continuous) {
@@ -110,6 +112,24 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
             this.cssGradient = this._discreteCssFromPallete;
         }
         this.owner.includeGlobalCode(this.GLOBAL_GLSL_KEY, this._glslCode());
+    }
+
+    /**
+     * Shared setup for the atlas-backed lookup table.
+     *
+     * The palette used to live in the shader as `vec3 map[N]` plus `float steps[N+1]`, which cost
+     * 18 uniform vectors for this class and 66 for `custom_colormap` — per control, per layer.
+     * Every array element takes a full uniform vector in GLSL ES, so a handful of colormap layers
+     * exhausted MAX_FRAGMENT_UNIFORM_VECTORS on mobile GPUs. Baking the resolved palette into a
+     * 1-row RGBA strip in the texture atlas costs a single `int` uniform instead.
+     */
+    _prepareLut() {
+        // 256 texels pad to 258, still inside the atlas' default 512px layer width, so the atlas
+        // never has to grow a layer for one of these. 512 would pad past it and force a doubling.
+        this.LUT_SIZE = 256;
+        this.atlas = this.owner.backend ? this.owner.backend.secondAtlas : null;
+        this.textureId = -1;
+        this._lutDirty = true;
     }
 
     init() {
@@ -175,29 +195,114 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
         }
     }
 
+    /**
+     * GLSL for sampling the baked colormap.
+     *
+     * Emitted once for both `colormap` and `custom_colormap`: the two used to register separate
+     * globals that differed only in MAX_SAMPLES, but the LUT form is identical, so
+     * includeGlobalCode's identical-content check collapses them.
+     */
     _glslCode() {
         return `
-#define COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} ${this.MAX_SAMPLES}
-vec3 sample_colormap(in float ratio, in vec3 map[COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES}], in float steps[COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES}+1], in int max_steps, in bool discrete) {
-for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
-    if (ratio <= steps[i]) {
-        if (discrete) return map[i-1];
-
-        float scale = (ratio - steps[i-1]) / (steps[i] - steps[i-1]) - 0.5;
-
-        if (scale < .0) {
-            if (i == 1) return map[0];
-            //scale should be positive, but we need to keep the right direction
-            return mix(map[i-1], map[i-2], -scale);
-        }
-
-        if (i == max_steps) return map[i-1];
-        return mix(map[i-1], map[i], scale);
-    } else if (i >= max_steps) {
-        return map[i-1];
-    }
-}
+#define FLEX_COLORMAP_LUT_N ${this.LUT_SIZE}
+vec3 sample_colormap_lut(in int textureId, in float ratio) {
+// No atlas (e.g. the configurator preview path) — black beats the atlas' magenta error texel.
+if (textureId < 0) return vec3(.0);
+// Half-texel inset: ratio 0 lands on the centre of texel 0, ratio 1 on the centre of texel N-1.
+// osd_atlas_texture() filters LINEAR against a 1px padding ring and does no inset of its own,
+// so sampling the raw edge would bleed the padding in. Clamping first also keeps the uv
+// mirroring inside osd_atlas_texture() on its identity branch.
+float u = (0.5 + clamp(ratio, .0, 1.0) * float(FLEX_COLORMAP_LUT_N - 1)) / float(FLEX_COLORMAP_LUT_N);
+return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
 }`;
+    }
+
+    /**
+     * Colour at `t` in [0,1]. A direct port of the GLSL `sample_colormap` loop this replaces, so
+     * baked output matches what the shader used to compute for the same palette and steps.
+     * @param {number} t
+     * @return {number[]} rgb, each 0..1
+     */
+    _evaluateColor(t) {
+        const map = this.pallete;
+        const steps = this.steps;
+        const maxSteps = this.maxSteps;
+        const discrete = !this.params.continuous;
+        const at = (i) => [map[i * 3], map[i * 3 + 1], map[i * 3 + 2]];
+        const mix = (a, b, s) => [
+            a[0] + (b[0] - a[0]) * s,
+            a[1] + (b[1] - a[1]) * s,
+            a[2] + (b[2] - a[2]) * s
+        ];
+
+        for (let i = 1; i < this.MAX_SAMPLES + 1; i++) {
+            if (t <= steps[i]) {
+                if (discrete) {
+                    return at(i - 1);
+                }
+                const scale = (t - steps[i - 1]) / (steps[i] - steps[i - 1]) - 0.5;
+                if (scale < 0) {
+                    //scale should be positive, but we need to keep the right direction
+                    return i === 1 ? at(0) : mix(at(i - 1), at(i - 2), -scale);
+                }
+                if (i === maxSteps) {
+                    return at(i - 1);
+                }
+                return mix(at(i - 1), at(i), scale);
+            }
+            if (i >= maxSteps) {
+                return at(i - 1);
+            }
+        }
+        // The GLSL original had no return here — falling off the loop was undefined behaviour.
+        // Pinning the last colour makes the baked result deterministic.
+        return at(Math.max(0, maxSteps - 1));
+    }
+
+    /**
+     * Render the palette into a LUT_SIZE x 1 RGBA byte strip.
+     * @return {Uint8Array}
+     */
+    _bakeLut() {
+        const n = this.LUT_SIZE;
+        const pixels = new Uint8Array(n * 4);
+        for (let k = 0; k < n; k++) {
+            // k/(n-1) inverts the shader's inset mapping exactly, so texel k holds the colour the
+            // old shader produced at that ratio.
+            const color = this._evaluateColor(k / (n - 1));
+            for (let channel = 0; channel < 3; channel++) {
+                const value = color[channel];
+                pixels[k * 4 + channel] = Math.round(Math.min(1, Math.max(0, value || 0)) * 255);
+            }
+            pixels[k * 4 + 3] = 255;
+        }
+        return pixels;
+    }
+
+    /**
+     * Bake and push the LUT to the atlas, reusing this control's own slot.
+     *
+     * Deliberately does not go through IAtlasTextureControl's shared `__flexRendererCache`: this
+     * entry is mutated in place whenever the palette or steps change, so sharing a slot between
+     * two controls would let each corrupt the other.
+     */
+    _bakeAndUploadLut() {
+        // prepare() flags the LUT dirty before init() has produced a palette or steps. Stay dirty
+        // rather than baking garbage, so the first draw after init() still gets a real LUT.
+        if (!this.pallete || !Array.isArray(this.steps)) {
+            return;
+        }
+        this._lutDirty = false;
+        if (!this.atlas) {
+            this.textureId = -1;
+            return;
+        }
+        const pixels = this._bakeLut();
+        const opts = { width: this.LUT_SIZE, height: 1 };
+        if (this.textureId < 0 || !this.atlas.updateImage(this.textureId, pixels, opts)) {
+            this.textureId = this.atlas.addImage(pixels, opts);
+        }
+        this.atlas._commitUploads();
     }
 
     updateColormapUI() {
@@ -255,6 +360,7 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
                 this.steps.push(-1);
             }
         }
+        this._lutDirty = true;
     }
 
     _continuousCssFromPallete(pallete) {
@@ -297,18 +403,20 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
         while (this.pallete.length < 3 * this.MAX_SAMPLES) {
             this.pallete.push(0);
         }
+        this._lutDirty = true;
     }
 
     glDrawing(program, gl) {
-        gl.uniform3fv(this.colormapGluint, Float32Array.from(this.pallete));
-        gl.uniform1fv(this.stepsGluint, Float32Array.from(this.steps));
-        gl.uniform1i(this.colormapSizeGluint, this.maxSteps);
+        if (this._lutDirty) {
+            this._bakeAndUploadLut();
+        }
+        gl.uniform1i(this.textureIdGluint, this.textureId);
     }
 
     glLoaded(program, gl) {
-        this.stepsGluint = gl.getUniformLocation(program, this.webGLVariableName + "_steps[0]");
-        this.colormapGluint = gl.getUniformLocation(program, this.webGLVariableName + "_colormap[0]");
-        this.colormapSizeGluint = gl.getUniformLocation(program, this.webGLVariableName + "_colormap_size");
+        this.textureIdGluint = gl.getUniformLocation(program, this.webGLVariableName + "_textureId");
+        // The atlas slot survives a relink, but the uniform value does not.
+        this._lutDirty = true;
     }
 
     toHtml(classes = "", css = "") {
@@ -322,9 +430,7 @@ for (int i = 1; i < COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES} + 1; i++) {
     }
 
     define() {
-        return `uniform vec3 ${this.webGLVariableName}_colormap[COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES}];
-uniform float ${this.webGLVariableName}_steps[COLORMAP_ARRAY_LEN_${this.MAX_SAMPLES}+1];
-uniform int ${this.webGLVariableName}_colormap_size;`;
+        return `uniform int ${this.webGLVariableName}_textureId;`;
     }
 
     get type() {
@@ -335,7 +441,7 @@ uniform int ${this.webGLVariableName}_colormap_size;`;
         if (!value || valueGlType !== 'float') {
             throw new Error(`Incompatible control. Colormap cannot be used with ${this.name} (sampling type '${valueGlType}').`);
         }
-        return `sample_colormap(${value}, ${this.webGLVariableName}_colormap, ${this.webGLVariableName}_steps, ${this.webGLVariableName}_colormap_size, ${!this.params.continuous})`;
+        return `sample_colormap_lut(${this.webGLVariableName}_textureId, ${value})`;
     }
 
     get supports() {
@@ -438,7 +544,11 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
 
     prepare() {
         this.MAX_SAMPLES = 32;
-        this.GLOBAL_GLSL_KEY = 'custom_colormap';
+        // Same key as the parent: the LUT helper no longer depends on MAX_SAMPLES, so the two
+        // classes emit byte-identical GLSL and includeGlobalCode keeps a single copy.
+        this.GLOBAL_GLSL_KEY = 'colormap_lut';
+
+        this._prepareLut();
 
         this.parser = $.FlexRenderer.UIControls.getUiElement("color").decode;
         if (this.params.continuous) {
@@ -567,31 +677,70 @@ $.FlexRenderer.UIControls.AdvancedSlider = class extends $.FlexRenderer.UIContro
         super(owner, name, webGLVariableName);
         this._params = this.getParams(params);
         this.MAX_SLIDERS = 12;
+        // Breaks and masks are packed four floats to a vec4. A GLSL ES array spends a full
+        // uniform vector on every element regardless of its type, so the previous
+        // float[12] + float[13] cost 25 vectors per control where vec4[3] + vec4[4] cost 7.
+        this.BREAK_VEC4S = Math.ceil(this.MAX_SLIDERS / 4);
+        this.MASK_VEC4S = Math.ceil((this.MAX_SLIDERS + 1) / 4);
 
         this.owner.includeGlobalCode('advanced_slider', `
 #define ADVANCED_SLIDER_LEN ${this.MAX_SLIDERS}
-float sample_advanced_slider(in float ratio, in float breaks[ADVANCED_SLIDER_LEN], in float mask[ADVANCED_SLIDER_LEN+1], in bool maskOnly, in float minValue) {
+#define ADVANCED_SLIDER_BREAK_VEC4S ${this.BREAK_VEC4S}
+#define ADVANCED_SLIDER_MASK_VEC4S ${this.MASK_VEC4S}
+
+// Component index into the packed arrays. GLSL ES 3.00 allows dynamic indexing of a vector,
+// so this compiles to the same addressing the flat float arrays used to do.
+float advanced_slider_break(in vec4 packed[ADVANCED_SLIDER_BREAK_VEC4S], in int i) {
+    return packed[i >> 2][i & 3];
+}
+float advanced_slider_mask(in vec4 packed[ADVANCED_SLIDER_MASK_VEC4S], in int i) {
+    return packed[i >> 2][i & 3];
+}
+
+float sample_advanced_slider(in float ratio, in vec4 breaks[ADVANCED_SLIDER_BREAK_VEC4S], in vec4 mask[ADVANCED_SLIDER_MASK_VEC4S], in bool maskOnly, in float minValue) {
 float bigger = .0, actualLength = .0, masked = minValue;
 bool sampling = true;
 for (int i = 0; i < ADVANCED_SLIDER_LEN; i++) {
-    if (breaks[i] < .0) {
-        if (sampling) masked = mask[i];
+    float breakValue = advanced_slider_break(breaks, i);
+    if (breakValue < .0) {
+        if (sampling) masked = advanced_slider_mask(mask, i);
         sampling = false;
         break;
     }
 
     if (sampling) {
-        if (ratio <= breaks[i]) {
+        if (ratio <= breakValue) {
             sampling = false;
-            masked = mask[i];
+            masked = advanced_slider_mask(mask, i);
         } else bigger++;
     }
     actualLength++;
 }
-if (sampling) masked = mask[ADVANCED_SLIDER_LEN];
+if (sampling) masked = advanced_slider_mask(mask, ADVANCED_SLIDER_LEN);
 if (maskOnly) return masked;
 return masked * bigger / actualLength;
 }`);
+    }
+
+    /**
+     * Copy `values` into a vec4-aligned buffer.
+     *
+     * Padded with -1 rather than 0 because -1 is already this control's "unused slot" sentinel —
+     * the sampler loop breaks on a negative break value, so a 0 pad would read as a real
+     * breakpoint at the bottom of the range.
+     *
+     * @param {number[]} values
+     * @param {number} vec4Count
+     * @return {Float32Array}
+     */
+    _packVec4(values, vec4Count) {
+        const packed = new Float32Array(vec4Count * 4);
+        packed.fill(-1);
+        const count = Math.min(values.length, packed.length);
+        for (let i = 0; i < count; i++) {
+            packed[i] = values[i];
+        }
+        return packed;
     }
 
     init() {
@@ -870,8 +1019,8 @@ return masked * bigger / actualLength;
     }
 
     glDrawing(program, gl) {
-        gl.uniform1fv(this.breaksGluint, Float32Array.from(this.value));
-        gl.uniform1fv(this.maskGluint, Float32Array.from(this.mask));
+        gl.uniform4fv(this.breaksGluint, this._packVec4(this.value, this.BREAK_VEC4S));
+        gl.uniform4fv(this.maskGluint, this._packVec4(this.mask, this.MASK_VEC4S));
     }
 
     glLoaded(program, gl) {
@@ -891,8 +1040,8 @@ return masked * bigger / actualLength;
 
     define() {
         return `uniform float ${this.webGLVariableName}_min;
-uniform float ${this.webGLVariableName}_breaks[ADVANCED_SLIDER_LEN];
-uniform float ${this.webGLVariableName}_mask[ADVANCED_SLIDER_LEN+1];`;
+uniform vec4 ${this.webGLVariableName}_breaks[ADVANCED_SLIDER_BREAK_VEC4S];
+uniform vec4 ${this.webGLVariableName}_mask[ADVANCED_SLIDER_MASK_VEC4S];`;
     }
 
     get type() {
@@ -1329,162 +1478,6 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
 };
 $.FlexRenderer.UIControls.registerClass("image", $.FlexRenderer.UIControls.Image);
 
-$.FlexRenderer.UIControls.IconLibrary = {
-    sets: {
-        core: [
-            { name: "house", glyph: "⌂", aliases: ["home", "fa-house", "fa-home"], tags: ["building", "ui"] },
-            { name: "location-pin", glyph: "⌖", aliases: ["pin", "map-pin", "marker", "fa-location-dot", "fa-map-marker-alt"], tags: ["map", "place"] },
-            { name: "flag", glyph: "⚑", aliases: ["banner", "fa-flag"], tags: ["marker", "state"] },
-            { name: "star", glyph: "★", aliases: ["favorite", "fa-star"], tags: ["rating", "bookmark"] },
-            { name: "heart", glyph: "♥", aliases: ["like", "fa-heart"], tags: ["favorite"] },
-            { name: "circle", glyph: "●", aliases: ["dot", "fa-circle"], tags: ["shape"] },
-            { name: "square", glyph: "■", aliases: ["fa-square"], tags: ["shape"] },
-            { name: "triangle", glyph: "▲", aliases: ["warning", "fa-triangle-exclamation", "fa-exclamation-triangle"], tags: ["shape", "alert"] },
-            { name: "diamond", glyph: "◆", aliases: ["gem", "fa-diamond"], tags: ["shape"] },
-            { name: "plus", glyph: "✚", aliases: ["add", "cross", "fa-plus"], tags: ["action"] },
-            { name: "check", glyph: "✓", aliases: ["ok", "success", "fa-check"], tags: ["action"] },
-            { name: "xmark", glyph: "✕", aliases: ["close", "times", "fa-xmark", "fa-times"], tags: ["action"] },
-            { name: "info", glyph: "ℹ", aliases: ["information", "fa-circle-info", "fa-info-circle"], tags: ["status"] },
-            { name: "gear", glyph: "⚙", aliases: ["settings", "cog", "fa-gear", "fa-cog"], tags: ["ui"] },
-            { name: "search", glyph: "⌕", aliases: ["magnifier", "fa-magnifying-glass", "fa-search"], tags: ["ui"] },
-            { name: "mail", glyph: "✉", aliases: ["envelope", "fa-envelope"], tags: ["communication"] },
-            { name: "phone", glyph: "☎", aliases: ["call", "fa-phone"], tags: ["communication"] },
-            { name: "user", glyph: "☺", aliases: ["person", "profile", "fa-user"], tags: ["people"] },
-            { name: "lock", glyph: "🔒", aliases: ["secure", "fa-lock"], tags: ["security"] },
-            { name: "unlock", glyph: "🔓", aliases: ["fa-unlock"], tags: ["security"] },
-            { name: "eye", glyph: "◉", aliases: ["view", "show", "fa-eye"], tags: ["visibility"] },
-            { name: "sun", glyph: "☀", aliases: ["brightness", "fa-sun"], tags: ["weather"] },
-            { name: "cloud", glyph: "☁", aliases: ["fa-cloud"], tags: ["weather"] },
-            { name: "umbrella", glyph: "☂", aliases: ["rain", "fa-umbrella"], tags: ["weather"] },
-            { name: "music", glyph: "♫", aliases: ["note", "fa-music"], tags: ["media"] }
-        ]
-    },
-
-    getSetNames() {
-        return Object.keys(this.sets);
-    },
-
-    getIcons(setName = "core") {
-        if (setName === "all") {
-            return Object.values(this.sets).flat();
-        }
-        return this.sets[setName] || this.sets.core || [];
-    },
-
-    resolveIconSpec(query, setName = "core") {
-        const value = String(query === undefined || query === null ? "" : query).trim();
-        if (!value) {
-            return null;
-        }
-
-        const normalized = this._normalizeName(value);
-        const directChar = this._resolveDirectGlyph(value);
-        if (directChar) {
-            return {
-                key: `glyph:${directChar}`,
-                glyph: directChar,
-                label: value,
-                set: normalized.startsWith("&#") || normalized.startsWith("&") ? "entity" : "literal"
-            };
-        }
-
-        const icons = this.getIcons(setName);
-        for (const icon of icons) {
-            const haystack = [icon.name].concat(icon.aliases || []);
-            if (haystack.map(item => this._normalizeName(item)).includes(normalized)) {
-                return {
-                    key: `${setName}:${icon.name}`,
-                    glyph: icon.glyph,
-                    label: icon.name,
-                    set: setName,
-                    icon: icon
-                };
-            }
-        }
-
-        return null;
-    },
-
-    search(query = "", setName = "core") {
-        const value = this._normalizeName(query);
-        const icons = this.getIcons(setName);
-        if (!value) {
-            return icons.slice(0, 24);
-        }
-
-        return icons.filter(icon => {
-            const tokens = [icon.name].concat(icon.aliases || [], icon.tags || []);
-            return tokens.some(token => this._normalizeName(token).includes(value));
-        }).slice(0, 48);
-    },
-
-    _normalizeName(value) {
-        let normalized = String(value || "").trim().toLowerCase();
-        normalized = normalized.replace(/\s+/g, " ");
-        normalized = normalized.replace(/\b(?:fa-solid|fa-regular|fa-light|fa-thin|fa-brands|fa-duotone)\b/g, "");
-        normalized = normalized.replace(/\b(?:fas|far|fal|fat|fab|fad)\b/g, "");
-        normalized = normalized.replace(/\s+/g, " ").trim();
-
-        if (normalized.includes(" ")) {
-            const tokens = normalized.split(" ").filter(Boolean);
-            normalized = tokens[tokens.length - 1];
-        }
-
-        return normalized;
-    },
-
-    _resolveDirectGlyph(value) {
-        if (!value) {
-            return null;
-        }
-
-        const entityGlyph = this._decodeHtmlEntity(value);
-        if (entityGlyph) {
-            return entityGlyph;
-        }
-
-        const codeMatch =
-            value.match(/^&#x([0-9a-f]+);?$/i) ||
-            value.match(/^&#([0-9]+);?$/i) ||
-            value.match(/^0x([0-9a-f]+)$/i) ||
-            value.match(/^u\+([0-9a-f]+)$/i) ||
-            value.match(/^\\u\{?([0-9a-f]+)\}?$/i);
-
-        if (codeMatch) {
-            const radix = /^[0-9]+$/.test(codeMatch[1]) && value.startsWith("&#") && !/x/i.test(value) ? 10 : 16;
-            const codePoint = Number.parseInt(codeMatch[1], radix);
-            if (Number.isInteger(codePoint)) {
-                try {
-                    return String.fromCodePoint(codePoint);
-                } catch (_) {
-                    return null;
-                }
-            }
-        }
-
-        const symbols = [...value];
-        if (symbols.length === 1) {
-            return symbols[0];
-        }
-
-        return null;
-    },
-
-    _decodeHtmlEntity(value) {
-        if (typeof document === "undefined" || !String(value).includes("&")) {
-            return null;
-        }
-
-        const textarea = document.createElement("textarea");
-        textarea.innerHTML = String(value);
-        const decoded = textarea.value;
-        if (decoded && decoded !== value && [...decoded].length === 1) {
-            return decoded;
-        }
-        return null;
-    }
-};
-
 $.FlexRenderer.UIControls.IconLibrary = (() => {
     const makeGlyph = (name, glyph, aliases = [], tags = []) => ({
         name,
@@ -1493,12 +1486,12 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
         tags
     });
 
-    const makeClass = (name, className, aliases = [], tags = []) => ({
-        name,
-        className,
-        aliases,
-        tags
-    });
+    // Font-backed sets (Phosphor, Font Awesome) register themselves from
+    // src/flex-controls/icon-sets/*.js via registerSet(). None of them ship a
+    // webfont — the host page loads the font it wants, and icons stay pending
+    // until document.fonts reports the family. Only "html-glyphs" renders with
+    // no host setup at all, which is why it is the default.
+    const DEFAULT_SET = "html-glyphs";
 
     const htmlGlyphs = [
         makeGlyph("star", "★", ["favourite", "favorite", "&starf;", "filled star"], ["shape", "rating"]),
@@ -1554,134 +1547,6 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
         makeGlyph("ruler", "📏", ["measure"], ["tools"])
     ];
 
-    const faSolidCommon = [
-        makeClass("house", "fa-solid fa-house", ["home"], ["building", "ui"]),
-        makeClass("location-dot", "fa-solid fa-location-dot", ["map-marker", "pin"], ["map", "marker"]),
-        makeClass("flag", "fa-solid fa-flag", [], ["marker"]),
-        makeClass("star", "fa-solid fa-star", [], ["rating"]),
-        makeClass("heart", "fa-solid fa-heart", [], ["status"]),
-        makeClass("circle", "fa-solid fa-circle", ["dot"], ["shape"]),
-        makeClass("square", "fa-solid fa-square", [], ["shape"]),
-        makeClass("triangle-exclamation", "fa-solid fa-triangle-exclamation", ["warning", "alert"], ["status"]),
-        makeClass("diamond", "fa-solid fa-gem", ["gem"], ["shape"]),
-        makeClass("plus", "fa-solid fa-plus", ["add"], ["action"]),
-        makeClass("minus", "fa-solid fa-minus", ["subtract"], ["action"]),
-        makeClass("xmark", "fa-solid fa-xmark", ["close", "times"], ["action"]),
-        makeClass("check", "fa-solid fa-check", ["ok"], ["action"]),
-        makeClass("circle-info", "fa-solid fa-circle-info", ["info", "information"], ["status"]),
-        makeClass("circle-question", "fa-solid fa-circle-question", ["question", "help"], ["status"]),
-        makeClass("gear", "fa-solid fa-gear", ["cog", "settings"], ["ui"]),
-        makeClass("magnifying-glass", "fa-solid fa-magnifying-glass", ["search"], ["ui"]),
-        makeClass("envelope", "fa-solid fa-envelope", ["mail"], ["communication"]),
-        makeClass("phone", "fa-solid fa-phone", ["call"], ["communication"]),
-        makeClass("user", "fa-solid fa-user", ["person", "profile"], ["people"]),
-        makeClass("users", "fa-solid fa-users", ["group"], ["people"]),
-        makeClass("lock", "fa-solid fa-lock", [], ["security"]),
-        makeClass("unlock", "fa-solid fa-unlock", [], ["security"]),
-        makeClass("eye", "fa-solid fa-eye", ["visible"], ["visibility"]),
-        makeClass("eye-slash", "fa-solid fa-eye-slash", ["hidden"], ["visibility"]),
-        makeClass("sun", "fa-solid fa-sun", [], ["weather"]),
-        makeClass("moon", "fa-solid fa-moon", [], ["weather"]),
-        makeClass("cloud", "fa-solid fa-cloud", [], ["weather"]),
-        makeClass("cloud-rain", "fa-solid fa-cloud-rain", ["rain"], ["weather"]),
-        makeClass("umbrella", "fa-solid fa-umbrella", [], ["weather"]),
-        makeClass("snowflake", "fa-solid fa-snowflake", [], ["weather"]),
-        makeClass("bolt", "fa-solid fa-bolt", ["lightning"], ["energy"]),
-        makeClass("music", "fa-solid fa-music", ["note"], ["media"]),
-        makeClass("play", "fa-solid fa-play", [], ["media"]),
-        makeClass("pause", "fa-solid fa-pause", [], ["media"]),
-        makeClass("stop", "fa-solid fa-stop", [], ["media"]),
-        makeClass("backward", "fa-solid fa-backward", [], ["media"]),
-        makeClass("forward", "fa-solid fa-forward", [], ["media"]),
-        makeClass("image", "fa-solid fa-image", ["photo"], ["media"]),
-        makeClass("camera", "fa-solid fa-camera", [], ["media"]),
-        makeClass("video", "fa-solid fa-video", [], ["media"]),
-        makeClass("folder", "fa-solid fa-folder", [], ["ui"]),
-        makeClass("file", "fa-solid fa-file", ["document"], ["ui"]),
-        makeClass("file-lines", "fa-solid fa-file-lines", ["file-text"], ["ui"]),
-        makeClass("trash", "fa-solid fa-trash", ["delete", "bin"], ["action"]),
-        makeClass("pen", "fa-solid fa-pen", ["edit", "pencil"], ["action"]),
-        makeClass("scissors", "fa-solid fa-scissors", ["cut"], ["action"]),
-        makeClass("copy", "fa-solid fa-copy", [], ["action"]),
-        makeClass("paste", "fa-solid fa-paste", [], ["action"]),
-        makeClass("download", "fa-solid fa-download", [], ["action"]),
-        makeClass("upload", "fa-solid fa-upload", [], ["action"]),
-        makeClass("share-nodes", "fa-solid fa-share-nodes", ["share"], ["action"]),
-        makeClass("link", "fa-solid fa-link", [], ["action"]),
-        makeClass("filter", "fa-solid fa-filter", [], ["ui"]),
-        makeClass("sliders", "fa-solid fa-sliders", ["adjust"], ["ui"]),
-        makeClass("palette", "fa-solid fa-palette", ["color"], ["ui"]),
-        makeClass("brush", "fa-solid fa-brush", [], ["tools"]),
-        makeClass("ruler", "fa-solid fa-ruler", ["measure"], ["tools"]),
-        makeClass("crop", "fa-solid fa-crop", [], ["tools"]),
-        makeClass("crosshairs", "fa-solid fa-crosshairs", ["target"], ["marker"]),
-        makeClass("bullseye", "fa-solid fa-bullseye", [], ["marker"]),
-        makeClass("tag", "fa-solid fa-tag", ["label"], ["ui"]),
-        makeClass("bookmark", "fa-solid fa-bookmark", [], ["ui"]),
-        makeClass("clock", "fa-solid fa-clock", ["time"], ["ui"]),
-        makeClass("calendar", "fa-solid fa-calendar", ["date"], ["ui"]),
-        makeClass("microscope", "fa-solid fa-microscope", [], ["science"]),
-        makeClass("flask", "fa-solid fa-flask", [], ["science"]),
-        makeClass("dna", "fa-solid fa-dna", [], ["science"]),
-        makeClass("leaf", "fa-solid fa-leaf", [], ["nature"]),
-        makeClass("fire", "fa-solid fa-fire", [], ["status"]),
-        makeClass("droplet", "fa-solid fa-droplet", ["water"], ["nature"]),
-        makeClass("seedling", "fa-solid fa-seedling", [], ["nature"]),
-        makeClass("hospital", "fa-solid fa-hospital", [], ["medical"]),
-        makeClass("stethoscope", "fa-solid fa-stethoscope", [], ["medical"]),
-        makeClass("syringe", "fa-solid fa-syringe", [], ["medical"]),
-        makeClass("pills", "fa-solid fa-pills", ["pill"], ["medical"]),
-        makeClass("bug", "fa-solid fa-bug", [], ["status"]),
-        makeClass("shield-halved", "fa-solid fa-shield-halved", ["shield"], ["security"]),
-        makeClass("database", "fa-solid fa-database", [], ["data"]),
-        makeClass("server", "fa-solid fa-server", [], ["data"]),
-        makeClass("chart-line", "fa-solid fa-chart-line", ["analytics"], ["data"]),
-        makeClass("chart-pie", "fa-solid fa-chart-pie", [], ["data"]),
-        makeClass("layer-group", "fa-solid fa-layer-group", ["layers"], ["ui"]),
-        makeClass("grid", "fa-solid fa-table-cells", ["table", "cells"], ["ui"])
-    ];
-
-    const faRegularCommon = [
-        makeClass("star", "fa-regular fa-star", [], ["rating"]),
-        makeClass("heart", "fa-regular fa-heart", [], ["status"]),
-        makeClass("circle", "fa-regular fa-circle", [], ["shape"]),
-        makeClass("square", "fa-regular fa-square", [], ["shape"]),
-        makeClass("bookmark", "fa-regular fa-bookmark", [], ["ui"]),
-        makeClass("bell", "fa-regular fa-bell", [], ["ui"]),
-        makeClass("calendar", "fa-regular fa-calendar", [], ["ui"]),
-        makeClass("clock", "fa-regular fa-clock", [], ["ui"]),
-        makeClass("file", "fa-regular fa-file", [], ["ui"]),
-        makeClass("file-lines", "fa-regular fa-file-lines", [], ["ui"]),
-        makeClass("folder", "fa-regular fa-folder", [], ["ui"]),
-        makeClass("image", "fa-regular fa-image", [], ["media"]),
-        makeClass("message", "fa-regular fa-message", ["comment"], ["communication"]),
-        makeClass("circle-question", "fa-regular fa-circle-question", ["help"], ["status"]),
-        makeClass("circle-user", "fa-regular fa-circle-user", ["profile"], ["people"])
-    ];
-
-    const faBrandsCommon = [
-        makeClass("github", "fa-brands fa-github", [], ["brand"]),
-        makeClass("gitlab", "fa-brands fa-gitlab", [], ["brand"]),
-        makeClass("docker", "fa-brands fa-docker", [], ["brand"]),
-        makeClass("chrome", "fa-brands fa-chrome", [], ["brand"]),
-        makeClass("firefox", "fa-brands fa-firefox", [], ["brand"]),
-        makeClass("edge", "fa-brands fa-edge", [], ["brand"]),
-        makeClass("linux", "fa-brands fa-linux", [], ["brand"]),
-        makeClass("windows", "fa-brands fa-windows", [], ["brand"]),
-        makeClass("apple", "fa-brands fa-apple", [], ["brand"]),
-        makeClass("google", "fa-brands fa-google", [], ["brand"]),
-        makeClass("python", "fa-brands fa-python", [], ["brand"]),
-        makeClass("js", "fa-brands fa-js", ["javascript"], ["brand"]),
-        makeClass("html5", "fa-brands fa-html5", [], ["brand"]),
-        makeClass("css3", "fa-brands fa-css3-alt", ["css3-alt"], ["brand"]),
-        makeClass("node", "fa-brands fa-node-js", ["node-js"], ["brand"]),
-        makeClass("npm", "fa-brands fa-npm", [], ["brand"]),
-        makeClass("slack", "fa-brands fa-slack", [], ["brand"]),
-        makeClass("discord", "fa-brands fa-discord", [], ["brand"]),
-        makeClass("figma", "fa-brands fa-figma", [], ["brand"]),
-        makeClass("twitter", "fa-brands fa-x-twitter", ["x-twitter"], ["brand"])
-    ];
-
     const sets = {
         "html-glyphs": {
             kind: "glyph",
@@ -1692,42 +1557,48 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
             fontFamily: "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif",
             fontWeight: "400",
             items: htmlGlyphs
-        },
-        "fa-solid-common": {
-            kind: "font-class",
-            fontFamily: "'Font Awesome 6 Free','Font Awesome 5 Free'",
-            fontWeight: "900",
-            items: faSolidCommon
-        },
-        "fa-regular-common": {
-            kind: "font-class",
-            fontFamily: "'Font Awesome 6 Free','Font Awesome 5 Free'",
-            fontWeight: "400",
-            items: faRegularCommon
-        },
-        "fa-brands-common": {
-            kind: "font-class",
-            fontFamily: "'Font Awesome 6 Brands','Font Awesome 5 Brands'",
-            fontWeight: "400",
-            items: faBrandsCommon
         }
     };
 
     return {
         sets,
 
+        /**
+         * Add or replace an icon set. Used by the bundled set files
+         * (`icon-sets/phosphor.js`, `icon-sets/font-awesome.js`) and available
+         * to host applications that want to contribute their own font.
+         *
+         * @param {string} name set identifier, also accepted as an `iconSet`
+         *   value and as a `set:icon` query prefix
+         * @param {object} definition
+         * @param {string} definition.kind `"glyph"` for literal characters,
+         *   `"font-class"` for icon fonts addressed by CSS class
+         * @param {string} definition.fontFamily CSS font-family list the
+         *   glyphs are drawn with
+         * @param {string} definition.fontWeight CSS font-weight
+         * @param {Array} definition.items `{name, glyph|className, aliases, tags}`
+         *   entries; `font-class` items resolve their codepoint from
+         *   {@link OpenSeadragon.FlexRenderer.UIControls.IconCodepoints},
+         *   falling back to a DOM probe of the icon stylesheet.
+         * @return {object} this, for chaining
+         */
+        registerSet(name, definition) {
+            this.sets[name] = definition;
+            return this;
+        },
+
         getSetNames() {
             return Object.keys(this.sets);
         },
 
-        getSet(setName = "fa-solid-common") {
+        getSet(setName = DEFAULT_SET) {
             if (setName === "core") {
                 return this.sets["html-glyphs"];
             }
-            return this.sets[setName] || this.sets["fa-solid-common"];
+            return this.sets[setName] || this.sets[DEFAULT_SET];
         },
 
-        getIcons(setName = "fa-solid-common") {
+        getIcons(setName = DEFAULT_SET) {
             return this.getSet(setName).items || [];
         },
 
@@ -1743,7 +1614,7 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
             });
         },
 
-        search(query = "", setName = "fa-solid-common", maxResults = 120) {
+        search(query = "", setName = DEFAULT_SET, maxResults = 120) {
             const set = this.getSet(setName);
             const normalized = this._normalizeName(query);
 
@@ -1787,7 +1658,7 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
             }));
         },
 
-        resolveIconSpec(query, setName = "fa-solid-common") {
+        resolveIconSpec(query, setName = DEFAULT_SET) {
             const raw = String(query === undefined || query === null ? "" : query).trim();
             if (!raw) {
                 return null;
@@ -1844,6 +1715,7 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
                     set: setName,
                     renderMode: "class",
                     className: icon.className,
+                    codepoint: icon.codepoint,
                     fontFamily: set.fontFamily,
                     fontWeight: set.fontWeight,
                     icon
@@ -1853,7 +1725,7 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
             return null;
         },
 
-        resolveAnyIconSpec(query, preferredSetName = "fa-solid-common") {
+        resolveAnyIconSpec(query, preferredSetName = DEFAULT_SET) {
             const raw = String(query === undefined || query === null ? "" : query).trim();
             if (!raw) {
                 return null;
@@ -1945,7 +1817,7 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
 
         renderIconToCanvas(spec = {}) {
             const iconQuery = String(spec.icon || "").trim();
-            const iconSet = spec.iconSet || "fa-solid-common";
+            const iconSet = spec.iconSet || DEFAULT_SET;
             const size = Math.max(16, Number.parseInt(spec.size, 10) || 160);
             const padding = Math.max(0, Number.parseInt(spec.padding, 10) || 0);
             const color = spec.color || "#ff0000";
@@ -1965,8 +1837,17 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
 
             const renderSpec = this._resolveRenderSpec(resolved, glyphFontFamily, glyphFontWeight);
             if (!renderSpec || !renderSpec.text) {
-                // Class probe failed — Font Awesome CSS likely not loaded yet.
+                // Neither a known codepoint nor a usable class probe — for a
+                // font-backed set that means the icon stylesheet hasn't loaded.
                 return { canvas: null, cacheKey: null, ready: false, retry: resolved.renderMode === "class" };
+            }
+
+            // A codepoint resolves without touching the DOM, so it succeeds even
+            // when the webfont is missing — drawing it now would bake a tofu box
+            // into the atlas. Hold off and let the caller retry; every retry path
+            // hangs off document.fonts, which is exactly what we are waiting on.
+            if (resolved.renderMode === "class" && !this._isFontAvailable(renderSpec.fontFamily, renderSpec.fontWeight)) {
+                return { canvas: null, cacheKey: null, ready: false, retry: true };
             }
 
             const canvas = this._renderIconCanvas(renderSpec, {
@@ -2024,9 +1905,84 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
                 };
             }
             if (resolved.renderMode === "class") {
+                const codepoint = this._lookupCodepoint(resolved);
+                if (codepoint !== undefined) {
+                    return {
+                        text: String.fromCodePoint(codepoint),
+                        fontFamily: resolved.fontFamily,
+                        fontWeight: resolved.fontWeight || glyphFontWeight || "400"
+                    };
+                }
                 return this._resolveFontClassRenderSpec(resolved.className, resolved, glyphFontWeight);
             }
             return null;
+        },
+
+        // Curated icons carry a generated codepoint (see icon-sets/
+        // icon-codepoints.generated.js), which lets them render from the
+        // webfont alone. Anything outside the curated lists — a class the user
+        // typed by hand — still falls back to probing the icon stylesheet.
+        _lookupCodepoint(resolved) {
+            if (Number.isInteger(resolved.codepoint)) {
+                return resolved.codepoint;
+            }
+            const icon = resolved.icon;
+            if (icon && Number.isInteger(icon.codepoint)) {
+                return icon.codepoint;
+            }
+            const table = $.FlexRenderer.UIControls.IconCodepoints;
+            if (table && resolved.className && Number.isInteger(table[resolved.className])) {
+                return table[resolved.className];
+            }
+            return undefined;
+        },
+
+        // True when the browser can draw text in any family of the list. Never
+        // cached: the answer flips from false to true the moment the host's
+        // webfont finishes loading.
+        //
+        // On a miss this also *requests* the font. A @font-face declaration
+        // alone downloads nothing — the browser fetches the file only once
+        // something uses the family — and we render on a canvas, which does not
+        // count as a use. Without this kick the check would stay false forever
+        // on a page that loaded the stylesheet but has no icon elements in DOM.
+        _isFontAvailable(fontFamily, fontWeight) {
+            if (typeof document === "undefined" || !document.fonts || typeof document.fonts.check !== "function") {
+                return true;
+            }
+            const families = String(fontFamily || "").split(",").map(name => name.trim()).filter(Boolean);
+            if (!families.length) {
+                return true;
+            }
+            const weight = fontWeight || "400";
+            const available = families.some((family) => {
+                try {
+                    return document.fonts.check(`${weight} 34px ${family}`);
+                } catch (_) {
+                    // Malformed family name — let the render attempt proceed.
+                    return true;
+                }
+            });
+
+            if (!available && typeof document.fonts.load === "function") {
+                this._requestedFonts = this._requestedFonts || {};
+                families.forEach((family) => {
+                    const key = `${weight} ${family}`;
+                    if (this._requestedFonts[key]) {
+                        return;
+                    }
+                    this._requestedFonts[key] = true;
+                    try {
+                        // Rejects when the family is undeclared, which is the
+                        // normal case for a font the host never loaded.
+                        document.fonts.load(`${weight} 34px ${family}`).catch(() => {});
+                    } catch (_) {
+                        // noop
+                    }
+                });
+            }
+
+            return available;
         },
 
         _resolveFontClassRenderSpec(className, resolved, glyphFontWeight) {
@@ -2232,15 +2188,15 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
 $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureControl {
     static docs() {
         return {
-            summary: "Atlas-backed icon control with separate HTML-glyph and Font Awesome sets.",
-            description: "Searches curated icon sets, previews Font Awesome entries by rendering the actual font-backed class in DOM, converts the selected icon to atlas texture content, and samples the second-pass atlas from GLSL.",
+            summary: "Atlas-backed icon control over HTML-glyph, Phosphor and Font Awesome sets.",
+            description: "Searches curated icon sets, rasterizes the selected glyph to atlas texture content, and samples the second-pass atlas from GLSL. Icon webfonts are not bundled: the 'html-glyphs' default renders anywhere, while the Phosphor and Font Awesome sets need the host page to load the corresponding font.",
             kind: "ui-control",
             iconSets: $.FlexRenderer.UIControls.IconLibrary.getSetNames(),
             parameters: [
                 { name: "title", type: "string", default: "Icon" },
                 { name: "interactive", type: "boolean", default: true },
                 { name: "default", type: "string", default: "" },
-                { name: "iconSet", type: "string", default: "fa-solid-common", allowedValues: $.FlexRenderer.UIControls.IconLibrary.getSetNames() },
+                { name: "iconSet", type: "string", default: "html-glyphs", allowedValues: $.FlexRenderer.UIControls.IconLibrary.getSetNames() },
                 { name: "size", type: "number", default: 160 },
                 { name: "padding", type: "number", default: 4 },
                 { name: "color", type: "string", default: "#ff0000" },
@@ -2255,7 +2211,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     }
 
     init() {
-        this.selectedSet = this.load(this.params.iconSet || "fa-solid-common", "set") || (this.params.iconSet || "fa-solid-common");
+        this.selectedSet = this.load(this.params.iconSet || "html-glyphs", "set") || (this.params.iconSet || "html-glyphs");
         this.currentColor = this.params.color || "#ff0000";
         this.encodedValue = this.load(this.params.default);
         this.textureId = -1;
@@ -2543,8 +2499,8 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     // Render through the same canvas pipeline the texture uses, so the
     // picker / trigger preview never diverge from the rendered output.
     // Returns { node, colored }. Falls back to DOM-glyph/CSS-class
-    // rendering only if the canvas pipeline isn't ready (e.g. Font
-    // Awesome CSS still loading); fallback assumes monochrome.
+    // rendering only if the canvas pipeline isn't ready (e.g. the host's
+    // icon webfont is still loading); fallback assumes monochrome.
     _buildIconVisual(iconName, iconSet, resolved, previewSize) {
         const canvasResult = $.FlexRenderer.UIControls.IconLibrary.renderIconToCanvas({
             icon: iconName,
@@ -2688,7 +2644,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
             title: "Icon",
             interactive: true,
             default: "",
-            iconSet: "fa-solid-common",
+            iconSet: "html-glyphs",
             size: 160,
             padding: 4,
             color: "#ff0000",
