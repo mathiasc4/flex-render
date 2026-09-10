@@ -599,15 +599,11 @@ Additional configurator debug pages are available under `test/demo/`:
 
 ## Roadmap
 - Bugfixing & getting ready for the first release
-    - Fixing tests: inherited from OpenSeadragon, they expect incompatible behavior
-    - Fixing coverage tests
-- Adding support for WebGL 1.0 (fallback)
+    - Fixing coverage tests: `grunt coverage` still fails, istanbul/esprima cannot parse the modern JS in `src/`
 - Modularize ShaderLayers
     - Implement modules (sample color, apply gaussian...) to connect together to create a ShaderLayer.
-- Add support for concave clipping polygons.
-- Adding support for better debugging & cropping
+- Clipping & cropping: concave polygons, and better debugging of both
     - For now, only convex polygons are supported
-- Dynamic documentation and configuration schema output that parse available shaders and controls and show what JSON can be used where.
 
 #### What might be supported
 - Canvas2D proxy. People tend to use Canvas2D api to access the rendered data, which
