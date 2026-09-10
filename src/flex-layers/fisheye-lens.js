@@ -3,8 +3,9 @@
      * Interactive fisheye lens shader.
      *
      * Samples one RGBA source through a screen-space fisheye/magnifier lens.
-     * The lens is active while the configured mouse button is held down and
-     * uses FlexRenderer interaction uniforms as its input state.
+     * The lens is active while the configured mouse button is held down — or,
+     * with `buttonMask: -1`, whenever the pointer is inside — and uses
+     * FlexRenderer interaction uniforms as its input state.
      */
     class FisheyeLens extends $.FlexRenderer.ShaderLayer {
         static type() {
@@ -16,7 +17,7 @@
         }
 
         static description() {
-            return "Applies a click-and-hold screen-space fisheye lens to one RGBA source.";
+            return "Applies a screen-space fisheye lens to one RGBA source, driven by a mouse button or by hover.";
         }
 
         static intent() {
@@ -30,6 +31,10 @@
             };
         }
 
+        static requiresInteraction() {
+            return true;
+        }
+
         static exampleParams() {
             return {
                 use_mode: "show",  // eslint-disable-line camelcase
@@ -38,7 +43,7 @@
                 zoom: 3,
                 featherPx: 40,
                 falloffPower: 1.5,
-                buttonMask: 1,
+                buttonMask: 2,
                 showGuides: false,
                 guideOpacity: 0.55,
                 guideWidthPx: 2,
@@ -48,9 +53,10 @@
 
         static docs() {
             return {
-                summary: "Click-and-hold fisheye lens for RGBA sources.",
-                description: "Warps source texture coordinates around the current pointer position while the configured mouse button is held down. When no matching button is down, the shader returns the unwarped source image. Optional guide rings can visualize the active lens radius.",
+                summary: "Pointer-driven fisheye lens for RGBA sources.",
+                description: "Warps source texture coordinates around the current pointer position while the configured mouse button is held down, or, with buttonMask -1, whenever the pointer is inside the viewport. When the lens is inactive, the shader returns the unwarped source image. Optional guide rings can visualize the active lens radius.",
                 kind: "shader",
+                requiresInteraction: true,
                 inputs: [{
                     index: 0,
                     acceptedChannelCounts: [4],
@@ -62,7 +68,7 @@
                     { name: "zoom", ui: "range_input", valueType: "float", default: 3, min: 1, max: 8, step: 0.1 },
                     { name: "featherPx", ui: "range_input", valueType: "float", default: 40, min: 0, max: 250, step: 1 },
                     { name: "falloffPower", ui: "range_input", valueType: "float", default: 1.5, min: 0.25, max: 5, step: 0.05 },
-                    { name: "buttonMask", ui: "select", valueType: "int", default: 1 },
+                    { name: "buttonMask", ui: "select", valueType: "int", default: 2 },
                     { name: "showGuides", ui: "bool", valueType: "bool", default: false },
                     { name: "guideOpacity", ui: "range_input", valueType: "float", default: 0.55, min: 0, max: 1, step: 0.05 },
                     { name: "guideWidthPx", ui: "range_input", valueType: "float", default: 2, min: 1, max: 12, step: 1 },
@@ -70,6 +76,9 @@
                 ],
                 notes: [
                     "Requires FlexDrawer interaction forwarding to be enabled.",
+                    "buttonMask defaults to 2 (secondary button): the primary button pans the OpenSeadragon viewport.",
+                    "With the secondary button, set the drawer's interaction.preventContextMenu to true or the browser context menu opens on every lens drag.",
+                    "buttonMask -1 (\"None (hover)\") activates the lens whenever the pointer is inside, and needs no viewerInputCaptureMode.",
                     "Interaction positions are physical framebuffer pixels with bottom-left origin.",
                     "The first implementation supports a single active lens, not persistent multiple foci.",
                     "The shader samples RGBA only."
@@ -136,9 +145,14 @@
                 buttonMask: {
                     default: {
                         type: "select",
-                        default: 1,
+                        // Secondary, not Primary: a held primary button on an OpenSeadragon canvas
+                        // is a pan gesture, so a primary-driven lens fights the viewport unless the
+                        // host suppresses viewer input globally for one layer's benefit.
+                        default: 2,
                         title: "Button: ",
                         options: [
+                            // Negative sentinel: 0 already means "any button, but some button".
+                            { value: -1, label: "None (hover)" },
                             { value: 0, label: "Any" },
                             { value: 1, label: "Primary" },
                             { value: 2, label: "Secondary" },
@@ -264,9 +278,12 @@ float ${this.uid}_ring(
     int activeButtons = fr_interaction_active_buttons();
     int requiredButtonMask = ${this.buttonMask.sample()};
 
-    bool buttonMatches = requiredButtonMask == 0 ?
-        activeButtons != 0 :
-        ((activeButtons & requiredButtonMask) != 0);
+    // -1 = hover: no button required at all. 0 still means "any button, but some button".
+    bool buttonMatches = requiredButtonMask < 0 ?
+        true :
+        (requiredButtonMask == 0 ?
+            activeButtons != 0 :
+            ((activeButtons & requiredButtonMask) != 0));
 
     bool lensActive =
         fr_interaction_enabled() &&

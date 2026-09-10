@@ -117,9 +117,23 @@
         /**
          * Texture atlas works as a single texture unit. Bind the atlas before using it at desired texture unit.
          * @param textureUnit
+         * @param textureUnitIndex
+         * @param {WebGLProgram} [program] program these uniforms belong to. Passing it lets the
+         *      atlas notice that its cached locations came from a different (possibly deleted)
+         *      program and re-resolve, instead of raising INVALID_OPERATION.
          */
-        bind(textureUnit, textureUnitIndex) {
+        bind(textureUnit, textureUnitIndex, program = undefined) {
             const gl = this.gl;
+
+            if (program && this._locationProgram !== program) {
+                this.load(program);
+            }
+
+            // Flush anything enqueued since the last draw. Producers (icon glyph resolution, a
+            // picked image file, a baked LUT) run on async or DOM stacks where no program and no
+            // framebuffer of ours is bound; letting them enqueue and committing here means the
+            // only texSubImage3D happens inside a draw. Early-returns when nothing is pending.
+            this._commitUploads();
 
             // textureUnit is the numeric unit index (0..N-1)
             gl.activeTexture(textureUnit);
@@ -211,11 +225,60 @@ return texture(u_atlasTex, vec3(st, float(packedLayer)));
         load(program) {
             const gl = this.gl;
 
+            this._locationProgram = program;
             this._atlasTexLoc    = gl.getUniformLocation(program, "u_atlasTex");
             this._atlasWidthLoc = gl.getUniformLocation(program, "u_atlasWidth");
             this._atlasHeightLoc = gl.getUniformLocation(program, "u_atlasHeight");
             this._atlasMetadataRowsLoc = gl.getUniformLocation(program, "u_atlasMetadataRows");
             this._commitUploads();
+        }
+
+        /**
+         * Run GL work that is not part of a draw, without leaking context-global state.
+         *
+         * Atlas uploads are reachable from stacks that have nothing bound and no business
+         * changing what is: `Image.onload` after a file pick, `document.fonts.ready` when icon
+         * glyphs resolve, a DOM change handler. Under a shared WebGL context the texture unit,
+         * array binding and pixel-store flags those stacks would clobber belong to whichever
+         * renderer drew last, which is how a sibling viewer ends up blank.
+         *
+         * Re-entrant: `_commitUploads` can call `_createTexture`, and only the outermost call
+         * queries and restores. `getParameter` is a pipeline stall, so this is not free -- it is
+         * paid once per upload batch, never per draw.
+         *
+         * @param {function(): *} fn work to run with the context borrowed
+         * @returns {*} whatever `fn` returns
+         * @private
+         */
+        _withDetachedGlState(fn) {
+            if (this._detachedDepth) {
+                this._detachedDepth++;
+                try {
+                    return fn();
+                } finally {
+                    this._detachedDepth--;
+                }
+            }
+
+            const gl = this.gl;
+            const activeTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
+            const boundArray = gl.getParameter(gl.TEXTURE_BINDING_2D_ARRAY);
+            const flipY = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+            const alignment = gl.getParameter(gl.UNPACK_ALIGNMENT);
+
+            this._detachedDepth = 1;
+            try {
+                // Atlas sources are top-left origin; the DOM-image branch used to set this and
+                // never restore it, so a later raw-array upload inherited whatever it left.
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                return fn();
+            } finally {
+                this._detachedDepth = 0;
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY);
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, alignment);
+                gl.activeTexture(activeTexture);
+                gl.bindTexture(gl.TEXTURE_2D_ARRAY, boundArray);
+            }
         }
 
         /**
@@ -234,55 +297,64 @@ return texture(u_atlasTex, vec3(st, float(packedLayer)));
         }
 
         _commitUploads() {
-            if (!this.texture) {
-                // allocate storage if not created yet
-                this._createTexture(this.layerWidth, this.layerHeight, this.layers);
-            }
-
-            if (!this._pendingUploads.length && !this._metadataDirty) {
+            if (this.texture && !this._pendingUploads.length && !this._metadataDirty) {
                 return;
             }
 
-            const gl = this.gl;
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
+            this._withDetachedGlState(() => {
+                if (!this.texture) {
+                    // allocate storage if not created yet
+                    this._createTexture(this.layerWidth, this.layerHeight, this.layers);
+                }
 
-            for (const u of this._pendingUploads) {
-                const x = u.x + this.padding;
-                const y = u.y + this.padding;
-                const physicalLayer = u.layer + 1;
-                this._uploadSubImage(gl, u.source, u.w, u.h, physicalLayer, x, y);
-            }
+                if (!this._pendingUploads.length && !this._metadataDirty) {
+                    return;
+                }
 
-            if (this._metadataDirty) {
-                this._uploadMetadata(gl);
-                this._metadataDirty = false;
-            }
+                const gl = this.gl;
+                gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
 
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+                for (const u of this._pendingUploads) {
+                    const x = u.x + this.padding;
+                    const y = u.y + this.padding;
+                    const physicalLayer = u.layer + 1;
+                    this._uploadSubImage(gl, u.source, u.w, u.h, physicalLayer, x, y);
+                }
 
-            // all uploads done; clear queue
-            this._pendingUploads.length = 0;
+                if (this._metadataDirty) {
+                    this._uploadMetadata(gl);
+                    this._metadataDirty = false;
+                }
+
+                // all uploads done; clear queue
+                this._pendingUploads.length = 0;
+            });
         }
 
         _createTexture(w, h, depth) {
             const gl = this.gl;
 
-            if (this.texture) {
-                gl.deleteTexture(this.texture);
-                this.texture = null;
-            }
-
-            this.texture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
+            // Reachable from Image.onload and other stacks with nothing of ours bound, and it
+            // deletes the live atlas texture -- so it must not leak the unit or array binding it
+            // borrows. Nested inside _commitUploads the guard is a no-op.
             const metadataRows = Math.ceil((this.maxIds * 3) / Math.max(w, 1));
             const height = Math.max(h, metadataRows || 1);
             const physicalDepth = Math.max(depth + 1, 2);
-            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, this.internalFormat, w, height, physicalDepth);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+            this._withDetachedGlState(() => {
+                if (this.texture) {
+                    gl.deleteTexture(this.texture);
+                    this.texture = null;
+                }
+
+                this.texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
+                gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, this.internalFormat, w, height, physicalDepth);
+                gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            });
 
             this.layerWidth = w;
             this.layerHeight = height;

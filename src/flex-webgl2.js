@@ -111,11 +111,13 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
 
     /**
      * Expose GLSL code for texture sampling.
+     * @param {number} index source index
+     * @param {string} vec2coords GLSL expression for the texture coordinates
+     * @param {number|string} [packIndex=0] pack to sample within the source
      * @returns {string} glsl code for texture sampling
      */
-    sampleTexture(index, vec2coords) {
-        // todo make pack index configurable and use this instead of hardcoding functions inside shaderlayer sampleChannel(...)
-        return `osd_texture(${index}, 0, ${vec2coords})`;
+    sampleTexture(index, vec2coords, packIndex = 0) {
+        return `osd_texture(${index}, ${packIndex}, ${vec2coords})`;
     }
 
     getTextureSize(index) {
@@ -402,6 +404,7 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     pixelSize = attrs.y;
     imageOriginPx = attrs.zw;
     zoom = u_zoom;
+    devicePixelScale = u_devicePixelScale;
 `;
 
                 if (!isClipLayer) {
@@ -814,6 +817,9 @@ vec3 setSat(vec3 c,float s){
 if (close(fg.a, 0.0)) return vec4(.0);
 return bg;`,
 
+            'soft-mask': `
+return vec4(bg.rgb, bg.a * fg.a);`,
+
             'source-over': `
 if (!stencilPasses) return bg;
 vec4 pre_fg = vec4(fg.rgb * fg.a, fg.a);
@@ -984,6 +990,10 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }
 
         let texture = null;
+        // This runs after `await createImageBitmap(...)`, so nothing of ours is bound and the
+        // TEXTURE_2D_ARRAY binding on the active unit belongs to whatever drew last -- another
+        // renderer entirely, under a shared context. Put it back rather than nulling it.
+        const previousArrayBinding = gl.getParameter(gl.TEXTURE_BINDING_2D_ARRAY);
 
         try {
             texture = gl.createTexture();
@@ -1033,11 +1043,89 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 error
             );
         } finally {
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, previousArrayBinding);
 
             if (ownsBitmap && bitmap && typeof bitmap.close === "function") {
                 bitmap.close();
             }
+        }
+    }
+
+    /**
+     * Resolve a GPU texture-set pack format name to its WebGL2 upload parameters.
+     *
+     * The narrow formats exist to stop a single-channel quantitative layer paying for three
+     * channels of zeroes: a cached R16F tile is a quarter of the RGBA16F one. Note this shrinks
+     * the *tile* cache only -- the first-pass colour target keeps a full RGBA layer per pack
+     * regardless (see colorTargetInternalFormat).
+     *
+     * All three half-float entries report `normalized: false` so they drive the colour-target
+     * upgrade the same way; a narrow pack's values need to survive pass 1 just as much.
+     *
+     * No capability gate: R16F/RG16F are core WebGL2 sized internal formats and are filterable
+     * in core. They would need EXT_color_buffer_half_float only to be rendered *into*, which
+     * never happens -- they are sampled by the first pass and nothing else.
+     *
+     * @param {string} name - Pack format name.
+     * @returns {?{internalFormat: GLenum, format: GLenum, type: GLenum, normalized: boolean,
+     *             componentsPerPack: number, unpackAlignment: number, views: Function[]}}
+     *          Upload parameters, or null when the name is not supported.
+     * @private
+     */
+    _getGpuTexturePackFormat(name) {
+        const gl = this.gl;
+
+        switch (name) {
+            case "RGBA8":
+                return {
+                    internalFormat: gl.RGBA8,
+                    format: gl.RGBA,
+                    type: gl.UNSIGNED_BYTE,
+                    normalized: true,
+                    componentsPerPack: 4,
+                    unpackAlignment: 4,
+                    views: [Uint8Array, Uint8ClampedArray]
+                };
+
+            case "RGBA16F":
+                return {
+                    internalFormat: gl.RGBA16F,
+                    format: gl.RGBA,
+                    type: gl.HALF_FLOAT,
+                    normalized: false,
+                    componentsPerPack: 4,
+                    unpackAlignment: 4,
+                    views: [Uint16Array]
+                };
+
+            case "RG16F":
+                return {
+                    internalFormat: gl.RG16F,
+                    format: gl.RG,
+                    type: gl.HALF_FLOAT,
+                    normalized: false,
+                    componentsPerPack: 2,
+                    unpackAlignment: 4,
+                    views: [Uint16Array]
+                };
+
+            case "R16F":
+                return {
+                    internalFormat: gl.R16F,
+                    format: gl.RED,
+                    type: gl.HALF_FLOAT,
+                    normalized: false,
+                    componentsPerPack: 1,
+                    // A one-component 16-bit row is width*2 bytes, which is 2 mod 4 for odd
+                    // widths. Under the default UNPACK_ALIGNMENT of 4 the driver would assume a
+                    // padded row stride, demand a larger buffer than we pass, and raise
+                    // INVALID_OPERATION -- on edge tiles only, so it would ship unnoticed.
+                    unpackAlignment: 2,
+                    views: [Uint16Array]
+                };
+
+            default:
+                return null;
         }
     }
 
@@ -1078,30 +1166,7 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }
 
         const firstFormatName = (packs[0] && packs[0].format) || "RGBA8";
-
-        let formatInfo;
-        switch (firstFormatName) {
-            case "RGBA8":
-                formatInfo = {
-                    internalFormat: gl.RGBA8,
-                    format: gl.RGBA,
-                    type: gl.UNSIGNED_BYTE,
-                    normalized: true
-                };
-                break;
-
-            case "RGBA16F":
-                formatInfo = {
-                    internalFormat: gl.RGBA16F,
-                    format: gl.RGBA,
-                    type: gl.HALF_FLOAT,
-                    normalized: false
-                };
-                break;
-
-            default:
-                formatInfo = null;
-        }
+        const formatInfo = this._getGpuTexturePackFormat(firstFormatName);
 
         if (!formatInfo) {
             return this._makePreparedTileFailure(
@@ -1109,6 +1174,8 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 new Error(`Unsupported GPU texture pack format '${firstFormatName}'.`)
             );
         }
+
+        const expectedLength = width * height * formatInfo.componentsPerPack;
 
         for (let layer = 0; layer < packs.length; layer++) {
             const pack = packs[layer];
@@ -1134,6 +1201,26 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                     new TypeError(`GPU texture pack ${layer} data must be a typed array.`)
                 );
             }
+
+            // WebGL2 pairs each pixel type with specific view types; a Float32Array handed to a
+            // HALF_FLOAT upload fails deep inside texSubImage3D with a bare INVALID_OPERATION.
+            // Now that four formats with three component counts exist, name the mismatch here.
+            if (!formatInfo.views.some(View => pack.data instanceof View)) {
+                return this._makePreparedTileFailure(
+                    "unsupported-data",
+                    new TypeError(`GPU texture pack ${layer} data must be one of ` +
+                        `${formatInfo.views.map(v => v.name).join(", ")} for format '${firstFormatName}'.`)
+                );
+            }
+
+            if (pack.data.length !== expectedLength) {
+                return this._makePreparedTileFailure(
+                    "invalid-data",
+                    new Error(`GPU texture pack ${layer} has ${pack.data.length} elements, ` +
+                        `expected ${expectedLength} (${width}x${height}x${formatInfo.componentsPerPack} ` +
+                        `for format '${firstFormatName}').`)
+                );
+            }
         }
 
         // No precision diagnostic here on purpose. Tile preparation knows the format but not
@@ -1143,8 +1230,12 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         // decision; see FlexDrawer#_updatePackMetadata.
 
         const packCount = packs.length;
-        const channelCount = Number(gpu.channelCount) || packCount * 4;
+        const componentsPerPack = formatInfo.componentsPerPack;
+        const channelCount = Number(gpu.channelCount) || packCount * componentsPerPack;
         let texture = null;
+        // Same reasoning as prepareBitmapTile: this is downstream of an await, so the binding we
+        // are about to overwrite is somebody else's.
+        const previousArrayBinding = gl.getParameter(gl.TEXTURE_BINDING_2D_ARRAY);
 
         try {
             texture = gl.createTexture();
@@ -1157,6 +1248,10 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
 
             gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
             gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, formatInfo.internalFormat, width, height, packCount);
+
+            if (formatInfo.unpackAlignment !== 4) {
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, formatInfo.unpackAlignment);
+            }
 
             for (let layer = 0; layer < packCount; layer++) {
                 gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, width, height, 1, formatInfo.format, formatInfo.type, packs[layer].data);
@@ -1184,6 +1279,7 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 textureDepth: packCount,
                 packCount: packCount,
                 channelCount: channelCount,
+                componentsPerPack: componentsPerPack,
                 // Float packs must not be clamped to [0,1] by the first-pass copy.
                 normalized: formatInfo.normalized
             };
@@ -1197,7 +1293,14 @@ return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
                 error
             );
         } finally {
-            gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+            // UNPACK_ALIGNMENT is context-global state, and every other upload path -- the
+            // atlas, the bitmap path, the self-test array -- owns its textures independently
+            // and assumes the default of 4. Leaving it at 2 would corrupt whichever uploads
+            // next, so restore unconditionally, including after a failed upload.
+            if (formatInfo.unpackAlignment !== 4) {
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+            }
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, previousArrayBinding);
         }
     }
 
@@ -1661,6 +1764,18 @@ $.FlexRenderer.WebGL20.SecondPassProgram = class extends $.FlexRenderer.WGLProgr
         this._uTiInfoSlots = this.UNIFORM_ARRAY_FLOOR;     // u_tiInfo (per tiled image)
         this._relinkScheduled = false;
 
+        // Whether this program has ever presented a frame. Used only to pick a log level: array
+        // growth before the first frame is the initial build discovering how big the world is,
+        // which is not an anomaly; growth afterwards means the scene outgrew a linked program and
+        // is worth saying out loud. Deliberately never reset -- a relink reuses this same instance
+        // (registerProgram() only swaps webGLProgram), and "ever drawn" is the question being asked.
+        //
+        // In shared-context mode one program instance can serve several renderers, so renderer A's
+        // first frame marks it drawn and renderer B's *initial* growth then logs at warn. That errs
+        // toward the noisier level and can never hide a real stale-frame warning, so it is left
+        // alone; keying per renderer is not possible while setDimensions() carries no renderer id.
+        this._hasDrawn = false;
+
         this._bgColor = 'vec4(.0)';
     }
 
@@ -1709,6 +1824,15 @@ void main() {
         // the first pass would give a float target that this pass then mangles.
         const targetPrecision = this.context.colorTargetGlslPrecision;
 
+        // final_color is declared unconditionally below, so main() must assign it unconditionally
+        // too: a declared-but-unwritten `out` makes every draw a GL_INVALID_OPERATION ("Active
+        // draw buffers with missing fragment shader outputs") and the canvas stays blank, with
+        // nothing in the pipeline reporting a fault. build() can legitimately hand us an empty
+        // body (no layers in the render order), and that case is the limit of the non-empty one,
+        // which seeds composition from _bgColor -- so it clears to the same colour. Guarding here
+        // rather than in build() keeps the invariant true for every caller, present and future.
+        const mainBody = (execution && execution.trim()) ? execution : `    final_color = ${this._bgColor};`;
+
         const fragmentShaderSource = `#version 300 es
 precision mediump int;
 precision ${targetPrecision} float;
@@ -1730,8 +1854,25 @@ uniform vec4 u_shaderVariables[${this._uInstanceSlots}];
 // instead of duplicating per slot in u_shaderVariables.
 uniform float u_zoom;
 
-// For each tiled image, we store (base texture offset, pack count, channel count)
-uniform ivec3 u_tiInfo[${this._uTiInfoSlots}];
+// Framebuffer px per CSS px (devicePixelRatio, as realised by the canvas).
+// Frame-global like u_zoom, for the same reason.
+//
+// Per-axis, and not for symmetry: the framebuffer dimensions are rounded to whole
+// pixels independently, so 1634x1586 CSS at DPR 1.2 becomes 1961x1903 and the two
+// scales differ (1.20012 vs 1.19987). imageOriginPx.x is built with the x scale and
+// imageOriginPx.y with the y scale, so a scalar here would divide an sy-built
+// numerator by an sx-built denominator. Both components are exactly 1 at DPR 1.
+//
+// COORDINATE UNITS: gl_FragCoord.xy and imageOriginPx are framebuffer px, but
+// pixelSize is CSS px per image px. Multiply to bridge them:
+//     framebuffer px per image px == pixelSize * devicePixelScale
+// Controls documented in "screen px" mean CSS px and must be multiplied by
+// devicePixelScale before being compared against framebuffer distances.
+uniform vec2 u_devicePixelScale;
+
+// For each tiled image, we store (base texture offset, pack count, channel count,
+// components per pack).
+uniform ivec4 u_tiInfo[${this._uTiInfoSlots}];
 
 uniform sampler2DArray u_inputTextures;
 uniform sampler2DArray u_stencilTextures;
@@ -1816,6 +1957,7 @@ in vec2 v_texture_coords;
 
 // OUTPUT VARIABLES
 
+// Declared here, therefore written unconditionally in main() -- see the mainBody guard above.
 layout(location=0) out vec4 final_color;
 
 
@@ -1826,6 +1968,7 @@ bool stencilPasses;
 float opacity;
 float pixelSize;
 float zoom;
+vec2 devicePixelScale;
 vec2 imageOriginPx;
 
 
@@ -1837,12 +1980,25 @@ int osd_pack_count(int sourceIndex) {
     return u_tiInfo[worldIndex].y;
 }
 
+// Components carried by one texture-array layer: 4 for RGBA8/RGBA16F, 2 for RG16F, 1 for R16F.
+// Zero means the drawer has not reported it yet, in which case the old 4-per-pack semantics
+// are exactly right -- every format that existed before this was RGBA.
+int osd_components_per_pack(int sourceIndex) {
+    int offset = u_instanceOffsets[instance_id];
+    int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
+    int cpp = u_tiInfo[worldIndex].w;
+    if (cpp <= 0) {
+        return 4;
+    }
+    return clamp(cpp, 1, 4);
+}
+
 int osd_channel_count(int sourceIndex) {
     int offset = u_instanceOffsets[instance_id];
     int worldIndex = u_instanceTextureIndexes[offset + sourceIndex];
-    ivec3 info = u_tiInfo[worldIndex];
+    ivec4 info = u_tiInfo[worldIndex];
     if (info.z <= 0) {
-        return info.y * 4;
+        return info.y * osd_components_per_pack(sourceIndex);
     }
     return info.z;
 }
@@ -1857,8 +2013,15 @@ vec4 osd_texture(int sourceIndex, int packIndex, vec2 coords) {
 }
 
 float osd_channel(int sourceIndex, int channelIndex, vec2 coords) {
-    int pack = channelIndex >> 2;
-    int comp = channelIndex & 3;
+    // Out of range reads zero rather than the last pack's data: osd_texture clamps packIndex,
+    // so without this an over-range channel silently returns a real -- and wrong -- value.
+    if (channelIndex < 0 || channelIndex >= osd_channel_count(sourceIndex)) {
+        return 0.0;
+    }
+    // Division, not >>2 / &3: a future 3-component format would not be a power of two.
+    int cpp = osd_components_per_pack(sourceIndex);
+    int pack = channelIndex / cpp;
+    int comp = channelIndex - pack * cpp;
     vec4 v = osd_texture(sourceIndex, pack, coords);
          if (comp == 0) return v.r;
     else if (comp == 1) return v.g;
@@ -2014,7 +2177,7 @@ ${definition !== "" ? definition : "    // No shader layer definitions here..."}
 // MAIN FUNCTION
 
 void main() {
-${execution}
+${mainBody}
 }`;
 
         return fragmentShaderSource;
@@ -2058,8 +2221,10 @@ ${execution}
     }
 
     build(shaderMap, keyOrder) {
-        if (!keyOrder.length) {
+        if (!keyOrder || !keyOrder.length) {
             // Todo prevent unimportant first init build call
+            // The empty body is turned into a background write by _getFragmentShaderSource, so
+            // this still links a program that is legal to draw with.
             this._ensureUniformSlots([]);
             this.vertexShader = this._getVertexShaderSource();
             this.fragmentShader = this._getFragmentShaderSource("", "", "", $.FlexRenderer.ShaderLayer.__globalIncludes);
@@ -2097,11 +2262,13 @@ ${execution}
     }
 
     /**
-     * Create program.
-     * @param width
-     * @param height
+     * Re-query every uniform location against the currently assigned WebGLProgram and record
+     * which program they belong to.
+     *
+     * Split out of created() because created() also allocates the VAO: use() must be able to
+     * repair its locations without leaking a vertex array per draw.
      */
-    created(width, height) {
+    _resolveLocations() {
         const gl = this.gl;
         const program = this.webGLProgram;
 
@@ -2110,6 +2277,7 @@ ${execution}
         this._instanceTextureIndexes = gl.getUniformLocation(program, "u_instanceTextureIndexes[0]");
         this._shaderVariables = gl.getUniformLocation(program, "u_shaderVariables");
         this._zoomLoc = gl.getUniformLocation(program, "u_zoom");
+        this._devicePixelScaleLoc = gl.getUniformLocation(program, "u_devicePixelScale");
 
         this._texturesLocation = gl.getUniformLocation(program, "u_inputTextures");
         this._stencilLocation = gl.getUniformLocation(program, "u_stencilTextures");
@@ -2124,7 +2292,17 @@ ${execution}
         this._interactionStateLocation = gl.getUniformLocation(program, "u_interactionState");
         this._interactionDragStateLocation = gl.getUniformLocation(program, "u_interactionDragState");
 
-        this.vao = gl.createVertexArray();
+        this._locationProgram = program;
+    }
+
+    /**
+     * Create program.
+     * @param width
+     * @param height
+     */
+    created(width, height) {
+        this._resolveLocations();
+        this.vao = this.gl.createVertexArray();
 
         // TODO: is this refreshing logic necessary? if enableing this, delete the above refresh, not needed, will be done at use(...)
         //  this._uploadedPackInfoVersion = -1;
@@ -2135,9 +2313,19 @@ ${execution}
      */
     load(renderArray) {
         const gl = this.gl;
-        // ShaderLayers' controls
-        for (const renderInfo of renderArray) {
-            renderInfo.shader.glLoaded(this.webGLProgram, gl);
+        const renderer = this.context && this.context.renderer;
+
+        // Every registered shader, not just the ones in this render array. `requiresLoad` is a
+        // single program-wide flag, so whichever array happens to run first discharges it for
+        // everyone -- and a partial array (renderVisualizationToTexture with an explicit
+        // shaderMap, an offscreen region pass) would otherwise leave the shaders it omitted
+        // holding uniform locations from the program registerProgram() just deleted.
+        const shaders = renderer && typeof renderer.getFlatShaderLayers === "function" ?
+            renderer.getFlatShaderLayers() :
+            renderArray.map(renderInfo => renderInfo.shader);
+
+        for (const shader of shaders) {
+            shader.glLoaded(this.webGLProgram, gl);
         }
         this.atlas.load(this.webGLProgram);
         this._uploadTiledImageInfo();
@@ -2150,11 +2338,24 @@ ${execution}
         const gl = this.gl;
         const framebuffer = options && options.framebuffer !== undefined ? options.framebuffer : null;
 
+        // Every uniform upload below goes through a cached location, and a location belongs to
+        // the program it was resolved against. CURRENT_PROGRAM is context-global in shared-context
+        // mode and `created()` is the only place these get re-queried, so verify both here rather
+        // than trusting the caller -- the same guard ShaderLayer.glDrawing and TextureAtlas.bind
+        // already apply to theirs.
+        this.context.renderer._bindGLProgram(this.webGLProgram);
+        if (this._locationProgram !== this.webGLProgram) {
+            this._resolveLocations();
+        }
+
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
 
-        if (framebuffer) {
-            gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-        }
+        // Set unconditionally: a program owns the draw-buffer state of whatever it binds, and this
+        // renderer can share one GL context with other drawers (xOpat runs OSD's own single-output
+        // drawer alongside it), so nothing may be assumed about what the previous pass left behind.
+        // The two cases genuinely differ -- for the default framebuffer the only legal entries are
+        // BACK and NONE, and COLOR_ATTACHMENT0 there is an INVALID_OPERATION.
+        gl.drawBuffers(framebuffer ? [gl.COLOR_ATTACHMENT0] : [gl.BACK]);
 
         if (options && options.width && options.height) {
             gl.viewport(0, 0, options.width, options.height);
@@ -2214,6 +2415,13 @@ ${execution}
             gl.uniform4fv(this._shaderVariables, shaderVariables);
         }
         gl.uniform1f(this._zoomLoc, renderArray.length > 0 ? renderArray[0].zoom : 1);
+        // Frame-global like zoom: every layer draws into the same canvas, so slot 0 speaks
+        // for all of them. Missing on the standalone/self-test paths, which have no viewport
+        // and therefore render at 1:1. A bare number is accepted as an isotropic scale.
+        const dps = renderArray.length > 0 ? renderArray[0].devicePixelScale : undefined;
+        gl.uniform2f(this._devicePixelScaleLoc,
+            (Array.isArray(dps) ? dps[0] : dps) || 1,
+            (Array.isArray(dps) ? dps[1] : dps) || 1);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, renderOutput.texture);
@@ -2290,9 +2498,10 @@ ${execution}
             interactionState.dragSerial
         );
 
-        this.atlas.bind(gl.TEXTURE2, 2);
+        this.atlas.bind(gl.TEXTURE2, 2, this.webGLProgram);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        this._hasDrawn = true;
 
         // Unbinding textures removes feedback loop when we write to it in the first pass
         gl.activeTexture(gl.TEXTURE0);
@@ -2311,25 +2520,28 @@ ${execution}
         const baseLayer = layout.baseLayer || [];
         const packCount = layout.packCount || [];
         const channelCount = packInfo.channelCount || [];
+        const componentsPerPack = packInfo.componentsPerPack || [];
 
         // u_tiInfo is declared with exactly _uTiInfoSlots entries. setDimensions() can raise
         // _tiledImageCount after the program was compiled; uploading more than the declared
         // length is an INVALID_VALUE, so clamp here and let the rebuild triggered by
         // setDimensions() widen the array.
         const maxTI = Math.min(this._tiledImageCount || 0, this._uTiInfoSlots);
-        const tiInfo = new Int32Array(maxTI * 3);
+        const tiInfo = new Int32Array(maxTI * 4);
 
         for (let i = 0; i < maxTI; i++) {
             const base = (typeof baseLayer[i] === "number") ? baseLayer[i] : i;
             const pc = (typeof packCount[i] === "number") ? packCount[i] : 1;
+            const cpp = (typeof componentsPerPack[i] === "number") ? componentsPerPack[i] : 4;
 
-            tiInfo[i * 3 + 0] = base;
-            tiInfo[i * 3 + 1] = pc;
-            tiInfo[i * 3 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * 4;
+            tiInfo[i * 4 + 0] = base;
+            tiInfo[i * 4 + 1] = pc;
+            tiInfo[i * 4 + 2] = (typeof channelCount[i] === "number") ? channelCount[i] : pc * cpp;
+            tiInfo[i * 4 + 3] = cpp;
         }
 
         if (maxTI > 0) {
-            this.gl.uniform3iv(this._tiInfoLoc, tiInfo);
+            this.gl.uniform4iv(this._tiInfoLoc, tiInfo);
         }
     }
 
@@ -2349,20 +2561,39 @@ ${execution}
      * intervening frames are stale rather than broken.
      *
      * @param {string} reason human-readable cause, logged once per relink
+     * @param {"warn"|"debug"} [level="warn"] how loudly to report it. "debug" is for growth that is
+     *   part of ordinary startup rather than a symptom; see setDimensions(). Note the early return
+     *   below coalesces causes, so a "debug" cause arriving first in a microtask window suppresses
+     *   the message for a "warn" cause behind it -- the relink still happens, only the level is lost.
      */
-    _scheduleRelink(reason) {
+    _scheduleRelink(reason, level = "warn") {
         if (this._relinkScheduled) {
             return;
         }
         this._relinkScheduled = true;
-        $.console.warn(`FlexWebGL2 second pass: relinking, ${reason}.`);
+        // Keep the receiver: $.console is window.console where available, and calling through the
+        // object avoids depending on the native methods being detachable.
+        if (level === "debug") {
+            $.console.debug(`FlexWebGL2 second pass: relinking, ${reason}.`);
+        } else {
+            $.console.warn(`FlexWebGL2 second pass: relinking, ${reason}.`);
+        }
 
         const renderer = this.context && this.context.renderer;
         const key = this.context && this.context.secondPassProgramKey;
         Promise.resolve().then(() => {
             this._relinkScheduled = false;
             if (renderer && key !== undefined) {
-                renderer.registerProgram(null, key);
+                try {
+                    renderer.registerProgram(null, key);
+                } catch (e) {
+                    // Nobody is awaiting this microtask, so an escaping throw is an unhandled
+                    // rejection. Widening the arrays is exactly the change that can exceed the
+                    // fragment uniform budget; on failure the previously linked program stays
+                    // bound and use()'s clamping keeps frames stale rather than broken.
+                    $.console.error(`FlexWebGL2 second pass: relink failed, the previous program ` +
+                        `is kept and uniform arrays stay clamped.`, e);
+                }
             }
         });
     }
@@ -2373,10 +2604,18 @@ ${execution}
         // u_tiInfo is sized to the tiled-image count known at compile time. This is the one size
         // that can grow behind the program's back — adding a tiled image does not otherwise
         // rebuild the shader the way adding a layer does.
+        //
+        // Filling the world with tiled images is what opening a visualization *is*, so growth
+        // before this program has presented a frame is the initial build learning the world size,
+        // not a symptom -- and at warn it reached the host's user-visible log next to real problems.
+        // After the first frame the same growth means a linked program was outgrown mid-session,
+        // which is worth reporting.
         const grew = (tiledImageCount || 0) > this._uTiInfoSlots;
         this._tiledImageCount = tiledImageCount;
         if (grew) {
-            this._scheduleRelink(`u_tiInfo holds ${this._uTiInfoSlots}, world now has ${tiledImageCount} tiled images`);
+            this._scheduleRelink(
+                `u_tiInfo holds ${this._uTiInfoSlots}, world now has ${tiledImageCount} tiled images`,
+                this._hasDrawn ? "warn" : "debug");
         }
     }
 };
@@ -2425,6 +2664,8 @@ uniform int u_mode;
 uniform int u_enabled;
 
 in vec2 v_texture_coords;
+// Written unconditionally by main() below. A declared output that some branch leaves unassigned
+// makes every draw a GL_INVALID_OPERATION, so keep any future main() total in final_color.
 layout(location=0) out vec4 final_color;
 
 float inspector_mask(vec2 fragPx) {
@@ -2462,11 +2703,13 @@ void main() {
         this.fragmentShader = this._getFragmentShaderSource();
     }
 
-    created(width, height) {
+    /**
+     * See SecondPassProgram._resolveLocations: split out so use() can repair its locations
+     * without allocating another VAO.
+     */
+    _resolveLocations() {
         const gl = this.gl;
         const program = this.webGLProgram;
-        this._width = width;
-        this._height = height;
         this._fullTextureLoc = gl.getUniformLocation(program, 'u_fullTexture');
         this._viewportSizeLoc = gl.getUniformLocation(program, 'u_viewportSize');
         this._lensCenterLoc = gl.getUniformLocation(program, 'u_lensCenterPx');
@@ -2475,7 +2718,15 @@ void main() {
         this._lensZoomLoc = gl.getUniformLocation(program, 'u_lensZoom');
         this._modeLoc = gl.getUniformLocation(program, 'u_mode');
         this._enabledLoc = gl.getUniformLocation(program, 'u_enabled');
-        this.vao = gl.createVertexArray();
+
+        this._locationProgram = program;
+    }
+
+    created(width, height) {
+        this._width = width;
+        this._height = height;
+        this._resolveLocations();
+        this.vao = this.gl.createVertexArray();
     }
 
     load() {
@@ -2498,7 +2749,19 @@ void main() {
             throw new Error('Inspector compositor requires a full color target.');
         }
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, options.framebuffer === undefined ? null : options.framebuffer);
+        // Same reasoning as SecondPassProgram.use(): cached locations are only valid for the
+        // program they were resolved against, and CURRENT_PROGRAM is context-global.
+        this.context.renderer._bindGLProgram(this.webGLProgram);
+        if (this._locationProgram !== this.webGLProgram) {
+            this._resolveLocations();
+        }
+
+        const framebuffer = options.framebuffer === undefined ? null : options.framebuffer;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        // Same reasoning as SecondPassProgram.use(): own the draw-buffer state of what you bind
+        // rather than inheriting whatever the previous pass left, and BACK is the only legal entry
+        // for the default framebuffer.
+        gl.drawBuffers(framebuffer ? [gl.COLOR_ATTACHMENT0] : [gl.BACK]);
         gl.bindVertexArray(this.vao);
 
         gl.activeTexture(gl.TEXTURE0);
@@ -2632,6 +2895,9 @@ uniform float u_clampColorOutput;
 
 ${this.atlas.getFragmentShaderDefinition()}
 
+// Every branch of main() below assigns both of these, including the pure-clipping path that has
+// color writes masked off. Keep it that way: a declared output left unassigned on some path makes
+// the draw a GL_INVALID_OPERATION ("Active draw buffers with missing fragment shader outputs").
 layout(location=0) out vec4 outputColor;
 layout(location=1) out vec4 outputStencil;
 
@@ -2841,6 +3107,8 @@ void main() {
 
         // Good practice
         gl.bindVertexArray(null);
+
+        this._locationProgram = program;
     }
 
     /**
@@ -2862,6 +3130,14 @@ void main() {
      */
     use(renderOutput, sourceArray, options) {
         const gl = this.gl;
+
+        // Same reasoning as SecondPassProgram.use(). created() also re-establishes the VAO
+        // attribute state, which is bound to the program's attribute locations, so the repair has
+        // to go through it rather than through a locations-only helper.
+        this.context.renderer._bindGLProgram(this.webGLProgram);
+        if (this._locationProgram !== this.webGLProgram) {
+            this.created(0, 0);
+        }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.offScreenBuffer);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.stencilClipBuffer);
@@ -2932,7 +3208,7 @@ void main() {
 
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
-            this.atlas.bind(gl.TEXTURE0 + this._maxTextures, this._maxTextures); // TODO: find out if this could be run only once at setup
+            this.atlas.bind(gl.TEXTURE0 + this._maxTextures, this._maxTextures, this.webGLProgram); // TODO: find out if this could be run only once at setup
 
             // First, clip polygons if any required
             if (renderInfo.polygons.length) {
@@ -3165,6 +3441,16 @@ void main() {
         }
 
         gl.bindVertexArray(null);
+
+        // This pass draws to two attachments and used to exit leaving both selected and
+        // offScreenBuffer still bound. In a shared context the next drawer to run is then one
+        // single-output fragment shader away from "Active draw buffers with missing fragment shader
+        // outputs" through no fault of its own. Reset while offScreenBuffer is still bound --
+        // drawBuffers applies to the currently bound framebuffer -- then hand back the default one.
+        // Nothing reads the leftover binding: __firstPassResult carries textures, and every
+        // consumer (SecondPassProgram.use, _createColorTarget, _clearColorTarget) binds its own.
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
         if (!renderOutput) {
             renderOutput = {};

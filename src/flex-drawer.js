@@ -95,6 +95,10 @@
             this._interactionPreviousMouseNavEnabled = null;
             this._interactionGestureSettingsCaptured = false;
             this._interactionPreviousGestureSettings = null;
+            // shader types already reported by _warnOnMissingInteractionForwarding(), so a rebuild
+            // loop does not spam the console; cleared when forwarding is turned on. Created by
+            // _interactionWarnedTypes(), which may run before this line (see there).
+            this._interactionForwardingWarnedTypes = this._interactionForwardingWarnedTypes || null;
 
             // reject listening for the tile-drawing and tile-drawn events, which this drawer does not fire
             this.viewer.rejectEventHandler("tile-drawn", "The WebGLDrawer does not raise the tile-drawn event");
@@ -158,8 +162,18 @@
                 // the target to RGBA16F, which doubles the offscreen color array, so turning the
                 // negotiation on is a deployment decision.
                 precision: "unorm8",
-                // hex bg color, by default transparent
-                backgroundColor: undefined
+                // hex bg color, by default transparent. This is the SOURCE colour: it is baked
+                // into the second-pass fragment shader as the seed of the layer composition, so
+                // it decides what the stack starts from (and therefore the alpha it emits).
+                backgroundColor: undefined,
+                // [r,g,b,a] in 0..1, default undefined -> the renderer's [1,1,1,1] opaque white.
+                // This is the DESTINATION colour: a gl.clear of the output surface before the
+                // second pass blends onto it. Distinct from backgroundColor and not derivable
+                // from it - the second pass composites premultiplied (ONE/ONE_MINUS_SRC_ALPHA),
+                // so a pass that draws nothing reads as this, whatever the shader seed was.
+                // Construction-time only; the renderer exposes a getter but no setter. Pass
+                // [0,0,0,0] for output with a real alpha channel. See OFFSCREEN.md.
+                presentationClearColor: undefined
             };
         }
 
@@ -431,7 +445,14 @@
             if (refreshShader) {
                 this.renderer.refreshShaderLayer(shaderId, { rebuildProgram });
             } else if (rebuildProgram) {
-                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+                try {
+                    this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+                } catch (e) {
+                    // The config mutation stands; the previously linked program keeps rendering
+                    // until a later rebuild succeeds.
+                    $.console.error(`[flex-renderer] shader '${shaderId}' mutation could not rebuild ` +
+                        `the second-pass program; the previous program is kept.`, e);
+                }
             }
 
             this.renderer.notifyVisualizationChanged({
@@ -536,6 +557,20 @@
                 }
             };
 
+            // Controls whose encoded state is an array (advanced slider breaks, custom colormap
+            // palettes) never compare equal by identity, so a strict === here would re-set them
+            // on every redraw. One level of element comparison is enough: no control encodes
+            // nested arrays.
+            const encodedEquals = (a, b) => {
+                if (a === b) {
+                    return true;
+                }
+                if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+                    return false;
+                }
+                return a.every((value, i) => value === b[i]);
+            };
+
             const syncControls = (mainShader, navShader) => {
                 if (!mainShader || !navShader || !mainShader._controls || !navShader._controls) {
                     return;
@@ -549,7 +584,7 @@
                     if (mainControl.encoded === undefined) {
                         continue;
                     }
-                    if (navControl.encoded === mainControl.encoded) {
+                    if (encodedEquals(navControl.encoded, mainControl.encoded)) {
                         continue;
                     }
 
@@ -1028,6 +1063,30 @@
             return tiledImage.__flexPackCount || 1;
         }
 
+        /**
+         * Components carried by one texture-array layer of this image: 4 for RGBA8/RGBA16F,
+         * 2 for RG16F, 1 for R16F. Defaults to 4 until tile metadata arrives, which is what
+         * every format supported before the narrow ones carried anyway.
+         * @param {OpenSeadragon.TiledImage|number} ti tiled image or its world index
+         * @return {number}
+         */
+        getComponentsPerPack(ti) {
+            const world = this.viewer.world;
+            if (!world) {
+                return 4;
+            }
+
+            let tiledImage = ti;
+            if (typeof ti === "number") {
+                tiledImage = world.getItemAt(ti);
+            }
+            if (!tiledImage) {
+                return 4;
+            }
+
+            return tiledImage.__flexComponentsPerPack || 4;
+        }
+
         getChannelCount(ti) {
             const world = this.viewer.world;
             if (!world) {
@@ -1042,12 +1101,12 @@
                 return 4;
             }
 
-            // fall back to packCount * 4, preserving old semantics
+            // fall back to packCount * componentsPerPack, preserving old semantics for RGBA
             if (typeof tiledImage.__flexChannelCount === "number") {
                 return tiledImage.__flexChannelCount;
             }
             const pc = tiledImage.__flexPackCount || 1;
-            return pc * 4;
+            return pc * (tiledImage.__flexComponentsPerPack || 4);
         }
 
         _hasInvalidBuildState() {
@@ -1090,11 +1149,22 @@
                 if (!this._configuredExternally) {
                     // __shaderConfig may be missing for an item mid-teardown during a reset window
                     // (remove-item deletes it, then this rebuild fires deferred) — skip such items
-                    this.renderer.setShaderLayerOrder(
-                        this.viewer.world._items
-                            .filter(item => item.__shaderConfig)
-                            .map(item => item.__shaderConfig.id)
-                    );
+                    const derived = this.viewer.world._items
+                        .filter(item => item.__shaderConfig)
+                        .map(item => item.__shaderConfig.id);
+
+                    // With one world item that reset window is all-or-nothing: the single item
+                    // losing __shaderConfig empties the whole list, so the second pass compiled an
+                    // empty stack and the viewer went white. With two or more items a survivor kept
+                    // it non-empty, which is why the failure looked like it depended on the world
+                    // size. Keep the previous order across the window instead of erasing it.
+                    if (derived.length || !this.viewer.world.getItemCount()) {
+                        this.renderer.setShaderLayerOrder(derived);
+                    } else {
+                        $.console.warn(`[flex-renderer] rebuild kept the previous render order: ` +
+                            `${this.viewer.world.getItemCount()} world item(s) but none carry ` +
+                            `__shaderConfig yet (reset window).`);
+                    }
                 }
 
                 this._buildStamp = Date.now();
@@ -1108,9 +1178,17 @@
                 try {
                     this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
                 } catch (e) {
-                    $.console.error("[flex-renderer] second-pass program build failed; " +
-                        "falling back to identity rendering.", e);
-                    this.overrideConfigureAll(undefined);
+                    // The previously linked program is untouched by a failed registerProgram()
+                    // and still matches the shader set that produced it, so it keeps rendering
+                    // the last good frame. This used to call overrideConfigureAll(undefined),
+                    // which deleted every shader -- and since the drawer never retained the
+                    // externally supplied `shaders` map, the configuration was destroyed rather
+                    // than disabled: every later rebuild rendered identity for the rest of the
+                    // page life, with no way back short of a reload.
+                    $.console.error("[flex-renderer] second-pass program build failed; the " +
+                        "previous program is kept and the configuration is retained.", e);
+                    this.renderer.notifyProgramBuildFailed(
+                        this.renderer.backend.secondPassProgramKey, e, "drawer-rebuild");
                 } finally {
                     // The handle must be cleared no matter the outcome, otherwise every later
                     // _requestRebuild() believes a rebuild is already pending and schedules nothing.
@@ -1118,6 +1196,8 @@
                     this._rebuildHandle = null;
                     this._refreshDrawReadyState();
                 }
+
+                this._warnOnMissingInteractionForwarding();
 
                 if (!immediate) {
                     this._deferredRedrawHandle = setTimeout(() => {
@@ -1276,6 +1356,7 @@
          * @property {boolean} [preventContextMenu=false] - Prevent the browser context menu on interaction right-click/contextmenu events.
          * @property {boolean} [notifyOnMove=false] - Emit `interaction-change` notifications for high-frequency pointermove updates.
          * @property {"all"|"drag"|"none"} [viewerInputCaptureMode="none"] - Viewer input suppression mode. `"none"` leaves OpenSeadragon viewer input unchanged. `"all"` disables OpenSeadragon mouse navigation. `"drag"` disables drag/click/flick gestures but leaves wheel zoom enabled.
+         * @property {HTMLElement|string|function} [eventTarget] - Element (or CSS selector, or `drawer => element` factory) to bind pointer listeners to. Defaults to the viewer container. Use it when the host's overlay stack lives outside that subtree.
          */
 
         /**
@@ -1303,6 +1384,7 @@
                     preventContextMenu: false,
                     notifyOnMove: false,
                     viewerInputCaptureMode: "none",
+                    eventTarget: null,
                 };
             }
 
@@ -1312,6 +1394,7 @@
                     preventContextMenu: false,
                     notifyOnMove: false,
                     viewerInputCaptureMode: "none",
+                    eventTarget: null,
                 };
             }
 
@@ -1324,17 +1407,186 @@
                 preventContextMenu: !!interaction.preventContextMenu,
                 notifyOnMove: !!interaction.notifyOnMove,
                 viewerInputCaptureMode: viewerInputCaptureMode,
+                // This is a whitelist: an unlisted key never survives into _interactionOptions.
+                eventTarget: interaction.eventTarget || null,
             };
+        }
+
+        /**
+         * Shader types already reported by `_warnOnMissingInteractionForwarding()`.
+         *
+         * Lazily created: the drawer's own interaction setup runs from the base-class
+         * constructor (through `_createDrawingElement()`), before the subclass constructor
+         * body assigns its fields.
+         *
+         * @private
+         * @return {Set<string>}
+         */
+        _interactionWarnedTypes() {
+            if (!this._interactionForwardingWarnedTypes) {
+                this._interactionForwardingWarnedTypes = new Set();
+            }
+            return this._interactionForwardingWarnedTypes;
+        }
+
+        /**
+         * Warn once per shader type when a layer declaring `static requiresInteraction()`
+         * is built while interaction forwarding is off.
+         *
+         * Such a layer compiles and draws either way — it just renders its inactive branch
+         * (no lens, transparent overlay), which is indistinguishable from a broken shader.
+         * The drawer never enables forwarding on its own: every changed pointer move costs a
+         * `viewer.forceRedraw()`, so the decision stays with the host.
+         *
+         * Note this is about pointer state reaching the GLSL, not about a UI control's
+         * `interactive` flag.
+         *
+         * @private
+         */
+        _warnOnMissingInteractionForwarding() {
+            if (this._destroyed || this._interactionOptions.enabled || !this.renderer ||
+                typeof this.renderer.getFlatShaderLayers !== "function") {
+                return;
+            }
+
+            const warned = this._interactionWarnedTypes();
+
+            // getFlatShaderLayers() also descends into group children, which carry their own
+            // GLSL and can be the only consumer of interaction state in the program
+            for (const layer of this.renderer.getFlatShaderLayers()) {
+                const Klass = layer && layer.constructor;
+                if (!Klass || typeof Klass.requiresInteraction !== "function" ||
+                    Klass.requiresInteraction() !== true) {
+                    continue;
+                }
+
+                const type = typeof Klass.type === "function" ? Klass.type() : "unknown";
+                if (warned.has(type)) {
+                    continue;
+                }
+                warned.add(type);
+
+                $.console.warn(`[flex-renderer] ShaderLayer '${type}' declares ` +
+                    "static requiresInteraction() === true, but FlexDrawer interaction forwarding " +
+                    "is disabled, so it renders without pointer state. Enable it with " +
+                    "drawer.setInteractionEnabled(true) (or the drawer option " +
+                    "interaction: {enabled: true}).");
+            }
+        }
+
+        /**
+         * Warn when the element the interaction listeners are bound to is covered by another
+         * element, so no pointer event can reach it.
+         *
+         * This is the one failure mode of drawer-side forwarding that is otherwise invisible:
+         * `isInteractionEnabled()` reads back `true`, listeners are attached, and yet nothing
+         * ever fires because a host overlay outside the target's subtree sits on top. The
+         * uniforms then hold their zero defaults, which every interaction-driven layer renders
+         * as "pointer never entered".
+         *
+         * Deferred one frame so the check runs against settled layout, and skipped entirely on a
+         * zero-sized rect (viewer not laid out yet) where a hit test carries no information.
+         *
+         * @private
+         * @return {void}
+         */
+        _warnOnCoveredInteractionTarget() {
+            const target = this._interactionListeners && this._interactionListeners.target;
+            if (!target || typeof target.getBoundingClientRect !== "function" ||
+                    typeof document === "undefined" ||
+                    typeof document.elementFromPoint !== "function") {
+                return;
+            }
+
+            const check = () => {
+                if (this._destroyed || !this._interactionEnabled || !this._interactionListeners ||
+                        this._interactionListeners.target !== target) {
+                    return;
+                }
+
+                const rect = target.getBoundingClientRect();
+                if (rect.width < 1 || rect.height < 1) {
+                    return;
+                }
+
+                const top = document.elementFromPoint(
+                    rect.left + rect.width / 2,
+                    rect.top + rect.height / 2
+                );
+
+                // A descendant on top is fine: pointer events bubble up to the target.
+                if (!top || top === target || target.contains(top)) {
+                    return;
+                }
+
+                $.console.warn("[flex-renderer] FlexDrawer interaction forwarding is enabled, but",
+                    top, "covers the event target", target,
+                    "- pointer events will not reach it and the interaction uniforms stay at " +
+                    "their defaults. Bind above the overlay with interaction.eventTarget, or " +
+                    "drive renderer.setInteractionState(...) from the host's own input handling.");
+            };
+
+            if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(check);
+            } else {
+                check();
+            }
         }
 
         /**
          * Return the DOM element used for interaction event observation.
          *
+         * Defaults to `this.container` — OpenSeadragon's `viewer.canvas` div, the element the
+         * viewer's own MouseTracker binds. The drawer's own canvas is deliberately not the
+         * default: any host that stacks an overlay above the drawer (an annotation canvas, a
+         * fabric.js `upper-canvas`) takes every pointer event, so listeners on the WebGL canvas
+         * never fire and the interaction uniforms silently stay at their zero defaults. The
+         * container is an ancestor of both the drawer canvas and of overlays added through the
+         * OpenSeadragon overlay mechanism, so events reach it by bubbling.
+         *
+         * Hosts whose overlay lives outside that subtree can name their own element through
+         * `interaction.eventTarget`.
+         *
          * @private
          * @return {HTMLElement|HTMLCanvasElement|null}
          */
         _getInteractionEventTarget() {
-            return this.canvas || this.container || this.element || (this.viewer && this.viewer.element) || null;
+            const explicit = this._interactionOptions && this._interactionOptions.eventTarget;
+            let resolved = null;
+            if (typeof explicit === "string") {
+                resolved = document.querySelector(explicit);
+                if (!resolved) {
+                    $.console.warn("FlexDrawer: interaction.eventTarget selector", explicit,
+                        "matched no element; falling back to the viewer container.");
+                }
+            } else if (typeof explicit === "function") {
+                resolved = explicit(this);
+            } else if (explicit) {
+                resolved = explicit;
+            }
+
+            return resolved || this.container || this.canvas || this.element ||
+                (this.viewer && this.viewer.element) || null;
+        }
+
+        /**
+         * Return the element whose client rect defines framebuffer coordinate space.
+         *
+         * This is the presented canvas, not the event target: the two are the same element only
+         * when interaction listens on the drawer canvas. With the default container target, using
+         * the listening element's rect would offset every reported pointer position by the
+         * container/canvas inset.
+         *
+         * @private
+         * @return {HTMLElement|HTMLCanvasElement|null}
+         */
+        _getInteractionCoordinateElement() {
+            const presented = this.renderer && this.renderer.getPresentationCanvas();
+            if (presented && typeof presented.getBoundingClientRect === "function" &&
+                    presented.isConnected !== false) {
+                return presented;
+            }
+            return this.canvas || this._getInteractionEventTarget();
         }
 
         /**
@@ -1355,7 +1607,9 @@
          */
         clientPointToFramebufferPx(point) {
             const canvas = this.renderer && this.renderer.getPresentationCanvas();
-            const target = this._getInteractionEventTarget();
+            // The rect must come from the presented canvas, not from whatever element the
+            // listeners happen to be bound to — see _getInteractionCoordinateElement().
+            const target = this._getInteractionCoordinateElement();
 
             if (!canvas || !target || typeof target.getBoundingClientRect !== "function") {
                 return { x: 0, y: 0 };
@@ -1952,8 +2206,16 @@
             this._interactionOptions = nextOptions;
 
             if (nextOptions.enabled) {
+                // A changed eventTarget must move the listeners: _attachInteractionListeners()
+                // is a no-op while a previous binding exists.
+                if (this._interactionListeners &&
+                        this._interactionListeners.target !== this._getInteractionEventTarget()) {
+                    this._detachInteractionListeners();
+                }
+
                 if (!this._interactionListeners) {
                     this._attachInteractionListeners();
+                    this._warnOnCoveredInteractionTarget();
                 }
 
                 if (!this._interactionListeners) {
@@ -1964,6 +2226,10 @@
 
                 this._interactionEnabled = true;
                 this._interactionOptions.enabled = true;
+                // forwarding is on: a later disable is a new situation and warns again.
+                // Guarded: the base constructor reaches this through _createDrawingElement(),
+                // before the subclass constructor body has run.
+                this._interactionWarnedTypes().clear();
 
                 if (
                     previousViewerInputCaptureMode !== "none" &&
@@ -2359,9 +2625,18 @@
                     imageOriginPx[1] = canvas.height - cssPt.y * sy;
                 }
 
+                // Mind the units: imageOriginPx is framebuffer px (sx/sy applied above), but
+                // pixelSize is CSS px per image px — _tiledImageViewportToImageZoom divides by
+                // _containerInnerSize, which is CSS. Shaders that divide one by the other must
+                // bridge them with devicePixelScale, or their geometry comes out 1/DPR-sized.
+                //
+                // Per-axis, because the framebuffer size is rounded per axis: 1634x1586 CSS at
+                // DPR 1.2 gives 1961x1903, so sx != sy. imageOriginPx.x carries sx and .y carries
+                // sy, and the divisor has to match the component it divides.
                 sources.push({
                     zoom: viewport.zoom,
                     pixelSize: tiledImage ? this._tiledImageViewportToImageZoom(tiledImage, viewport.zoom) : 1,
+                    devicePixelScale: [sx, sy],
                     opacity: tiledImage ? tiledImage.getOpacity() : 1,
                     imageOriginPx,
                     shader: shader,
@@ -2486,7 +2761,7 @@
             }
 
             if (!this.renderer.__flexPackInfo) {
-                this.renderer.__flexPackInfo = { packCount: [], channelCount: [] };
+                this.renderer.__flexPackInfo = { packCount: [], channelCount: [], componentsPerPack: [] };
             }
             this.renderer.__flexPackInfo.layout = {
                 baseLayer: baseLayer,
@@ -2871,13 +3146,17 @@
                     return this._createDiagnosticTileInfoFromPreparationFailure(result);
                 }
 
+                const gpuPackCount = result.packCount || result.textureDepth || 1;
+                const gpuComponentsPerPack = result.componentsPerPack || 4;
+
                 this._updatePackMetadata(
                     tiledImage,
-                    result.packCount || result.textureDepth || 1,
-                    result.channelCount || (result.packCount || result.textureDepth || 1) * 4,
+                    gpuPackCount,
+                    result.channelCount || gpuPackCount * gpuComponentsPerPack,
                     // `normalized: false` means the upload keeps raw float values -- exactly the
                     // data that an RGBA8 first-pass target would quantize and clamp away.
-                    result.normalized === false ? "float16" : "unorm8"
+                    result.normalized === false ? "float16" : "unorm8",
+                    gpuComponentsPerPack
                 );
 
                 if (this._packLayoutDirty) {
@@ -3198,7 +3477,7 @@
             this.renderer.setDataCarriesHighPrecision(anyFloat);
         }
 
-        _updatePackMetadata(tiledImage, packCount, channelCount, dataPrecision) {
+        _updatePackMetadata(tiledImage, packCount, channelCount, dataPrecision, componentsPerPack = 4) {
             if (!tiledImage) {
                 return;
             }
@@ -3222,20 +3501,33 @@
                 this._packLayoutDirty = true;
                 metadataChanged = true;
             }
+            // Must take part in change detection: the components-per-pack value is baked into
+            // the generated GLSL (the sampleChannel fast-path decision), so a source that goes
+            // from unknown to R16F has to trigger a shader refresh like the counts do.
+            if (tiledImage.__flexComponentsPerPack !== componentsPerPack) {
+                tiledImage.__flexComponentsPerPack = componentsPerPack;
+                this._packLayoutDirty = true;
+                metadataChanged = true;
+            }
             tiledImage.__flexMetadataReady = true;
 
             if (this.renderer && !this.renderer.__flexPackInfo) {
                 this.renderer.__flexPackInfo = {
                     packCount: [],
                     channelCount: [],
+                    componentsPerPack: [],
                 };
             }
 
             if (this.renderer && this.renderer.__flexPackInfo && this.viewer.world) {
                 const tiIndex = this.viewer.world.getIndexOfItem(tiledImage);
                 if (tiIndex >= 0) {
+                    if (!this.renderer.__flexPackInfo.componentsPerPack) {
+                        this.renderer.__flexPackInfo.componentsPerPack = [];
+                    }
                     this.renderer.__flexPackInfo.packCount[tiIndex] = packCount;
                     this.renderer.__flexPackInfo.channelCount[tiIndex] = channelCount;
+                    this.renderer.__flexPackInfo.componentsPerPack[tiIndex] = componentsPerPack;
                 }
             }
 

@@ -101,6 +101,8 @@ class AbstractMVTTileSource extends $.TileSource {
 
         this._pending.set(key, [context]);
 
+        const uvScale = this._tileUvScale(tile);
+
         this._worker.postMessage({
             type: 'tile',
             key: key,
@@ -108,7 +110,48 @@ class AbstractMVTTileSource extends $.TileSource {
             x: tile.x,
             y: tile.y,
             url: context.src,
+            uvScaleX: uvScale.x,
+            uvScaleY: uvScale.y,
         });
+    }
+
+    /**
+     * Ratio between the NOMINAL tile that vector geometry is authored against
+     * and the CLIPPED rectangle the drawer maps UV 0..1 onto.
+     *
+     * MVT coordinates run 0..extent across a whole tileSize wherever the tile
+     * sits, but a tile on a level's right/bottom edge — and every tile of a
+     * level smaller than one tile — covers only part of that rectangle, and
+     * `Tile.positionedBounds` is clipped to match. Without this factor the mesh
+     * is squeezed into the visible part of its own tile. The raster path solves
+     * the same problem by scaling texcoords (`sourceWidthFraction`); a vector
+     * tile has no texcoords, so the correction has to reach the mesh itself.
+     *
+     * Both components are 1 whenever the world is an exact multiple of the tile
+     * size, which is every square web-mercator pyramid.
+     *
+     * @param {OpenSeadragon.Tile} tile
+     * @returns {{x: number, y: number}}
+     * @private
+     */
+    _tileUvScale(tile) {
+        try {
+            const clipped = this.getTileBounds(tile.level, tile.x, tile.y, true);
+            const nominalX = this.getTileWidth(tile.level);
+            const nominalY = this.getTileHeight(tile.level);
+
+            if (!(clipped.width > 0) || !(clipped.height > 0) || !(nominalX > 0) || !(nominalY > 0)) {
+                return {x: 1, y: 1};
+            }
+            return {
+                x: nominalX / clipped.width,
+                y: nominalY / clipped.height
+            };
+        } catch (e) {
+            // A source whose dimensions are not resolvable yet renders the way it
+            // did before this correction existed, rather than not at all.
+            return {x: 1, y: 1};
+        }
     }
 
     _resolveIconsFromContext(context) {

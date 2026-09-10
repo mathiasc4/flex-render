@@ -104,6 +104,8 @@
 
     const IF_SOURCE = { type: "synthetic-if" };
     const F16_SOURCE = { type: "synthetic-f16" };
+    const R16F_SOURCE = { type: "synthetic-r16f" };
+    const RG16F_SOURCE = { type: "synthetic-rg16f" };
 
     // Marks a source that should be sampled nearest-neighbour: class/label maps
     // must not be interpolated into values that belong to no class.
@@ -696,7 +698,7 @@
             blurb: "Select this card, then move over the viewport and hold the primary mouse button. " +
                 "The screen-space lens magnifies nuclear detail without losing the low-power context.",
             sources: [SLIDE],
-            interaction: true,
+            // no `interaction` key: derived from fisheye-lens's static requiresInteraction()
             config: {
                 lens: {
                     name: "Lens", type: "fisheye-lens", tiledImages: [0],
@@ -716,7 +718,8 @@
             blurb: "Select this card and move, click, or drag in its viewport. It visualises the " +
                 "pointer/click/drag uniforms forwarded to shaders.",
             sources: [SLIDE],
-            interaction: true,
+            // no `interaction` key: derived from the nested interaction-debug layer's
+            // static requiresInteraction()
             config: {
                 stack: {
                     name: "Pointer", type: "group",
@@ -785,6 +788,75 @@
                 value: "auto"
             }],
             note: "Falls back to unorm8 with a console warning if EXT_color_buffer_half_float is missing."
+        },
+        {
+            id: "narrow-r16f",
+            title: "Single-channel R16F",
+            types: ["single_channel"],
+            blurb: "The same Ki-67 score as the card above, uploaded as R16F instead of RGBA16F. " +
+                "Identical on screen, a quarter of the texture memory, because it no longer pays for " +
+                "three channels of zeroes. The first-pass colour target is unchanged either way.",
+            sources: [R16F_SOURCE],
+            precision: "auto",
+            config: {
+                narrow: {
+                    name: "Ki-67 score", type: "single_channel", tiledImages: [0],
+                    params: {
+                        use_channel0: "r", use_channel_base0: 0, color: "#ffd54f",
+                        window_low: -0.4, window_high: 1, opaque: true
+                    }
+                }
+            },
+            note: "Sampling an R16F pack yields (r, 0, 0, 1) — green, blue and alpha are a format " +
+                "fill, not payload. Only channel 0 exists, and the source declares that."
+        },
+        {
+            id: "narrow-rg16f",
+            title: "Four markers across two RG16F packs",
+            types: ["single_channel", "group"],
+            blurb: "Four fluorescence markers as two two-component packs. Channels 0-1 live in pack 0 " +
+                "and 2-3 in pack 1, so use_channel_base0: 2 has to cross a pack boundary — the case a " +
+                "fixed four-components-per-pack assumption gets wrong. Half the memory of RGBA16F.",
+            sources: [RG16F_SOURCE],
+            precision: "auto",
+            config: {
+                composite: {
+                    name: "Markers", type: "group", tiledImages: [0],
+                    params: {},
+                    shaders: {
+                        dapi: {
+                            name: "DAPI", type: "single_channel", tiledImages: [0],
+                            params: {
+                                use_channel0: "r", use_channel_base0: 0, color: "#3d5afe",
+                                window_low: 0, window_high: 0.85, use_blend: "screen", use_mode: "blend"
+                            }
+                        },
+                        cd3: {
+                            name: "CD3", type: "single_channel", tiledImages: [0],
+                            params: {
+                                use_channel0: "r", use_channel_base0: 1, color: "#00e676",
+                                window_low: 0.05, window_high: 0.7, use_blend: "screen", use_mode: "blend"
+                            }
+                        },
+                        panck: {
+                            name: "CD8 (pack 1)", type: "single_channel", tiledImages: [0],
+                            params: {
+                                use_channel0: "r", use_channel_base0: 2, color: "#ff6e40",
+                                window_low: 0.05, window_high: 0.7, use_blend: "screen", use_mode: "blend"
+                            }
+                        },
+                        ki67: {
+                            name: "CD20 (pack 1)", type: "single_channel", tiledImages: [0],
+                            params: {
+                                use_channel0: "r", use_channel_base0: 3, color: "#ffd54f",
+                                window_low: 0.05, window_high: 0.7, use_blend: "screen", use_mode: "blend"
+                            }
+                        }
+                    }
+                }
+            },
+            note: "If the two right-hand markers render blank, channel addressing is falling back to " +
+                "four components per pack and reading pack 0's unused components."
         }
     ];
 
@@ -1127,6 +1199,41 @@
         refreshSelectionInputs();
     }
 
+    /**
+     * Whether any shader layer in the recipe declares `static requiresInteraction()`,
+     * i.e. its GLSL reads host-forwarded pointer state (`fr_interaction_*`). This is the
+     * reference host pattern: read the flag off the registered class before building
+     * anything, and size the input plumbing accordingly.
+     *
+     * Not to be confused with a UI control's `interactive` flag, which only decides whether
+     * a control is user-editable in the panel below the card.
+     *
+     * A recipe may still set `interaction: true|false` explicitly to override the derivation.
+     */
+    function recipeNeedsInteraction(recipe) {
+        if (typeof recipe.interaction === "boolean") {
+            return recipe.interaction;
+        }
+
+        const registry = OpenSeadragon.FlexRenderer.ShaderLayerRegistry;
+        const walk = (configMap) => {
+            return Object.values(configMap || {}).some(layer => {
+                if (!layer || typeof layer !== "object") {
+                    return false;
+                }
+                const Klass = layer.type ? registry.get(layer.type) : null;
+                if (Klass && typeof Klass.requiresInteraction === "function" &&
+                    Klass.requiresInteraction() === true) {
+                    return true;
+                }
+                // group layers keep their children under `shaders`
+                return walk(layer.shaders);
+            });
+        };
+
+        return walk(recipe.config);
+    }
+
     function activate(card) {
         if (!card.active) {
             return;
@@ -1140,6 +1247,7 @@
         card.placeholder.textContent = "building…";
 
         const sources = resolveSources(recipe);
+        const needsInteraction = recipeNeedsInteraction(recipe);
 
         const viewer = card.viewer = OpenSeadragon({  // eslint-disable-line new-cap
             element: card.viewport,
@@ -1151,7 +1259,7 @@
                     webGLPreferredVersion: "2.0",
                     sharedContextKey: contextKeyFor(card),
                     precision: card.precision,
-                    interaction: recipe.interaction ? {
+                    interaction: needsInteraction ? {
                         enabled: true,
                         preventContextMenu: true,
                         // Keep normal pan/zoom available. Pointer events are
@@ -1192,7 +1300,7 @@
             });
         });
 
-        if (recipe.interaction) {
+        if (needsInteraction) {
             // Keep this at the card boundary as a browser-level fallback. It
             // remains effective even if a viewer or browser stops propagation
             // before the drawer's own contextmenu listener sees the event.

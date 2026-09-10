@@ -151,9 +151,13 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
                 // colour with a palette/mode mismatch. Behaviour is unchanged
                 // — still falls back — to avoid breaking persisted configs
                 // that rely on the substitution.
+                // Printing the legal list makes the message self-correcting: the lookup is
+                // case-sensitive ("turbo" is not "Turbo"), which is otherwise invisible.
                 console.warn(
                     `[FlexRenderer.ColorMap] palette "${requested}" is not in schemeGroups["${mode}"]; ` +
-                    `substituting with "${fallback}". Pick a mode whose schemeGroups list contains the desired palette.`
+                    `substituting with "${fallback}". Pick a mode whose schemeGroups list contains ` +
+                    `the desired palette. schemeGroups["${mode}"] = ` +
+                    `[${group ? group.join(", ") : ""}]`
                 );
             }
             this.value = fallback;
@@ -163,19 +167,20 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
         if (this.params.interactive) {
             const _this = this;
             let updater = function(e) {
-                const self = e.target;
-                const selected = self.value;
-                _this.colorPallete = $.FlexRenderer.ColorMaps[selected][_this.maxSteps];
-                _this._setPallete(_this.colorPallete);
-                self.style.background = _this.cssGradient(_this.colorPallete);
-                _this.value = selected;
-                _this.store(selected);
-                _this.changed("default", _this.pallete, _this.value, _this);
+                _this.set(e.target.value);
                 _this.owner.invalidate();
             };
 
             this._setPallete(this.colorPallete);
+            // updateColormapUI() tolerates a missing node and hands it back as null. Without the
+            // markup mounted there is nothing to populate: report it here rather than throwing
+            // into $.FlexRenderer's init() catch, which reduces the failure to a generic
+            // "the shader control will not work" and drops which control was at fault.
             let node = this.updateColormapUI();
+            if (!node) {
+                this._warnMissingNode("ColorMap", "The control will not be interactive.");
+                return;
+            }
 
             let schemas = [];
             for (let pallete of $.FlexRenderer.ColorMaps.schemeGroups[this.params.mode]) {
@@ -406,6 +411,34 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
         this._lutDirty = true;
     }
 
+    /**
+     * Select a palette by name. The single write path for both the UI updater and programmatic
+     * callers (navigator state sync, cache restore), so the two cannot drift.
+     * @param {string} encodedValue palette name, must belong to schemeGroups[params.mode]
+     */
+    set(encodedValue) {
+        const group = $.FlexRenderer.ColorMaps.schemeGroups[this.params.mode];
+        let name = encodedValue;
+        if (!name || !group || !group.includes(name)) {
+            name = $.FlexRenderer.ColorMaps.defaults[this.params.mode];
+        }
+
+        this.value = name;
+        this.colorPallete = $.FlexRenderer.ColorMaps[this.value][this.maxSteps];
+        this._setPallete(this.colorPallete);  // flags the LUT dirty, glDrawing rebakes
+
+        const node = document.getElementById(this.id);
+        if (node) {
+            node.style.background = this.cssGradient(this.colorPallete);
+            if (this.params.interactive) {
+                node.value = this.value;
+            }
+        }
+
+        this.store(this.value);
+        this.changed("default", this.pallete, this.value, this);
+    }
+
     glDrawing(program, gl) {
         if (this._lutDirty) {
             this._bakeAndUploadLut();
@@ -577,31 +610,8 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         this.colorPallete = this.value;
 
         if (this.params.interactive) {
-            const _this = this;
-            let updater = function(e) {
-                const self = e.target;
-                const index = Number.parseInt(e.target.dataset.index, 10);
-                const selected = self.value;
-
-                if (Number.isInteger(index)) {
-                    _this.colorPallete[index] = selected;
-                    _this._setPallete(_this.colorPallete);
-                    if (self.parentElement) {
-                        self.parentElement.style.background = _this.cssGradient(_this.colorPallete);
-                    }
-                    _this.value = _this.colorPallete;
-                    _this.store(_this.colorPallete);
-                    _this.changed("default", _this.pallete, _this.value, _this);
-                    _this.owner.invalidate();
-                }
-            };
-
             this._setPallete(this.colorPallete);
-            let node = this.updateColormapUI();
-
-            const width = 1 / this.colorPallete.length * 100;
-            node.innerHTML = this.colorPallete.map((x, i) => `<input type="color" style="width: ${width}%; height: 30px; background: none; border: none; padding: 4px 5px;" value="${x}" data-index="${i}">`).join("");
-            Array.from(node.children).forEach(child => child.addEventListener("change", updater));
+            this._renderPaletteInputs();
         } else {
             this._setPallete(this.colorPallete);
             this.updateColormapUI();
@@ -611,6 +621,68 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
                 existsNode.style.background = this.cssGradient(this.pallete);
             }
         }
+    }
+
+    /**
+     * (Re)build the row of color inputs from `this.colorPallete` and bind their change handlers.
+     * The whole row is rebuilt rather than updated in place because a new palette may have a
+     * different number of colors than the one currently rendered.
+     */
+    _renderPaletteInputs() {
+        const node = this.updateColormapUI();
+        if (!node) {
+            return;
+        }
+
+        const _this = this;
+        const updater = function(e) {
+            const self = e.target;
+            const index = Number.parseInt(self.dataset.index, 10);
+            const selected = self.value;
+
+            if (Number.isInteger(index)) {
+                _this.colorPallete[index] = selected;
+                _this._setPallete(_this.colorPallete);
+                if (self.parentElement) {
+                    self.parentElement.style.background = _this.cssGradient(_this.colorPallete);
+                }
+                _this.value = _this.colorPallete;
+                _this.store(_this.colorPallete);
+                _this.changed("default", _this.pallete, _this.value, _this);
+                _this.owner.invalidate();
+            }
+        };
+
+        const width = 1 / this.colorPallete.length * 100;
+        node.innerHTML = this.colorPallete.map((x, i) => `<input type="color" style="width: ${width}%; height: 30px; background: none; border: none; padding: 4px 5px;" value="${x}" data-index="${i}">`).join("");
+        Array.from(node.children).forEach(child => child.addEventListener("change", updater));
+    }
+
+    /**
+     * Replace the whole palette. Accepts any shape `_normalizePalette` tolerates, so a value
+     * coming from a stale cache or another drawer's `encoded` can be applied directly.
+     * @param {string[]} encodedValue array of "#rrggbb" colors
+     */
+    set(encodedValue) {
+        let palette = this._normalizePalette(encodedValue);
+        if (this.maxSteps < palette.length) {
+            palette = palette.slice(0, this.maxSteps);
+        }
+
+        this.value = palette;
+        //super class compatibility in methods, keep updated
+        this.colorPallete = palette;
+        this._setPallete(this.colorPallete);
+
+        if (this.params.interactive) {
+            this._renderPaletteInputs();
+        } else {
+            // repaints the swatch strip from this.colorPallete
+            this.updateColormapUI();
+        }
+
+        this.store(this.colorPallete);
+        this.changed("default", this.pallete, this.value, this);
     }
 
     toHtml(classes = "", css = "") {
@@ -816,9 +888,19 @@ return masked * bigger / actualLength;
             from: format.from
         } : format;
 
-        if (this.params.interactive) {
+        // Everything in this branch dereferences the mount — noUiSlider.create, the pip/connect
+        // queries and the change handler. Report an absent mount and leave the control
+        // non-interactive rather than throwing into FlexRenderer's init() catch, which reduces the
+        // failure to a generic message and drops both the control id and the reason. Gating on the
+        // resolved node instead of returning early keeps the value padding at the end of init()
+        // reachable — the uniform needs it whether or not a slider was built.
+        const container = this.params.interactive ? document.getElementById(this.id) : null;
+        if (this.params.interactive && !container) {
+            this._warnMissingNode("AdvancedSlider", "The slider will not be created.");
+        }
+
+        if (container) {
             const _this = this;
-            let container = document.getElementById(this.id);
             if (!window.noUiSlider) {
                 throw new Error("noUiSlider not found: install noUiSlide library!");
             }
@@ -976,6 +1058,12 @@ return masked * bigger / actualLength;
         if (!container) {
             container = document.getElementById(this.id);
         }
+        // Reached from setMask() long after init(), so a missing mount here is either a control
+        // that never became interactive (already reported by init()) or markup torn down by the
+        // host: a no-op, not a new fault to report.
+        if (!container) {
+            return;
+        }
         let pips = container.querySelectorAll('.noUi-connect');
         for (let i = 0; i < pips.length; i++) {
             /* eslint-disable eqeqeq */
@@ -1016,6 +1104,50 @@ return masked * bigger / actualLength;
             values.push(typeof mapper === "function" ? mapper(index, intervalCount) : index);
         }
         this.setMask(values, store);
+    }
+
+    /**
+     * Replace the breakpoints, and optionally the mask.
+     *
+     * `encoded` carries the breaks only, so the array form is what round-trips through
+     * `IControl.createCacheObject` and the navigator state sync. The object form
+     * `{breaks, mask}` exists for callers that want to restore both halves of the state at once.
+     *
+     * @param {number[]|number|{breaks: number[], mask: number[]}} encodedValue
+     */
+    set(encodedValue) {
+        let breaks = encodedValue;
+        let mask = null;
+        if (encodedValue && !Array.isArray(encodedValue) && typeof encodedValue === "object") {
+            breaks = encodedValue.breaks;
+            mask = encodedValue.mask;
+        }
+
+        breaks = this._normalizeNumberArray(breaks, this.supports.breaks, "breaks")
+            .slice(0, this.MAX_SLIDERS);
+
+        this.encodedValues = breaks;
+        this.value = breaks.map(this._normalize.bind(this));
+        this.sampleSize = this.value.length;
+
+        if (Array.isArray(mask)) {
+            this.setMask(mask, true);
+        }
+
+        const container = document.getElementById(this.id);
+        if (container && container.noUiSlider) {
+            // second argument false: do not fire noUiSlider's own 'set' event, the "change"
+            // handler registered in init() would re-enter this state as if the user dragged.
+            container.noUiSlider.set(breaks, false);
+        }
+
+        this.store(this.encodedValues, "breaks");
+        this.changed("breaks", this.value, this.encodedValues, this);
+
+        //do at last since value gets stretched by -1ones
+        for (let i = this.sampleSize; i < this.MAX_SLIDERS; i++) {
+            this.value.push(-1);
+        }
     }
 
     glDrawing(program, gl) {
@@ -1120,21 +1252,33 @@ $.FlexRenderer.UIControls.TextArea = class extends $.FlexRenderer.UIControls.ICo
     init() {
         this.value = this.load(this.params.default);
 
-        if (this.params.interactive) {
+        let node = document.getElementById(this.id);
+        if (node) {
+            node.value = this.value;
+        }
+
+        if (this.params.interactive && node) {
             const _this = this;
             let updater = function(e) {
-                let self = $(e.target);
-                _this.value = self.val();
+                _this.value = e.target.value;
                 _this.store(_this.value);
                 _this.changed("default", _this.value, _this.value, _this);
             };
-            let node = $(`#${this.id}`);
-            node.val(this.value);
-            node.on('change', updater);
-        } else {
-            let node = $(`#${this.id}`);
-            node.val(this.value);
+            node.addEventListener('change', updater);
         }
+    }
+
+    set(encodedValue) {
+        this.value = encodedValue === undefined || encodedValue === null ? "" : String(encodedValue);
+
+        let node = document.getElementById(this.id);
+        if (node) {
+            // no synthetic 'change' event: the listener from init() would re-enter set()
+            node.value = this.value;
+        }
+
+        this.store(this.value);
+        this.changed("default", this.value, this.value, this);
     }
 
     glDrawing(program, gl) {
@@ -1214,20 +1358,31 @@ $.FlexRenderer.UIControls.Button = class extends $.FlexRenderer.UIControls.ICont
     init() {
         this.value = this.load(this.params.default);
 
-        if (this.params.interactive) {
+        let node = document.getElementById(this.id);
+        if (node) {
+            node.innerHTML = this.params.title;
+        }
+
+        if (this.params.interactive && node) {
             const _this = this;
             let updater = function(e) {
-                _this.value++;
-                _this.store(_this.value);
-                _this.changed("default", _this.value, _this.value, _this);
+                _this.set(_this.value + 1);
             };
-            let node = $(`#${this.id}`);
-            node.html(this.params.title);
-            node.click(updater);
-        } else {
-            let node = $(`#${this.id}`);
-            node.html(this.params.title);
+            node.addEventListener('click', updater);
         }
+    }
+
+    /**
+     * The button's value is its click counter; setting it mirrors the counter of another
+     * instance of the same control (navigator sync, cache restore) without faking a click.
+     * @param {number|string} encodedValue
+     */
+    set(encodedValue) {
+        const parsed = Number.parseInt(encodedValue, 10);
+        this.value = Number.isFinite(parsed) ? parsed : 0;
+
+        this.store(this.value);
+        this.changed("default", this.value, this.value, this);
     }
 
     glDrawing(program, gl) {
@@ -1320,14 +1475,29 @@ $.FlexRenderer.IAtlasTextureControl = class IAtlasTextureControl extends $.FlexR
             }
         }
 
+        // Enqueue only. This is reached from Image.onload and from DOM change handlers, where
+        // nothing of ours is bound; the atlas flushes the queue from bind(), inside a draw.
         const textureId = this.atlas.addImage(source, opts);
-        this.atlas._commitUploads();
 
         if (cacheKey) {
             this.atlas.__flexRendererCache[cacheKey] = textureId;
         }
 
         return textureId;
+    }
+
+    /**
+     * The encoded value of an atlas-backed control is its texture id. Subclasses whose encoding
+     * carries more than the id (e.g. Icon, which also encodes the glyph and its color) override this.
+     * @param {number|string} encodedTextureId
+     */
+    set(encodedTextureId) {
+        const parsed = Number.parseInt(encodedTextureId, 10);
+        // The encoded value stays a number, matching what init() loads from params.default:
+        // stringifying it here would make set(control.encoded) return a differently-typed
+        // encoded value than it was given.
+        const textureId = Number.isNaN(parsed) ? -1 : parsed;
+        this._setTexture(textureId, textureId);
     }
 
     define() {
@@ -1440,15 +1610,6 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
                 button.addEventListener("click", updater);
             }
         }
-    }
-
-    set(encodedTextureId) {
-        const parsed = Number.parseInt(encodedTextureId, 10);
-        if (Number.isNaN(parsed)) {
-            this._setTexture(-1, -1);
-            return;
-        }
-        this._setTexture(String(parsed), parsed);
     }
 
     toHtml(classes = "", css = "") {
@@ -1882,14 +2043,13 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
             if (cacheKey && Number.isInteger(atlas.__flexRendererCache[cacheKey])) {
                 return atlas.__flexRendererCache[cacheKey];
             }
+            // Enqueue only. Icon glyphs resolve from document.fonts.ready and from a retry timer,
+            // so this runs with nothing bound; the atlas flushes from bind(), inside a draw.
             const textureId = atlas.addImage(canvasResult.canvas, {
                 width: canvasResult.canvas.width,
                 height: canvasResult.canvas.height,
                 cacheKey
             });
-            if (typeof atlas._commitUploads === "function") {
-                atlas._commitUploads();
-            }
             if (cacheKey) {
                 atlas.__flexRendererCache[cacheKey] = textureId;
             }
@@ -2402,6 +2562,12 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
     }
 
     _encodeStoredValue(iconValue, colorValue) {
+        // "no icon" encodes as the empty string, the same shape init() loads it back as. Wrapping
+        // it in JSON instead would make set(control.encoded) return a different encoded value than
+        // it was given, which breaks cache restore and navigator state sync.
+        if (!iconValue) {
+            return "";
+        }
         return JSON.stringify({
             icon: String(iconValue || ""),
             color: this._normalizeColor(colorValue || this.currentColor || this.params.color || "#ff0000")

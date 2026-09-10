@@ -18,6 +18,10 @@ renderer.addHandler('program-used', (e) => {
 renderer.addHandler('html-controls-created', (e) => {
     console.log('html-controls-created', e.name);
 });
+
+renderer.addHandler('shader-program-failed', (e) => {
+    console.warn('shader-program-failed', e.source, e.error);
+});
 ```
 
 ---
@@ -188,6 +192,16 @@ This applies to:
 - `dragCurrentPositionPx`
 - `dragEndPositionPx`
 
+The same holds for `imageOriginPx`, the bound tiled image's (0,0) as seen by second-pass GLSL.
+
+`pixelSize` does **not**: it is CSS pixels per image pixel, because it derives from the viewport's container size. The bridge between the two spaces is `devicePixelScale` (framebuffer px per CSS px, uniform `u_devicePixelScale`):
+
+```txt
+framebuffer px per image px  ==  pixelSize * devicePixelScale
+```
+
+A shader that maps `gl_FragCoord` into image space must divide by that product, not by `pixelSize` alone, and any control documented in "screen pixels" means CSS pixels and must be multiplied by `devicePixelScale` before being compared against framebuffer distances. Mixing the two spaces makes geometry come out `1 / devicePixelRatio`-sized, which is invisible at DPR 1.
+
 ### Button bitmasks
 
 Button fields use the browser `MouseEvent.buttons` / `PointerEvent.buttons` bitmask:
@@ -200,6 +214,21 @@ Button fields use the browser `MouseEvent.buttons` / `PointerEvent.buttons` bitm
 8  = fourth button, usually browser back
 16 = fifth button, usually browser forward
 ```
+
+### Which layers need forwarding
+
+Forwarding is off by default, so a shader that reads interaction state renders its inactive branch until a host turns it on. A `ShaderLayer` declares the dependency with `static requiresInteraction()` (default `false`, `true` on `fisheye-lens` and `interaction-debug`), readable off the registered class before anything is constructed:
+
+```js
+const Klass = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.get(type);
+if (Klass.requiresInteraction()) {
+    drawer.setInteractionEnabled(true);
+}
+```
+
+FlexDrawer never enables forwarding by itself — it logs one warning per shader type when such a layer is built while forwarding is disabled.
+
+This static is about pointer state reaching the GLSL. It is unrelated to a UI control's `interactive` flag, which only says whether that control is user-editable.
 
 ### FlexDrawer viewer input capture
 
@@ -287,6 +316,53 @@ shaderLayers: renderer.getAllShaders()
 ```
 
 Use these lifecycle events for instrumentation and UI orchestration, not for semantic persistence.
+
+---
+
+### `shader-program-failed`
+
+Fired when a program could not be built and the renderer recovered by keeping the previously
+linked one. Every rebuild path reports through this event, so a host does not have to know which
+interaction triggered the rebuild.
+
+The configuration is **retained**: no shader is deleted and no layer is reset to `identity`. The
+last successfully linked program keeps rendering, so the viewport shows the last good frame while
+the live configuration has already moved on. Re-applying the host's own authoritative
+configuration, or surfacing an actionable message, is the intended response.
+
+The most common cause is the per-device fragment uniform budget — the renderer logs the largest
+consumers and the expected link failure just before this fires. Reduce the number of shader
+layers, or the number of `colormap` / `advanced_slider` controls.
+
+### Payload
+
+```js
+{
+    key: "second-pass",         // program key that failed to build
+    error: Error,               // the caught error
+    source: "drawer-rebuild" | "change-shader-type" | "refresh-shader-layer" |
+            "shader-rebuild-callback" | "standalone-override" | "configurator-set-shader",
+    shaderIds: ["shaderA", "shaderB"],   // render order at the time of the failure
+    snapshot: { order: [...], shaders: { ... } }   // the still-live configuration
+}
+```
+
+### Example
+
+```js
+renderer.addHandler('shader-program-failed', (e) => {
+    console.warn('program build failed from', e.source, e.error);
+    // the config is still live; re-apply your own authoritative copy if you keep one
+    viewer.drawer.overrideConfigureAll(myConfig.shaders, myConfig.order);
+});
+```
+
+### Notes
+
+- `snapshot` is `null` only if the snapshot itself could not be taken; the event still fires.
+- Fired once per failed build, never for a successful one.
+- Not a substitute for `visualization-change`: nothing about the semantic configuration changed,
+  only the GPU program did not follow it.
 
 ---
 

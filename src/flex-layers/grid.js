@@ -6,12 +6,14 @@
  * tiledImages: [0]) so the grid lives in that image's source-pixel space and
  * pans/zooms with it. The reference texture is not sampled — it is used
  * purely as a coordinate anchor: the drawer's _collectShaderUniforms fills
- * `pixelSize` (screen-px per image-px) from the bound tiledImage. If no
+ * `pixelSize` (CSS-px per image-px) from the bound tiledImage. If no
  * binding exists, `pixelSize` defaults to 1 and the grid degrades gracefully
  * into screen-pixel space.
  *
- * Cell sizes are in image pixels; line width is in screen pixels (so lines
- * stay readable regardless of zoom).
+ * Cell sizes are in image pixels; line width is in CSS pixels (so lines
+ * stay readable regardless of zoom, and identical on any devicePixelRatio).
+ * Both are converted into framebuffer pixels through devicePixelScale before
+ * being compared against gl_FragCoord.
  *
  * Optional adaptive_lod toggle holds on-screen cell size in [1×, 2×) of the
  * configured size by snapping cellX/cellY to powers of two — merge when the
@@ -48,7 +50,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     static docs() {
         return {
             summary: "Configurable grid overlay anchored to a reference image (texture not sampled).",
-            description: "Draws an axis-aligned grid in image-source pixel coordinates. Declares one data reference used purely as a coordinate anchor — the configurator auto-binds it so the grid pans/zooms with the image. Cell sizes are in image pixels; line width is in screen pixels so lines stay readable. With no binding, the grid degrades to screen-pixel space (pixelSize = 1).",
+            description: "Draws an axis-aligned grid in image-source pixel coordinates. Declares one data reference used purely as a coordinate anchor — the configurator auto-binds it so the grid pans/zooms with the image. Cell sizes are in image pixels; line width is in CSS pixels so lines stay readable and devicePixelRatio-independent. With no binding, the grid degrades to screen-pixel space (pixelSize = 1).",
             kind: "shader",
             inputs: [{
                 index: 0,
@@ -120,7 +122,8 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
         // SimpleUIControl normalizes range/number values to [0, 1] before upload, so the
         // GLSL uniform is a fraction of the configured min..max range. Denormalize via
         // mix(min, max, sample) — same pattern as iconmap_decodeCellSize.
-        // pixelSize is OSD's image-zoom (screen-px per image-px); convert via divide.
+        // pixelSize is OSD's image-zoom in CSS px per image px, while gl_FragCoord and
+        // imageOriginPx are framebuffer px; devicePixelScale bridges the two.
         const f = (n) => $.FlexRenderer.ShaderLayer.toShaderFloatString(n, 0, 5);
         const cx = this.cell_x.params;
         const cy = this.cell_y.params;
@@ -132,29 +135,40 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     float cellY = max(mix(${f(cy.min)}, ${f(cy.max)}, ${this.cell_y.sample()}), 1.0);
     float offsetX = mix(${f(ox.min)}, ${f(ox.max)}, ${this.offset_x.sample()});
     float offsetY = mix(${f(oy.min)}, ${f(oy.max)}, ${this.offset_y.sample()});
-    float scale = max(pixelSize, 1e-6);
+    float scale = max(pixelSize, 1e-6);              // CSS px per image px
+    vec2 dps = max(devicePixelScale, vec2(1e-6));    // framebuffer px per CSS px, per axis
+    vec2 scaleFb = scale * dps;                      // framebuffer px per image px
 
     // Symmetric LOD: snap cell size to a power of two so on-screen cell stays
     // in [1×, 2×) of the configured size. pixelSize<0.5 → merge; pixelSize≥2 → subdivide.
+    // Deliberately on the CSS scale, not scaleFb: the threshold is a perceptual one, so
+    // a HiDPI display must merge/subdivide at the same zoom as everyone else.
     if (${this.adaptive_lod.sample()}) {
         float lodMult = exp2(-floor(log2(scale)));
         cellX *= lodMult;
         cellY *= lodMult;
     }
 
-    vec2 imgCoord = (gl_FragCoord.xy - imageOriginPx) / scale - vec2(offsetX, offsetY);
+    // gl_FragCoord and imageOriginPx are framebuffer px, so the divisor must be too —
+    // dividing by the CSS scale here makes every cell 1/devicePixelRatio-sized.
+    vec2 imgCoord = (gl_FragCoord.xy - imageOriginPx) / scaleFb - vec2(offsetX, offsetY);
 
     float modX = mod(imgCoord.x, cellX);
     float modY = mod(imgCoord.y, cellY);
     float dx = min(modX, cellX - modX);
     float dy = min(modY, cellY - modY);
 
-    // Convert image-pixel distances to screen pixels for a stable line width.
-    float minDistScreen = min(dx, dy) * scale;
+    // Convert image-pixel distances to framebuffer pixels, matching fwidth().
+    // Line width is a single number, so both of these take the x scale by choice, not by
+    // accident: the two components differ by the per-axis framebuffer rounding only
+    // (~0.02%), far below a pixel over any line width.
+    float minDistFb = min(dx, dy) * scaleFb.x;
 
-    float halfWidth = mix(${f(lw.min)}, ${f(lw.max)}, ${this.line_width.sample()}) * 0.5;
-    float feather = max(fwidth(minDistScreen), 1e-4);
-    float onLine = 1.0 - smoothstep(halfWidth - feather, halfWidth + feather, minDistScreen);
+    // line_width is CSS px, so lift it to framebuffer px: apparent thickness then
+    // matches the configured value on every display (a no-op at DPR 1).
+    float halfWidth = mix(${f(lw.min)}, ${f(lw.max)}, ${this.line_width.sample()}) * 0.5 * dps.x;
+    float feather = max(fwidth(minDistFb), 1e-4);
+    float onLine = 1.0 - smoothstep(halfWidth - feather, halfWidth + feather, minDistFb);
 
     return vec4(${this.color.sample()}, onLine);
 `;

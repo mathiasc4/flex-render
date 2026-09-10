@@ -2,7 +2,12 @@
 
 (function() {
     const ShaderConfigurator = OpenSeadragon.FlexRenderer.ShaderConfigurator;
-    const Ajv = window.ajv7 || window.Ajv;
+    // Prefer the 2020-12 build: the published schema declares that dialect, so only this one can
+    // compile the root document (the tests below that compile sub-schemas work under any of them).
+    // `window.ajv2020` is a module namespace, hence the `.default` unwrap -- same shape
+    // src/configurator.js resolves.
+    const AjvModule = window.ajv2020 || window.ajv7 || window.Ajv;
+    const Ajv = (AjvModule && typeof AjvModule.default === "function") ? AjvModule.default : AjvModule;
 
     function hasValidationKeywords(schema) {
         if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
@@ -69,7 +74,10 @@
         return new Ajv({
             allErrors: true,
             strict: false,
-            schemaId: "auto"
+            // Mirrors ShaderConfigurator._createSchemaAjv(): acts on the `discriminator` keyword the
+            // schema emits beside its `oneOf` branches. `schemaId: "auto"` used to be here; it was
+            // removed in AJV 7 and AJV 8 accepts it silently while breaking $id resolution.
+            discriminator: true
         });
     }
 
@@ -99,6 +107,42 @@
         }
     });
 
+    // A catalogue picks shaders for a host that may not forward pointer state, so the
+    // requirement has to travel with the published schema and docs, not only on the class.
+    // The class-level contract itself is covered in interaction-requirement.js.
+    QUnit.test("shaders declaring requiresInteraction() publish it", function(assert) {
+        const Registry = OpenSeadragon.FlexRenderer.ShaderLayerRegistry;
+        // Expectations come from the classes, so a test-registered probe shader does not
+        // make this fail; the shipped layers are then pinned by name.
+        const declares = (type) => {
+            const Klass = Registry.get(type);
+            return !!(Klass && typeof Klass.requiresInteraction === "function" &&
+                Klass.requiresInteraction() === true);
+        };
+
+        assert.ok(declares("fisheye-lens"), "fisheye-lens declares requiresInteraction()");
+        assert.ok(declares("interaction-debug"), "interaction-debug declares requiresInteraction()");
+        assert.notOk(declares("identity"), "identity does not");
+
+        const schemaModel = ShaderConfigurator.compileConfigSchemaModel();
+        const shaderLayers = (schemaModel.$defs && schemaModel.$defs.shaderLayers) || {};
+        for (const [shaderType, shaderSchema] of Object.entries(shaderLayers)) {
+            if (declares(shaderType)) {
+                assert.strictEqual(shaderSchema["x-requiresInteraction"], true,
+                    `${shaderType} publishes x-requiresInteraction`);
+            } else {
+                assert.notOk("x-requiresInteraction" in shaderSchema,
+                    `${shaderType} omits x-requiresInteraction`);
+            }
+        }
+
+        const docsModel = ShaderConfigurator.compileDocsModel();
+        for (const shader of docsModel.shaders) {
+            assert.strictEqual(shader.requiresInteraction, declares(shader.type),
+                `docs model reports requiresInteraction for ${shader.type}`);
+        }
+    });
+
     QUnit.test("layer source bindings admit tiledImages and dataReferences", function(assert) {
         const model = ShaderConfigurator.compileConfigSchemaModel();
         const shaderSchema = model.$defs.shaderLayers.colormap;
@@ -112,6 +156,94 @@
         assert.ok(
             validate({ id: "cm_refs", type: "colormap", dataReferences: [0] }),
             "colormap accepts dataReferences"
+        );
+    });
+
+    // `precision` is read at runtime off the layer config (FlexRenderer._shaderTreeDemandsHighPrecision
+    // / _shaderTreeVetoesHighPrecision). A closed schema that omits it makes every host emitting it
+    // log "must NOT have additional properties" per layer, per registered shader type.
+    QUnit.test("layer schemas admit the precision override and still catch typos in it", function(assert) {
+        const model = ShaderConfigurator.compileConfigSchemaModel();
+        const ajv = createAjv();
+        const validate = compileLayerValidator(ajv, model, "colormap");
+
+        assert.ok(
+            validate({ id: "cm_f16", type: "colormap", dataReferences: [0], precision: "float16" }),
+            "colormap accepts precision: float16"
+        );
+        assert.ok(
+            validate({ id: "cm_u8", type: "colormap", dataReferences: [0], precision: "unorm8" }),
+            "colormap accepts precision: unorm8"
+        );
+        assert.notOk(
+            validate({ id: "cm_typo", type: "colormap", precision: "f16" }),
+            "a misspelled precision value is still rejected"
+        );
+
+        const shaderLayers = (model.$defs && model.$defs.shaderLayers) || {};
+        for (const [shaderType, shaderSchema] of Object.entries(shaderLayers)) {
+            assert.deepEqual(
+                shaderSchema.properties.precision && shaderSchema.properties.precision.enum,
+                ["float16", "unorm8"],
+                `${shaderType} publishes the precision enum`
+            );
+        }
+    });
+
+    // `_controls` is ShaderLayer instance state, and FlexRenderer.jsonReplacer strips every
+    // `_`-prefixed key on export, so no persisted config can carry one. The schema stays closed.
+    QUnit.test("underscore-prefixed internals are neither published nor accepted", function(assert) {
+        const model = ShaderConfigurator.compileConfigSchemaModel();
+        const ajv = createAjv();
+        const validate = compileLayerValidator(ajv, model, "colormap");
+
+        assert.notOk(
+            validate({ id: "cm_internal", type: "colormap", _controls: {} }),
+            "a config carrying _controls is rejected"
+        );
+
+        const shaderLayers = (model.$defs && model.$defs.shaderLayers) || {};
+        for (const [shaderType, shaderSchema] of Object.entries(shaderLayers)) {
+            const published = Object.keys(shaderSchema.properties || {}).filter(key => key.startsWith("_"));
+            assert.deepEqual(published, [], `${shaderType} publishes no _-prefixed property`);
+        }
+
+        const rootProperties = ShaderConfigurator._compileBaseShaderConfigSchema().properties;
+        assert.deepEqual(
+            rootProperties.filter(item => item.key.startsWith("_")),
+            [],
+            "the prose config descriptor lists no _-prefixed key either"
+        );
+        assert.ok(
+            rootProperties.some(item => item.key === "precision"),
+            "the prose config descriptor lists precision, matching the JSON schema"
+        );
+    });
+
+    // Custom params must follow the built-in path: a declared null default has to be admitted
+    // by the type, because _synthesizeExampleParamsFromDefaults emits it into the example.
+    QUnit.test("custom params publish nullable only when the declaration says default: null", function(assert) {
+        const declaresNull = {
+            type: () => "probe_null",
+            customParams: { opt: { type: "string", default: null } }
+        };
+        const declaresNothing = {
+            type: () => "probe_absent",
+            customParams: { opt: { type: "string" } }
+        };
+
+        // _compileShaderParamsSchema coerces an absent default to null, so both shaders reach
+        // _compileCustomParamJsonSchema with an identical compiled item. Only the declaration
+        // distinguishes them.
+        const compiledItem = { key: "opt", type: "string", default: null, required: null };
+
+        assert.ok(
+            schemaAllowsNull(ShaderConfigurator._compileCustomParamJsonSchema(declaresNull, compiledItem)),
+            "a custom param declared default: null accepts null"
+        );
+        assert.notOk(
+            schemaAllowsNull(ShaderConfigurator._compileCustomParamJsonSchema(declaresNothing, compiledItem)),
+            "a custom param with no declared default stays strictly typed"
         );
     });
 
@@ -211,6 +343,68 @@
                 assert.notOk(outcome && outcome.ok === false, `${shaderType}.${coupling.name} example[0] passes coupling validation`);
             }
         }
+    });
+
+    // A misplaced key on one layer used to fail every `oneOf` branch, so it was reported once per
+    // registered shader type: 23 findings for a single layer, most of them about shader types the
+    // config never mentions (`must be equal to constant {"allowedValue":"adaptive_threshold"}`) plus
+    // complaints inherited from branches that do not have the property at all. The host runs this
+    // schema on every open and shows the result to the user, so the noise was the whole problem.
+    QUnit.test("a misplaced key is reported once, against the declared shader type", function(assert) {
+        const model = ShaderConfigurator.compileConfigSchemaModel();
+        const ajv = createAjv();
+
+        // Compiling the ROOT document (not a sub-schema) is what exercises `discriminator`, and it
+        // also throws if any branch lacks `properties.type` with a const/enum -- which is the guard
+        // for a future shader that forgets it.
+        let validate = null;
+        try {
+            validate = ajv.compile(model);
+        } catch (e) {
+            assert.ok(false, `the full model compiles with discriminator enabled: ${e && e.message}`);
+            return;
+        }
+        assert.ok(validate, "the full model compiles with discriminator enabled");
+
+        const misplaced = { shaders: { ts: { type: "time-series", seriesRenderer: "identity" } } };
+        assert.notOk(validate(misplaced), "a top-level wrapper setting is rejected");
+
+        const errors = validate.errors || [];
+        assert.ok(errors.length <= 3,
+            `one mistake yields few findings, not one per shader type (got ${errors.length}: ` +
+            `${JSON.stringify(errors.map(e => e.keyword))})`);
+
+        assert.ok(errors.some(e => e.instancePath === "/shaders/ts" &&
+                e.keyword === "additionalProperties" &&
+                e.params && e.params.additionalProperty === "seriesRenderer"),
+            "and it names the misplaced key");
+
+        assert.notOk(errors.some(e => e.keyword === "const" &&
+                e.params && e.params.allowedValue !== undefined &&
+                e.params.allowedValue !== "time-series"),
+            "with no const failures belonging to other shader types' branches");
+
+        assert.ok(validate({
+            shaders: { ts: { type: "time-series", params: { seriesRenderer: "identity", series: [0, 1] } } }
+        }), "the same setting under params validates");
+
+        assert.notOk(validate({ shaders: { x: { type: "not_a_shader" } } }),
+            "an unknown shader type is still rejected");
+        assert.ok((validate.errors || []).some(e => e.keyword === "discriminator"),
+            "and reports the tag miss rather than every branch");
+    });
+
+    QUnit.test("both shader maps publish the type discriminator", function(assert) {
+        const model = ShaderConfigurator.compileConfigSchemaModel();
+
+        assert.deepEqual(model.properties.shaders.additionalProperties.discriminator,
+            { propertyName: "type" },
+            "the root shaders map discriminates on type");
+
+        const group = model.$defs.shaderLayers.group;
+        assert.deepEqual(group.properties.shaders.additionalProperties.discriminator,
+            { propertyName: "type" },
+            "and so does a group's nested shaders map");
     });
 
     QUnit.test("compiled schema is deterministic across calls", function(assert) {
