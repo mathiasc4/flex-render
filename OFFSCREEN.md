@@ -41,19 +41,47 @@ shared-context mode that canvas is shared scratch state and is not durable visib
 renderer.
 
 Standalone helpers inherit the drawer options from the source viewer. If the source drawer uses
-`sharedContextKey`, the standalone drawer may attach to the same shared context unless you override that
-option before constructing the standalone drawer. Prefer a private context for extraction workflows unless
-you intentionally need shared-context behavior.
+`sharedContextKey`, the standalone drawer attaches to the same shared context unless you say otherwise.
+Say otherwise with the second argument of `makeStandaloneFlexDrawer`, which is merged over the inherited
+options:
+
+````js
+const drawer = OpenSeadragon.makeStandaloneFlexDrawer(viewer, { sharedContextKey: null });
+````
+
+Prefer a private context for extraction workflows unless you intentionally need shared-context behavior.
+The same argument is the only way to reach the other construction-time renderer options —
+`presentationClearColor` and `precision` are read once in the constructor and have no setter at all, and
+`backgroundColor` has one that does nothing until the shaders are rebuilt. Six keys are pinned and an override of them is ignored:
+`debug`, `htmlReset`, `htmlHandler`, `interactive`, `handleNavigator`, `offScreen`. They are what keep the
+off-screen drawer from binding another renderer's control DOM by element id and from taking the live
+viewer's canvas with it when it is destroyed.
 
 Shared-context presentation currently uses `readPixels` for the final transfer into the presentation
 canvas. This avoids using the shared default framebuffer as an intermediate output target.
 
+Do not call `gl.readPixels` against `renderer.gl` to get a drawer's output. It happens to work in
+private-context mode, where the default framebuffer *is* the presentation canvas, and it silently reads
+the wrong surface in shared-context mode, where the default framebuffer is the registry's page-global
+scratch canvas — shared by every renderer on that key and not this drawer's output at all. The supported
+ways out are `drawer.extract({result})`, the context returned by `drawer.drawWithConfiguration()`, and
+`renderer.getPresentationCanvas()`.
+
 ## The Backdrop
 
 Every off-screen pass clears its output to `renderer.presentationClearColor` before its second pass.
-This is not cosmetic: the second pass composites with `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`, so without
-it a region shows the previous pass through wherever it is transparent, and a pass with nothing to
-draw leaves the previous region entirely intact.
+This is not cosmetic: the second pass composites premultiplied, with `ONE`/`ONE_MINUS_SRC_ALPHA`, so
+without it a region shows the previous pass through wherever it is transparent, and a pass with
+nothing to draw leaves the previous region entirely intact.
+
+`presentationClearColor` is not the same knob as `backgroundColor`, and neither substitutes for the
+other. `backgroundColor` is the *source*: it is baked into the second-pass fragment shader as the seed
+of the layer composition, which is why changing it needs a shader rebuild and why the renderer warns
+that `setBackground()` does nothing until one happens. `presentationClearColor` is the *destination*:
+the colour the output surface is cleared to before that composition blends onto it. Per pixel the
+result is `stack(seeded by backgroundColor) + backdrop * (1 - src.a)`. Making `backgroundColor` opaque
+to get an opaque picture would force every pixel opaque regardless of coverage; setting the backdrop
+never changes what the shaders emit.
 
 A consumer composing its own passes should call `renderer.clearOutput()` — or `drawer.clearOutput()`
 / `runtime.clearOutput()` on the standalone facades — and should not reach into `renderer.gl` for it.
@@ -67,7 +95,35 @@ mode, clears the presentation canvas to fully transparent; `clearOutput()` keeps
 clears to the backdrop, which is what a caller re-running only the second pass wants.
 
 A translucent `presentationClearColor` must be supplied with RGB already premultiplied by alpha —
-the context is created with `premultipliedAlpha: true`.
+the context is created with `premultipliedAlpha: true`. Nominal black at 50% is `[0, 0, 0, 0.5]`;
+nominal red at 50% is `[0.5, 0, 0, 0.5]`, not `[1, 0, 0, 0.5]`.
+
+### Output with an alpha channel
+
+The default backdrop is `[1, 1, 1, 1]`, opaque white, so by default every raster an off-screen pass
+returns is opaque — uncovered regions read as white, not as transparent. A consumer that needs a real
+alpha channel (a mask, a layer to composite elsewhere) asks for no backdrop at all:
+
+````js
+const drawer = OpenSeadragon.makeStandaloneFlexDrawer(viewer, {
+    presentationClearColor: [0, 0, 0, 0],  // no backdrop -> the shader's own alpha survives
+    sharedContextKey: null,                // private context, see the note above
+});
+const { data } = await drawer.extract({ result: "imageData", /* view, size, ... */ });
+````
+
+This works through the ordinary `extract()` / `drawWithConfiguration()` return value in both context
+modes, for different reasons, and neither needs a special readback:
+
+* **private context** — `clearOutput()` clears the default framebuffer, which *is* the presentation
+  canvas, to `[0, 0, 0, 0]`, and the copy-out never fills in private mode.
+* **shared context** — the second pass lands in a color target that is always cleared to
+  `[0, 0, 0, 0]` whatever the backdrop is, and the copy-out's backdrop fill is skipped when the
+  backdrop's alpha is zero.
+
+`backgroundColor` does not need changing for this: its default is already `#00000000`. An opaque
+`backgroundColor` would defeat the whole thing, since it makes the shader stack emit alpha 1 for every
+pixel it covers.
 
 ## Rendering Different Parts of the Viewer
 

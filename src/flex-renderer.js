@@ -106,12 +106,28 @@
     /**
      * One packed texture layer in a GPU texture-set tile payload.
      *
-     * The current WebGL2 implementation supports `RGBA8` and `RGBA16F`.
-     * `RGBA8` data is uploaded as RGBA/UNSIGNED_BYTE. `RGBA16F` data is
-     * uploaded as RGBA/HALF_FLOAT.
+     * The current WebGL2 implementation supports four formats:
+     *
+     * | format     | upload             | data view      | components/pack |
+     * |------------|--------------------|----------------|-----------------|
+     * | `RGBA8`    | RGBA/UNSIGNED_BYTE | `Uint8Array`   | 4               |
+     * | `RGBA16F`  | RGBA/HALF_FLOAT    | `Uint16Array`  | 4               |
+     * | `RG16F`    | RG/HALF_FLOAT      | `Uint16Array`  | 2               |
+     * | `R16F`     | RED/HALF_FLOAT     | `Uint16Array`  | 1               |
+     *
+     * The narrow formats exist so a quantitative layer with one or two channels does not pay
+     * for four: a cached `R16F` tile is a quarter of the `RGBA16F` one. This is the *tile*
+     * format only -- the first-pass colour target still holds a full RGBA layer per pack.
+     *
+     * All packs of one tile must share a format, and `data.length` must be exactly
+     * `width * height * componentsPerPack`.
+     *
+     * Sampling a narrow pack yields `(r, 0, 0, 1)` / `(r, g, 0, 1)`: the missing components are
+     * a format fill, not payload, so unlike RGBA packs the alpha of a narrow pack never carries
+     * data. Declare `channelCount` (or let it default) so shaders do not read into the fill.
      *
      * @typedef {object} GpuTextureSetPack
-     * @property {"RGBA8"|"RGBA16F"} [format="RGBA8"] - Pixel storage format for this pack.
+     * @property {"RGBA8"|"RGBA16F"|"RG16F"|"R16F"} [format="RGBA8"] - Pixel storage format for this pack.
      * @property {GpuTextureSetPackData} data - Packed pixel data for one texture-array layer.
      */
 
@@ -130,6 +146,8 @@
      * @property {number} height - Texture height in pixels.
      * @property {GpuTextureSetPack[]} packs - Packed texture layers.
      * @property {number} [channelCount] - Logical channel count represented by all packs.
+     *   Defaults to `packs.length * componentsPerPack` of the declared format, so a
+     *   single `R16F` pack defaults to 1 channel rather than 4.
      */
 
     /**
@@ -160,6 +178,8 @@
      * @property {number} textureDepth - Number of backend texture layers.
      * @property {number} packCount - Number of source packs represented by the resource.
      * @property {number} channelCount - Number of source channels represented by the resource.
+     * @property {number} [componentsPerPack] - Components carried by one texture layer (1, 2 or 4).
+     *   Absent for bitmap tiles, which are always 4.
      */
 
     /**
@@ -273,7 +293,11 @@
     /**
      * @typedef {object} SPRenderPackage
      * @property {number} zoom
-     * @property {number} pixelsize
+     * @property {number} pixelSize  CSS px per image px of the bound tiled image
+     * @property {number[]|number} [devicePixelScale]  framebuffer px per CSS px as [x, y]
+     *      (the two differ because the framebuffer size is rounded per axis); a bare
+     *      number is taken as isotropic. Defaults to 1.
+     * @property {number[]} [imageOriginPx]  bound image (0,0) in framebuffer px, bottom-left origin
      * @property {number} opacity
      * @property {ShaderLayer} shader
      * @property {Uint8Array|undefined} iccLut  TODO also support error rendering by passing some icon texture & rendering where nothing was rendered but should be (-> use mask, but how we force tiles to come to render if they are failed?  )
@@ -459,6 +483,10 @@
 
             this.running = false;
             this._program = null;            // WebGLProgram
+            // Fallback slot for _bindGLProgram() when this renderer owns its context alone. In
+            // shared-context mode the slot lives on the shared entry instead, because
+            // CURRENT_PROGRAM is a property of the context, not of the renderer.
+            this.__currentGLProgram = null;
             this._shaders = {};
             this._shadersOrder = null;
             this._programImplementations = {};
@@ -543,6 +571,9 @@
                             canvasOptions: $.extend(true, {}, this.canvasContextOptions),
                             refCount: 0,
                             renderers: new Set(),
+                            // The context-global CURRENT_PROGRAM, tracked here so every renderer
+                            // sharing this context agrees on what is bound.
+                            __currentGLProgram: null,
                             lost: false,
                             restored: false,
                             busy: false,
@@ -559,6 +590,7 @@
 
                             entry.lost = true;
                             entry.restored = false;
+                            entry.__currentGLProgram = null;
 
                             for (const renderer of entry.renderers) {
                                 renderer._contextLost = true;
@@ -1265,7 +1297,15 @@
             try {
                 for (const key of [this.backend.firstPassProgramKey, this.backend.secondPassProgramKey]) {
                     if (key && key !== skipKey && this._programImplementations[key]) {
-                        this.registerProgram(null, key);
+                        try {
+                            this.registerProgram(null, key);
+                        } catch (e) {
+                            // registerProgram() calls this from its own prologue, so an escaping
+                            // throw here would abort the registration of a different pass. The
+                            // program that failed keeps its previous build and keeps rendering.
+                            $.console.error(`$.FlexRenderer: precision change could not rebuild ` +
+                                `program "${key}"; it keeps rendering at the previous precision.`, e);
+                        }
                     }
                 }
 
@@ -1954,14 +1994,16 @@
             if (!program) {
                 program = this._programImplementations[key];
             }
-            // TODO consider deleting only if succesfully compiled to avoid critical errors
-            if (this._programImplementations[key]) {
-                this.deleteProgram(key);
-            }
 
-            const webglProgram = this.gl.createProgram();
-            program._webGLProgram = webglProgram;
-            program._justCreated = true;
+            // The currently linked program, if any, is left alone until the replacement links.
+            // Deleting first meant a failed link destroyed the working program (and its VAO)
+            // while every uniform location cached on the JS instance still pointed at it, since
+            // `created()` -- the only place locations are re-queried -- runs on success only.
+            // The result was "INVALID_OPERATION: uniform4f: location is not from the associated
+            // program" on every subsequent frame, with nothing to re-link on its own.
+            // `build()` and `setBackground()` never read `webGLProgram`, so the old one can stay
+            // assigned throughout.
+            const previous = this._programImplementations[key];
 
             // TODO inner control type udpates are not checked here (this todo comment might be outdated, verify)
             const reinstantiateIfTypeChanged = (shaderId, shader, parent) => {
@@ -2007,9 +2049,20 @@
             this._programImplementations[key] = program;
             this.backend.setBackground(this._background);
 
-            program.build(this._shaders, this.getShaderLayerOrder());
-            // Used also to re-compile, set requiresLoad to true
-            program.requiresLoad = true;
+            // Building with an empty order over a non-empty shader set is always a bug, and it used
+            // to present as a white canvas with no diagnostic at all: the program links, the layer
+            // list looks right, and only a per-frame GL_INVALID_OPERATION hints at it. Say it here,
+            // where both halves of the contradiction are in scope.
+            const buildOrder = this.getShaderLayerOrder();
+            const registeredIds = Object.keys(this._shaders);
+            if (!buildOrder.length && registeredIds.length) {
+                $.console.error(`$.FlexRenderer: program '${key}' is being built with an EMPTY ` +
+                    `render order while ${registeredIds.length} shader layer(s) are registered ` +
+                    `(${registeredIds.join(", ")}). Nothing will be composed and the output will ` +
+                    `be the background colour. Check what last called setShaderLayerOrder().`);
+            }
+
+            program.build(this._shaders, buildOrder);
 
             // Check the fragment uniform budget before the driver does. Left to the driver this
             // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
@@ -2039,23 +2092,92 @@
 
             const errMsg = program.getValidateErrorMessage();
             if (errMsg) {
-                this.gl.deleteProgram(webglProgram);
-                program._webGLProgram = null;
-                this._programImplementations[key] = null;
+                // Nothing has been created yet and the previously linked program is untouched;
+                // it keeps rendering while the caller decides what to do.
                 throw new Error(errMsg);
             }
 
-            if ($.FlexRenderer.WebGLImplementation._compileProgram(
+            const webglProgram = this.gl.createProgram();
+            if (!$.FlexRenderer.WebGLImplementation._compileProgram(
                 webglProgram, this.gl, program, $.console.error, this.debug
             )) {
-                this.gl.useProgram(webglProgram);
-                const canvas = this.getWebGLCanvas();
-                program.created(canvas.width, canvas.height);
-                return key;
+                this.gl.deleteProgram(webglProgram);
+                throw new Error(`$.FlexRenderer::registerProgram: program "${key}" failed to compile or ` +
+                    `link; the previously linked program is kept. See the COMPILE/LINK log above.`);
             }
 
-            // else todo consider some cleanup
-            return undefined;
+            // Linked: only now is the old implementation expendable. deleteProgram() looks the
+            // implementation up by key, so point the map back at it -- `previous` is usually the
+            // same instance being re-registered, but a caller may also hand in a fresh one for an
+            // occupied key. It nulls `_program` and the map entry, both restored below.
+            if (previous) {
+                this._programImplementations[key] = previous;
+                this.deleteProgram(key);
+            }
+            program._webGLProgram = webglProgram;
+            program._justCreated = true;
+            // Used also to re-compile, set requiresLoad to true
+            program.requiresLoad = true;
+            this._programImplementations[key] = program;
+
+            this._bindGLProgram(webglProgram);
+            const canvas = this.getWebGLCanvas();
+            program.created(canvas.width, canvas.height);
+            return key;
+        }
+
+        /**
+         * The object that records which WebGLProgram is currently bound. In shared-context mode
+         * that fact belongs to the context, not to any single renderer; when this renderer owns
+         * its context alone the renderer itself is the slot.
+         * @return {Object}
+         * @private
+         */
+        _glProgramSlot() {
+            return this._sharedContextEntry || this;
+        }
+
+        /**
+         * Bind a WebGLProgram and record it on the GL context.
+         *
+         * CURRENT_PROGRAM is context-global while every renderer keeps its own `_program` belief.
+         * Each place that reconciled the two by hand was a future stale-location bug, so the
+         * binding is tracked in exactly one place instead.
+         *
+         * @param {WebGLProgram} webGLProgram
+         * @return {boolean} true if the binding actually changed
+         * @private
+         */
+        _bindGLProgram(webGLProgram) {
+            const slot = this._glProgramSlot();
+            if (slot.__currentGLProgram === webGLProgram) {
+                return false;
+            }
+            this.gl.useProgram(webGLProgram);
+            slot.__currentGLProgram = webGLProgram;
+
+            // The slot can only go stale if something calls gl.useProgram on this context behind
+            // the renderer's back — external code on a shared context, or a test. Say so loudly
+            // rather than letting it surface as "location is not from the associated program".
+            if (this.debug && this.gl.getParameter(this.gl.CURRENT_PROGRAM) !== webGLProgram) {
+                $.console.error("$.FlexRenderer::_bindGLProgram: CURRENT_PROGRAM did not follow the " +
+                    "bind. The program is most likely not linked, or the context was changed externally.");
+            }
+            return true;
+        }
+
+        /**
+         * Forget the recorded binding if it names this program. Called when the program is about
+         * to stop existing; the next _bindGLProgram() then re-issues the GL call rather than
+         * comparing against a deleted object.
+         * @param {WebGLProgram} webGLProgram
+         * @private
+         */
+        _forgetGLProgram(webGLProgram) {
+            const slot = this._glProgramSlot();
+            if (webGLProgram && slot.__currentGLProgram === webGLProgram) {
+                slot.__currentGLProgram = null;
+            }
         }
 
         /**
@@ -2085,8 +2207,9 @@
                     // can also change CURRENT_PROGRAM without updating `_program`.
                     //
                     // We still return false so callers skip program.load(...), but we must
-                    // re-bind before any subsequent uniform uploads.
-                    this.gl.useProgram(program.webGLProgram);
+                    // re-bind before any subsequent uniform uploads. `_bindGLProgram` tracks the
+                    // binding per context, so this costs a comparison when nothing moved.
+                    this._bindGLProgram(program.webGLProgram);
                     return false;
                 }
 
@@ -2094,7 +2217,7 @@
             }
 
             this._program = program;
-            this.gl.useProgram(program.webGLProgram);
+            this._bindGLProgram(program.webGLProgram);
 
             const needsUpdate = this._program.requiresLoad;
             this._program.requiresLoad = false;
@@ -2186,6 +2309,7 @@
             }
             implementation.unload();
             implementation.destroy();
+            this._forgetGLProgram(implementation._webGLProgram);
             this.gl.deleteProgram(implementation._webGLProgram);
             this.__firstPassResult = null;
             this.__finalPassResult = null;
@@ -2230,6 +2354,16 @@
                 }
             }
 
+            // Wrapper shaders (time-series, channel-series) lift legacy top-level settings into
+            // `params` in their normalizeConfig(). Until this call existed, only the standalone
+            // runtime normalised: the drawer path (overrideConfigureAll -> createShaderLayer), the
+            // configurator preview, refreshShaderLayer and group children all skipped it, and those
+            // configs worked only because readWrapperParam() silently fell back to the top level.
+            // With that fallback gone this is the single choke point that keeps them working, and it
+            // recurses into `shaders` so nested group children are covered too. Idempotent: the
+            // hoist is guarded on the top-level key still being present.
+            config = $.FlexRenderer.normalizeShaderConfig(config, { source: "create-shader-layer" }) || config;
+
             if (this._shaders[id]) {
                 this.removeShader(id);
             }
@@ -2245,7 +2379,16 @@
                 invalidate: this.redrawCallback,
                 // callback to rebuild the WebGL program
                 rebuild: () => {
-                    this.registerProgram(null, this.backend.secondPassProgramKey);
+                    try {
+                        this.registerProgram(null, this.backend.secondPassProgramKey);
+                    } catch (e) {
+                        // Reached from control event handlers; a throw here would escape into
+                        // arbitrary UI code. The previously linked program keeps rendering.
+                        $.console.error(`$.FlexRenderer: shader '${id}' requested a program rebuild ` +
+                            `that failed; the previous program is kept.`, e);
+                        this.notifyProgramBuildFailed(this.backend.secondPassProgramKey, e,
+                            "shader-rebuild-callback");
+                    }
                 },
                 // callback to recreate the shader when control topology changes
                 refresh: () => {
@@ -2344,7 +2487,16 @@
             config.type = newType;
             config.error = false;
             this._sanitizeShaderParams(config, NewShader);
-            this.registerProgram(null, this.backend.secondPassProgramKey);
+            try {
+                this.registerProgram(null, this.backend.secondPassProgramKey);
+            } catch (e) {
+                // The config already carries the new type; the previously linked program keeps
+                // rendering until something rebuilds successfully.
+                $.console.error(`$.FlexRenderer::changeShaderType: layer '${layerId}' changed to ` +
+                    `'${newType}' but the program failed to build; the previous program is kept.`, e);
+                this.notifyProgramBuildFailed(this.backend.secondPassProgramKey, e,
+                    "change-shader-type");
+            }
         }
 
         /**
@@ -2364,7 +2516,40 @@
                 return;
             }
 
-            const controlNames = new Set(Object.keys(NewShaderClass.defaultControls || {}));
+            const controlDefinitions = NewShaderClass.defaultControls || {};
+            const controlNames = new Set(Object.keys(controlDefinitions));
+
+            // Custom params (channel-series' channelRenderer, time-series' timeline settings, ...)
+            // live in `params` next to the controls and are part of the published schema, so they
+            // are as legitimate here as a control name.
+            for (const name of Object.keys(NewShaderClass.customParams || {})) {
+                controlNames.add(name);
+            }
+
+            // `array:` control definitions expand to per-index names (iconmap's `icons` becomes
+            // icon0, icon1, ...), and those are the names that appear in `params`. The expansion
+            // proper (ShaderLayer._expandControlDefinitions) needs a live instance for its
+            // `count(layer)` callback, which does not exist yet on a type-change path -- so
+            // reproduce just the naming rule over a bounded index range. Missing an index only
+            // costs a dropped param, never a false keep of an orphan from another shader type.
+            const ARRAY_NAME_PROBE_LIMIT = 64;
+            for (const [baseName, controlConfig] of Object.entries(controlDefinitions)) {
+                const arrayConfig = controlConfig && typeof controlConfig === "object" && controlConfig.array;
+                if (!arrayConfig) {
+                    continue;
+                }
+                for (let index = 0; index < ARRAY_NAME_PROBE_LIMIT; index++) {
+                    let name = `${baseName}${index}`;
+                    if (typeof arrayConfig.name === "function") {
+                        try {
+                            name = arrayConfig.name(index, null, baseName) || name;
+                        } catch (e) {
+                            // Name callbacks may expect a live layer; the fallback name stands.
+                        }
+                    }
+                    controlNames.add(name);
+                }
+            }
 
             let sources = [];
             try {
@@ -2412,7 +2597,13 @@
          * @param order
          */
         setShaderLayerOrder(order) {
-            if (!order) {
+            // An empty array is truthy, so `_shadersOrder = []` used to pin the order to "nothing"
+            // forever: getShaderLayerOrder()'s `|| Object.keys(this._shaders)` fallback never ran
+            // again, however many layers were registered afterwards, and the second pass compiled
+            // an empty stack. "No order" and "the empty order" are the same statement, so
+            // normalise here instead of teaching every reader a fallback. deleteShaders() already
+            // sets null for exactly this reason.
+            if (!order || (Array.isArray(order) && order.length === 0)) {
                 this._shadersOrder = null;
                 return;
             }
@@ -2427,6 +2618,17 @@
                 seen.add(key);
                 deduped.push(key);
             }
+
+            // The other way to a blank canvas: an order made entirely of ids that never got
+            // registered. forEachShaderLayer() skips unknown ids silently, so the stack comes out
+            // empty and nothing says why.
+            const registered = Object.keys(this._shaders);
+            if (registered.length && !deduped.some(key => this._shaders[key])) {
+                $.console.warn(`setShaderLayerOrder: none of the requested ids ` +
+                    `(${deduped.join(", ")}) match a registered shader layer ` +
+                    `(${registered.join(", ")}); the composed stack will be empty.`);
+            }
+
             this._shadersOrder = deduped;
         }
 
@@ -2564,7 +2766,16 @@
             const shouldRebuild = options.rebuildProgram !== false;
 
             if (shouldRebuild) {
-                this.registerProgram(null, this.backend.secondPassProgramKey);
+                try {
+                    this.registerProgram(null, this.backend.secondPassProgramKey);
+                } catch (e) {
+                    // The shader was rebuilt regardless; report the program failure and let the
+                    // previously linked program keep rendering.
+                    $.console.error(`$.FlexRenderer::refreshShaderLayer: layer '${id}' was refreshed ` +
+                        `but the program failed to build; the previous program is kept.`, e);
+                    this.notifyProgramBuildFailed(this.backend.secondPassProgramKey, e,
+                        "refresh-shader-layer");
+                }
             }
 
             return rebuiltShader;
@@ -2643,6 +2854,41 @@
             this.raiseEvent('visualization-change', $.extend(true, {
                 snapshot: this.getVisualizationSnapshot()
             }, payload));
+        }
+
+        /**
+         * Notify observers that a program failed to build, from any of the call sites that
+         * rebuild the second pass. All of them recover the same way -- the previously linked
+         * program is kept -- which leaves the last good frame on screen but silently stale:
+         * without this event a host cannot tell a successful rebuild from a refused one except
+         * by reading private renderer state.
+         *
+         * The configuration is NOT discarded, so `snapshot` is the still-live configuration the
+         * failed program was built for; a host holding its own authoritative copy can re-apply
+         * it, or surface an actionable message.
+         *
+         * @param {String} key program key that failed to build
+         * @param {Error|*} error the caught error
+         * @param {String} source identifier of the call site, e.g. "drawer-rebuild"
+         */
+        notifyProgramBuildFailed(key, error, source) {
+            let snapshot = null;
+            try {
+                snapshot = this.getVisualizationSnapshot();
+            } catch (e) {
+                // Every caller is already inside a catch block recovering from a failure; a
+                // second throw from the notification would replace the original error.
+                $.console.warn("$.FlexRenderer: could not snapshot the visualization while " +
+                    "reporting a failed program build.", e);
+            }
+
+            this.raiseEvent('shader-program-failed', {
+                key: key,
+                error: error,
+                source: source,
+                shaderIds: this.getShaderLayerOrder().slice(),
+                snapshot: snapshot
+            });
         }
 
         /**
@@ -3014,10 +3260,12 @@
                             ext.loseContext();
                         }
 
+                        entry.__currentGLProgram = null;
                         this.constructor._sharedContexts.delete(entry.key);
                     }
                 }
 
+                this.__currentGLProgram = null;
                 this._sharedContextEntry = null;
                 this._sharedContextKey = null;
             }
@@ -3120,6 +3368,7 @@
                 renderer.renderSecondPass([{
                     zoom: 1,
                     pixelSize: 1,
+                    devicePixelScale: [1, 1],
                     opacity: 1,
                     shader: renderer.getShaderLayer(shaderId),
                 }]);
@@ -3779,6 +4028,7 @@
 
     FlexRenderer.SUPPORTED_BLEND_MODES = [
         'mask',
+        'soft-mask',
         'source-over',
         'source-in',
         'source-out',

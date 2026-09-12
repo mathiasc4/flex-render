@@ -142,6 +142,37 @@
             'and in shared mode the presentation canvas is not the WebGL canvas');
     });
 
+    QUnit.test('the bound program is tracked on the context, not on the renderer', function(assert) {
+        assert.equal(setupError, null, 'setup completed');
+
+        // CURRENT_PROGRAM is a property of the GL context while each renderer keeps its own
+        // `_program` belief. Every place that reconciled the two by hand was a stale-location
+        // bug waiting to happen, so the binding is recorded once, on the shared entry.
+        const live = viewer.drawer.renderer;
+        const standalone = drawer.renderer;
+        const gl = live.gl;
+
+        const liveSecond = live.getProgram(live.backend.secondPassProgramKey);
+        const standaloneSecond = standalone.getProgram(standalone.backend.secondPassProgramKey);
+
+        assert.notStrictEqual(liveSecond.webGLProgram, standaloneSecond.webGLProgram,
+            'each renderer compiled its own second-pass program');
+
+        live._bindGLProgram(liveSecond.webGLProgram);
+        assert.strictEqual(gl.getParameter(gl.CURRENT_PROGRAM), liveSecond.webGLProgram,
+            'the live renderer bound its program');
+        assert.strictEqual(standalone._glProgramSlot().__currentGLProgram, liveSecond.webGLProgram,
+            'the other renderer on the same context reads the same record');
+
+        assert.ok(standalone._bindGLProgram(standaloneSecond.webGLProgram),
+            'so binding a different program is not skipped as already-bound');
+        assert.strictEqual(gl.getParameter(gl.CURRENT_PROGRAM), standaloneSecond.webGLProgram,
+            'and the bind reached the context');
+
+        assert.notOk(standalone._bindGLProgram(standaloneSecond.webGLProgram),
+            'binding what is already bound costs no GL call');
+    });
+
     QUnit.test('the live-texture path produces a picture in shared-context mode', async function(assert) {
         assert.equal(setupError, null, 'setup completed');
 

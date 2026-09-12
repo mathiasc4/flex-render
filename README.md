@@ -214,8 +214,77 @@ old clamp must clamp explicitly. Tiles uploaded as 8-bit unorm are still clamped
 **Memory:** the colour array is `width × height × dataLayerCount`. At 3840×2160 with 8 data layers this grows
 from 66 MB to 133 MB per layer, 531 MB total — per renderer, and a viewer's navigator has one of its own.
 That cost is why `'auto'` is off by default: enabling the negotiation is a deployment decision, even though
-the negotiation itself then needs no per-shader configuration. Narrowing to `R16F`/`RG16F` when active layers
-need fewer channels is a possible follow-up.
+the negotiation itself then needs no per-shader configuration. Narrowing the *colour target* to `R16F`/`RG16F`
+when active layers need fewer channels is a possible follow-up — that is a different thing from the narrow
+*tile* formats below, which are already supported.
+
+### Shaders That Need Interaction Forwarding
+
+`FlexDrawer` interaction forwarding is **off by default**: while it is on, every changed pointer move forwards
+state and triggers a redraw, so a host wants it enabled only while a layer that consumes pointer state is
+actually visible. Which layers those are is declared, not guessed:
+
+```js
+const Klass = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.get(type);
+if (Klass.requiresInteraction()) {
+    drawer.setInteractionEnabled(true);      // or drawerOptions interaction: {enabled: true}
+}
+```
+
+`static requiresInteraction()` returns `false` on `ShaderLayer` and `true` on layers whose GLSL calls the
+`fr_interaction_*` helpers (`fisheye-lens`, `interaction-debug`). Unlike `supportsHighPrecision()` it is **not a
+veto**: nothing in the renderer changes because of it. The layer compiles and draws with forwarding off — it
+just renders its inactive branch (the lens never opens, the debug overlay stays transparent), which is
+indistinguishable from a broken shader. The drawer therefore logs one warning per shader type when such a
+layer is built while forwarding is disabled, and never enables forwarding on its own.
+
+The flag is published for catalogues and tooling: `compileDocsModel()` reports `requiresInteraction` per
+shader and `compileConfigSchemaModel()` emits `x-requiresInteraction: true` on that shader's layer schema
+(the key is absent when false).
+
+Three similarly named things, kept apart:
+
+| name | owner | meaning |
+|---|---|---|
+| `ShaderLayer.requiresInteraction()` | shader class | the layer's GLSL reads host-supplied pointer state |
+| control `interactive: true/false` | UI control definition | whether that control is user-editable / shown |
+| `interaction: {enabled}` | `FlexDrawer` option | whether pointer events are observed and forwarded |
+
+The new static is about *pointer state reaching the GLSL* only; it says nothing about UI controls.
+
+### Tile Pack Formats
+
+A `gpuTextureSet` tile payload declares a pixel format per pack. Four are accepted:
+
+| `format` | upload | data view | components/pack | bytes/texel |
+|---|---|---|---|---|
+| `RGBA8` (default) | RGBA / `UNSIGNED_BYTE` | `Uint8Array` | 4 | 4 |
+| `RGBA16F` | RGBA / `HALF_FLOAT` | `Uint16Array` | 4 | 8 |
+| `RG16F` | RG / `HALF_FLOAT` | `Uint16Array` | 2 | 4 |
+| `R16F` | RED / `HALF_FLOAT` | `Uint16Array` | 1 | 2 |
+
+The narrow formats exist so a quantitative layer with one or two channels does not pay for four. A cached
+`R16F` tile is a quarter of the `RGBA16F` one, which matters wherever the tile cache holds many small
+single-channel tiles rather than a few big ones.
+
+**This shrinks the tile cache, not the colour target.** The first pass still blits each pack into a full
+RGBA layer of the shared offscreen array, so `dataLayerCount` and the memory figure above are unchanged.
+`R16F`/`RG16F` are core WebGL2 sized formats and are filterable in core; they are never rendered *into*, so
+they need no extension and the capability gate is the same as before.
+
+All packs of one tile must share a format, and `data.length` must be exactly
+`width × height × componentsPerPack` — both are validated, with `"unsupported-data"` and `"invalid-data"`
+respectively.
+
+**Channel addressing.** Channel `N` lives in pack `N / componentsPerPack`, component `N % componentsPerPack`.
+Four channels stored as four `R16F` packs therefore occupy four packs, not one — `sampleChannel()` and
+`osd_channel()` handle that, and a channel index at or past the source's `channelCount` reads `0.0`.
+
+**Alpha is not payload in a narrow pack.** Sampling `R16F` yields `(r, 0, 0, 1)` and `RG16F` yields
+`(r, g, 0, 1)`; those extra components are the format fill supplied by texture-format conversion. This is the
+one place the usual "alpha can carry data just like any other channel" rule does not hold. Declare
+`channelCount` on the payload — or let it default to `packs.length × componentsPerPack` — so shaders know
+where the data stops. A swizzle wider than the source carries logs a warning and reads zeros.
 
 ### Lazy Shader Sources
 
@@ -530,15 +599,11 @@ Additional configurator debug pages are available under `test/demo/`:
 
 ## Roadmap
 - Bugfixing & getting ready for the first release
-    - Fixing tests: inherited from OpenSeadragon, they expect incompatible behavior
-    - Fixing coverage tests
-- Adding support for WebGL 1.0 (fallback)
+    - Fixing coverage tests: `grunt coverage` still fails, istanbul/esprima cannot parse the modern JS in `src/`
 - Modularize ShaderLayers
     - Implement modules (sample color, apply gaussian...) to connect together to create a ShaderLayer.
-- Add support for concave clipping polygons.
-- Adding support for better debugging & cropping
+- Clipping & cropping: concave polygons, and better debugging of both
     - For now, only convex polygons are supported
-- Dynamic documentation and configuration schema output that parse available shaders and controls and show what JSON can be used where.
 
 #### What might be supported
 - Canvas2D proxy. People tend to use Canvas2D api to access the rendered data, which

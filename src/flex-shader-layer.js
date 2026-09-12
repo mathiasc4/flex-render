@@ -13,7 +13,6 @@
      * @property {number} visible      1 = use for rendering, 0 = do not use for rendering
      * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages images that provide the data
      * @property {object} params          settings for the ShaderLayer
-     * @property {object} _controls       storage for the ShaderLayer's controls
      * @property {object} cache          cache object used by the ShaderLayer's controls
      * @property {"float16"|"unorm8"} [precision] per-instance override of the first-pass color
      *      target precision, honored only while the renderer option `precision` is `"auto"`.
@@ -22,6 +21,11 @@
      *      is the veto: this layer requires values clamped to [0,1], and forces the whole
      *      renderer back to 8-bit even when the data carries float. Under a float16 target,
      *      sampleChannel()/osd_channel() no longer guarantee values in [0,1].
+     *
+     * `_`-prefixed keys are never part of this config: they are ShaderLayer instance state
+     * (e.g. `_controls`, populated in the constructor) and FlexRenderer.jsonReplacer strips
+     * them on export, so no persisted config carries one. The published JSON Schema is
+     * closed against them accordingly.
      */
 
     /**
@@ -92,6 +96,8 @@
             this.__channels = null;
             // channel offset
             this.__baseChannels = null;
+            // WebGLProgram this layer's controls last resolved their uniform locations against
+            this.__glProgram = null;
 
             /**
              * @private
@@ -187,6 +193,39 @@
          */
         static supportsHighPrecision() {
             return true;
+        }
+
+        /**
+         * Whether this ShaderLayer type reads host-supplied pointer state — the
+         * `fr_interaction_*` GLSL helpers backed by `FlexRenderer#getInteractionState()`.
+         *
+         * This is a REQUIREMENT ON THE HOST, not a veto like `supportsHighPrecision()`:
+         * nothing inside the renderer changes because of it. A layer returning true still
+         * compiles and draws with forwarding off — it simply renders its inactive branch
+         * (the fisheye lens never opens, the debug overlay stays transparent), which reads
+         * as "the shader is broken" to a user who cannot know the state was never supplied.
+         *
+         * Hosts read it off the registered class, before constructing anything:
+         *
+         *     const Klass = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.get(type);
+         *     if (Klass.requiresInteraction()) {
+         *         drawer.setInteractionEnabled(true);
+         *     }
+         *
+         * Forwarding is off by default because every changed pointer move triggers a redraw,
+         * so a host wants it enabled only while such a layer is actually visible.
+         *
+         * NOT to be confused with a UI control's `interactive` flag, which says whether that
+         * control is user-editable/shown; this static is about pointer state reaching the GLSL
+         * and says nothing about controls. Nor with the `FlexDrawer` option
+         * `interaction: {enabled: ...}`, which is the host-side switch this static asks about.
+         *
+         * Return true whenever the generated GLSL calls any `fr_interaction_*` helper.
+         *
+         * @returns {boolean}
+         */
+        static requiresInteraction() {
+            return false;
         }
 
         /**
@@ -368,6 +407,71 @@
         }
 
         /**
+         * Read a wrapper shader's own setting (`channelRenderer`, `series`, ...) out of a config.
+         *
+         * `params` is the only accepted placement, matching the published JSON Schema, which
+         * compiles these into the `params` sub-schema and closes every layer object with
+         * `additionalProperties: false`. This used to fall back to a top-level `config[name]`, so a
+         * config written that way rendered correctly and failed validation -- and because no `oneOf`
+         * branch then matched, one misplaced key was reported as one error per registered shader
+         * type. Legacy top-level keys are lifted into `params` by hoistWrapperParams(), called from
+         * each wrapper's normalizeConfig(), so nothing reaches here needing a fallback.
+         *
+         * @param {ShaderLayerConfig} config
+         * @param {string} name setting name, as declared in the shader's static customParams
+         * @param {*} [fallback] returned when params does not carry the key
+         * @returns {*}
+         */
+        static readWrapperParam(config, name, fallback = undefined) {
+            const params = (config && config.params) || {};
+            return params[name] !== undefined ? params[name] : fallback;
+        }
+
+        /**
+         * Move legacy top-level wrapper settings into `params` and delete the originals.
+         *
+         * Deleting is the point, not a tidy-up: a retained top-level key is rejected by the
+         * published schema's `additionalProperties: false`, so a normalized config could not be
+         * round-tripped through it, and a hoisted-but-retained key can drift from its `params` twin
+         * with no way to tell which one the renderer used. Nothing strips these on export --
+         * jsonReplacer only drops `_`-prefixed keys.
+         *
+         * @param {ShaderLayerConfig} config mutated in place
+         * @param {string[]} names setting names to lift
+         * @returns {ShaderLayerConfig} the same config
+         */
+        static hoistWrapperParams(config, names) {
+            if (!config || typeof config !== "object") {
+                return config;
+            }
+            const params = config.params || (config.params = {});
+            const type = typeof this.type === "function" ? this.type() : "shader";
+            const id = config.id || "<unnamed>";
+
+            for (const name of names || []) {
+                if (config[name] === undefined) {
+                    continue;
+                }
+
+                if (params[name] === undefined) {
+                    params[name] = config[name];
+                    $.console.warn(`ShaderLayer '${id}' (${type}): top-level '${name}' is ` +
+                        `deprecated and has been moved to params.${name}. Wrapper settings belong ` +
+                        `under 'params' -- the published schema is params-only and rejects the ` +
+                        `top-level form.`);
+                } else {
+                    $.console.warn(`ShaderLayer '${id}' (${type}): '${name}' is given both at the ` +
+                        `top level and under params. params.${name} is used; the top-level copy is ` +
+                        `ignored and removed.`);
+                }
+
+                delete config[name];
+            }
+
+            return config;
+        }
+
+        /**
          * Instance-level control definition hook.
          * Override when the available controls depend on current config/state.
          * @returns {object}
@@ -452,11 +556,71 @@
                 }
 
                 const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this._params[controlName]);
+
+                // UIControls._buildFallback returns undefined when neither the requested nor the
+                // declared type could be built. Storing that made every later `this[controlName]`
+                // dereference a TypeError -- getFragmentShaderDefinition(), init(), htmlControls(),
+                // glLoaded() and glDrawing() all index _controls unguarded, and only the first runs
+                // inside a caller's try/catch. An absent control is handled everywhere, because
+                // every consumer iterates `for (name in this._controls)`.
+                if (!control) {
+                    const requestedType = this._params[controlName] && this._params[controlName].type;
+                    $.console.error(`ShaderLayer '${this.id}' (${this.constructor.type()}): control ` +
+                        `'${controlName}'${requestedType ? ` of type '${requestedType}'` : ""} could not ` +
+                        `be built and is omitted. GLSL referencing it will fail to assemble.`);
+                    continue;
+                }
+
                 // enables iterating over the owned controls
                 this._controls[controlName] = control;
                 // simplify usage of controls (e.g. this.opacity instead of this._controls.opacity)
                 this[controlName] = control;
             }
+
+            this._warnOnUndeclaredParams(expandedControls);
+        }
+
+        /**
+         * Report `params` keys that no control declares.
+         *
+         * `_buildControls` iterates the *declared* controls and reads `this._params[name]`, so a
+         * key nobody declares (`params.classifier` on `colormap`, `params.color` on `threshold`,
+         * which declares `fg_color`) is dead config: no control, no GLSL, and previously no
+         * warning either. The published JSON Schema already sets `additionalProperties: false`,
+         * so the key is known to be invalid -- it was simply never said out loud, and the mistake
+         * surfaced much later as an unexplained render result.
+         *
+         * Keys are reported, never deleted: dropping them is `FlexRenderer._sanitizeShaderParams`'s
+         * job on shader-type-change paths, where the previous type's keys are genuinely orphaned.
+         *
+         * The accepted set is the same one the published schema is compiled from -- built-ins
+         * (every `use_*` key: per-source channels, mode, blend, filters), UI controls, and the
+         * shader's `customParams` (see Configurator's `checkExampleParamsConsistency`).
+         *
+         * @param {Object} expandedControls control definitions after array expansion
+         * @private
+         */
+        _warnOnUndeclaredParams(expandedControls) {
+            if (!this._params || typeof this._params !== "object") {
+                return;
+            }
+
+            const customParams = this.constructor.customParams || {};
+            const declared = Object.keys(expandedControls).concat(Object.keys(customParams));
+            const undeclared = Object.keys(this._params).filter(
+                key => !key.startsWith("use_") &&
+                    expandedControls[key] === undefined &&
+                    customParams[key] === undefined
+            );
+
+            if (!undeclared.length) {
+                return;
+            }
+
+            $.console.warn(`ShaderLayer '${this.id}' (${this.constructor.type()}): params ` +
+                `${undeclared.map(k => `'${k}'`).join(", ")} declared by no control or custom ` +
+                `param, and therefore ignored. Accepted here: ${declared.join(", ")}, ` +
+                `plus any use_* built-in.`);
         }
 
         _expandControlDefinitions(controlDefinitions) {
@@ -548,6 +712,7 @@
          * @param {WebGLRenderingContext|WebGL2RenderingContext} gl
          */
         glLoaded(program, gl) {
+            this.__glProgram = program;
             for (const controlName in this._controls) {
                 this[controlName].glLoaded(program, gl);
             }
@@ -560,6 +725,16 @@
          * @param {WebGLRenderingContext|WebGL2RenderingContext} gl WebGL Context
          */
         glDrawing(program, gl) {
+            // A control's cached uniform location belongs to the program it was resolved against,
+            // and registerProgram() deletes and recreates the WebGLProgram without clearing those
+            // caches. The signal that says "re-resolve" is `requiresLoad`, a one-shot flag whose
+            // obligation is discharged by whatever render array happened to run first -- so a
+            // shader absent from that array, or a caller that drops useProgram()'s return value,
+            // would upload through a location belonging to a deleted program and raise
+            // INVALID_OPERATION. Comparing the program itself is cheap and cannot go stale.
+            if (this.__glProgram !== program) {
+                this.glLoaded(program, gl);
+            }
             for (const controlName in this._controls) {
                 this[controlName].glDrawing(program, gl);
             }
@@ -795,6 +970,26 @@
         }
 
         /**
+         * Get how many components one texture-array layer of a source carries: 4 for
+         * RGBA8/RGBA16F, 2 for RG16F, 1 for R16F. Channel N of a source therefore lives in
+         * pack N / componentsPerPack, not N / 4.
+         * @param {number} sourceIndex
+         * @return {number}
+         */
+        getSourceComponentsPerPack(sourceIndex = 0) {
+            const cfg = this.getConfig() || {};
+            if (!cfg.tiledImages || cfg.tiledImages.length <= sourceIndex) {
+                return 4;
+            }
+            const worldIndex = cfg.tiledImages[sourceIndex];
+            const drawer = this.backend.renderer.drawer;
+            if (!drawer || worldIndex == null || typeof drawer.getComponentsPerPack !== "function") {  // eslint-disable-line eqeqeq
+                return 4;
+            }
+            return drawer.getComponentsPerPack(worldIndex);
+        }
+
+        /**
          * Resolve the tiled image used by a given shader source slot.
          * @param {number} sourceIndex
          * @return {OpenSeadragon.TiledImage|null}
@@ -1006,10 +1201,43 @@
             }
 
             // If this is the common simple case (baseChannel==0, contiguous, canonical "xyz"):
+            // The swizzle reads components of pack 0 directly, so it is only valid while the
+            // requested width fits inside one pack AND inside the source. A "rg" swizzle over an
+            // R16F source would otherwise read the 0 that texture-format conversion supplies for
+            // the missing green, silently and without a GL error.
+            const componentsPerPack = this.getSourceComponentsPerPack(sourceIndex);
+            const channelCount = this.getSourceChannelCount(sourceIndex);
+
+            // `acceptsChannelCount` validates the swizzle width, not what the source actually
+            // carries, so pointing a 4-channel layer at a 1-channel source is accepted in
+            // silence and renders the format fill. The out-of-range guard in osd_channel makes
+            // that zeroes rather than garbage, but the author still gets no other signal.
+            if (typeof baseChannel === "number" &&
+                    this.getSourceTiledImage(sourceIndex) &&
+                    (this.getSourceTiledImage(sourceIndex).__flexMetadataReady) &&
+                    baseChannel + offsets.length > channelCount) {
+                this.__channelWidthWarned = this.__channelWidthWarned || {};
+                if (!this.__channelWidthWarned[sourceIndex]) {
+                    this.__channelWidthWarned[sourceIndex] = true;
+                    let typeName;
+                    try {
+                        typeName = this.constructor.type();
+                    } catch (e) {
+                        typeName = this.constructor.name;
+                    }
+                    $.console.warn(
+                        `FlexRenderer: shader '${typeName}' reads channels ` +
+                        `${baseChannel}..${baseChannel + offsets.length - 1} of source ${sourceIndex}, ` +
+                        `which carries only ${channelCount}. Out-of-range channels read 0.`
+                    );
+                }
+            }
             const contiguous =
                 typeof baseChannel === "number" &&
                 baseChannel === 0 &&
                 offsets.length <= 4 &&
+                offsets.length <= componentsPerPack &&
+                offsets.length <= channelCount &&
                 offsets.every((o, i) => o === i);
 
             if (contiguous) {

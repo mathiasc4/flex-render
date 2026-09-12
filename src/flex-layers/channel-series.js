@@ -81,15 +81,18 @@
                 };
             }
 
-            static _readWrapperParam(config, name, fallback = undefined) {
-                const params = (config && config.params) || {};
-                if (params[name] !== undefined) {
-                    return params[name];
+            // Parity with time-series: lift legacy top-level settings into `params` (and drop the
+            // originals) before anything reads them. This wrapper had no normalizeConfig at all and
+            // relied entirely on readWrapperParam's top-level fallback, so the two wrappers
+            // disagreed about where their own settings live.
+            static normalizeConfig(config, context = {}) {
+                if (!config || typeof config !== "object") {
+                    return config;
                 }
-                if (config && config[name] !== undefined) {
-                    return config[name];
-                }
-                return fallback;
+                config.params = config.params || {};
+                this.hoistWrapperParams(config,
+                    ["channelRenderer", "channelRendererConfig", "sourceIndex"]);
+                return config;
             }
 
             static get defaultControls() {
@@ -110,7 +113,7 @@
 
             _readIntConfig(name, fallback, minimum = null) {
                 const config = this.getConfig ? (this.getConfig() || {}) : (this.__shaderConfig || {});
-                const raw = this.constructor._readWrapperParam(config, name, fallback);
+                const raw = this.constructor.readWrapperParam(config, name, fallback);
                 const parsed = Number.parseInt(raw, 10);
                 let value = Number.isFinite(parsed) ? parsed : fallback;
                 if (minimum != null && value < minimum) { // eslint-disable-line eqeqeq
@@ -121,8 +124,8 @@
 
             _getDelegateSettings() {
                 const config = this.getConfig ? (this.getConfig() || {}) : (this.__shaderConfig || {});
-                const delegateConfig = $.extend(true, {}, this.constructor._readWrapperParam(config, "channelRendererConfig", {}) || {});
-                const delegateType = delegateConfig.type || this.constructor._readWrapperParam(config, "channelRenderer", "single_channel");
+                const delegateConfig = $.extend(true, {}, this.constructor.readWrapperParam(config, "channelRendererConfig", {}) || {});
+                const delegateType = delegateConfig.type || this.constructor.readWrapperParam(config, "channelRenderer", "single_channel");
 
                 if (delegateType === this.constructor.type()) {
                     throw new Error("channel-series cannot recursively render itself.");

@@ -655,7 +655,39 @@
         viewport.applyConstraints(true);
     }
 
-    $.makeStandaloneFlexDrawer = function(viewer) {
+    /**
+     * Build an off-screen FlexDrawer that shares the viewer's world and tile caches but
+     * renders into a surface of its own.
+     *
+     * The drawer starts from a deep copy of `viewer.drawerOptions['flex-renderer']`, so by
+     * default it is configured exactly like the live drawer. `optionOverrides` is merged over
+     * that copy - the live viewer's options object is never read back out of, never mutated,
+     * and never aliased into the new drawer.
+     *
+     * Overriding is the ONLY supported way to reach a construction-time renderer option. Most
+     * of them have no setter: `presentationClearColor` is validated once in the FlexRenderer
+     * constructor and is read-only thereafter, and `sharedContextKey` decides which WebGL
+     * context the drawer joins before any of its state exists.
+     *
+     * Six keys are pinned and an override of them is ignored - see the block below for why:
+     * `debug`, `htmlReset`, `htmlHandler`, `interactive`, `handleNavigator`, `offScreen`.
+     *
+     * To get a raster with a real alpha channel instead of one flattened onto the default
+     * opaque-white backdrop:
+     *
+     * ````js
+     * const drawer = OpenSeadragon.makeStandaloneFlexDrawer(viewer, {
+     *     presentationClearColor: [0, 0, 0, 0],
+     *     sharedContextKey: null
+     * });
+     * ````
+     *
+     * @param {OpenSeadragon.Viewer} viewer the live viewer to borrow world and caches from
+     * @param {object} [optionOverrides] drawer/renderer options merged over the viewer's own,
+     *      e.g. `presentationClearColor`, `backgroundColor`, `sharedContextKey`, `precision`
+     * @returns {OpenSeadragon.FlexDrawer} the drawer, with the standalone facade installed
+     */
+    $.makeStandaloneFlexDrawer = function(viewer, optionOverrides = undefined) {
         const Drawer = OpenSeadragon.FlexDrawer;
         const viewportHost = createStandaloneViewportHost(viewer);
         const standaloneViewport = new $.Viewport({
@@ -682,18 +714,28 @@
         viewportHost.viewport = standaloneViewport;
         syncStandaloneViewportState(standaloneViewport, viewer);
 
-        const options = $.extend(true, {}, viewer.drawerOptions[Drawer.prototype.getType()]);
+        // Deep, so an array-valued option -- presentationClearColor above all -- is copied
+        // rather than aliased: the renderer keeps the array it is handed, and a shallow copy
+        // would let this drawer's backdrop and the live viewer's be the same object.
+        const options = $.extend(true, {},
+            viewer.drawerOptions[Drawer.prototype.getType()],
+            optionOverrides || {});
+
+        // Pinned AFTER the merge: an override of these is ignored on purpose.
         options.debug = false;
         options.htmlReset = undefined;
         options.htmlHandler = undefined;
         // No htmlHandler and no DOM of its own, so this drawer must not bind controls
         // to `document.getElementById(shaderId + "_" + control)`. A host passing
-        // `interactive: true` in its drawer options would otherwise have those ids
-        // resolve to ANOTHER renderer's live controls -- the standalone drawer would
-        // rewrite their values and leak a change listener into a throwaway shader.
+        // `interactive: true` in its drawer options -- or in optionOverrides -- would
+        // otherwise have those ids resolve to ANOTHER renderer's live controls: the
+        // standalone drawer would rewrite their values and leak a change listener into
+        // a throwaway shader.
         options.interactive = false;
         // avoid modification on navigator
         options.handleNavigator = false;
+        // The drawer is handed the LIVE viewer's container element below, so this is what
+        // keeps its destroy() from removing the on-screen canvas with it.
         options.offScreen = true;
 
         const drawer = new Drawer({
@@ -1409,7 +1451,36 @@
             height,
             // 8-bit unorm data by default; a gpuTextureSet input can flip this
             normalized: true,
-            usePackIndex: false
+            usePackIndex: false,
+            // Reported channel/component metadata. Null channelCount means "derive it".
+            channelCount: null,
+            componentsPerPack: 4,
+            // false: each pack is its own tiled image, one pack apiece — the historical shape,
+            // and what a caller comparing N independent images wants.
+            // true: one tiled image owning all packs, which is the only way to exercise
+            // cross-pack channel addressing (osd_channel walking from pack 0 into pack 1).
+            singleSource: false
+        };
+
+        // ShaderLayer reads pack/channel metadata through `renderer.drawer`. This runtime has no
+        // drawer, so without a shim every layer would compile against the 4-channel default --
+        // and the sampleChannel fast path would swizzle four components out of a narrow pack,
+        // reading the format fill. Only the three metadata accessors are needed; anything else
+        // on the renderer that consults `drawer` already feature-tests before calling.
+        runtime.renderer.drawer = {
+            getPackCount: (index) => {
+                const state = runtime._inputState;
+                return state.singleSource ? (state.count || 1) : 1;
+            },
+            getComponentsPerPack: (index) => runtime._inputState.componentsPerPack || 4,
+            getChannelCount: (index) => {
+                const state = runtime._inputState;
+                const cpp = state.componentsPerPack || 4;
+                if (!state.singleSource) {
+                    return cpp;
+                }
+                return state.channelCount || (state.count || 1) * cpp;
+            }
         };
 
         installExtractionApi(runtime, runtime.renderer, function(result = "imageData") {
@@ -1439,6 +1510,9 @@
             this._inputState.colorTexture = null;
             this._inputState.usePackIndex = false;
             this._inputState.normalized = true;
+            this._inputState.channelCount = null;
+            this._inputState.componentsPerPack = 4;
+            this._inputState.singleSource = false;
             this.renderer.__firstPassResult = null;
         };
 
@@ -1464,13 +1538,18 @@
             // synthetic source must select its own pack. Rasterized image inputs keep pack 0.
             const perLayerPackIndex = !!this._inputState.usePackIndex;
 
+            // Under singleSource every pack belongs to tiled image 0, so they share its one
+            // stencil layer. They still target distinct colour layers -- those are per-pack.
+            const singleSource = !!this._inputState.singleSource;
+
             const source = [];
             for (let i = 0; i < this._inputState.count; i++) {
+                const stencilIndex = singleSource ? 0 : i;
                 source.push({
                     tiles: [{
                         transformMatrix: fullScreenMatrix,
                         dataIndex: i,
-                        stencilIndex: i,
+                        stencilIndex: stencilIndex,
                         texture: this._inputState.colorTexture,
                         position: fullUv,
                         normalized: normalized,
@@ -1479,7 +1558,7 @@
                     vectors: [],
                     polygons: [],
                     dataIndex: i,
-                    stencilIndex: i,
+                    stencilIndex: stencilIndex,
                     packIndex: perLayerPackIndex ? i : 0,
                     _temp: { values: fullScreenMatrix }
                 });
@@ -1493,13 +1572,31 @@
                 throw new Error("Standalone renderer has no input textures. Call setInputs(...) first.");
             }
 
-            this.renderer.__flexPackInfo = {
+            const count = this._inputState.count;
+            const cpp = this._inputState.componentsPerPack || 4;
+            // This runtime has no drawer, so it writes __flexPackInfo itself. It must report
+            // what was actually uploaded: hardcoding 4 channels per pack would make a narrow
+            // format read its own format fill as if it were payload.
+            const tiledImageCount = this._inputState.singleSource ? 1 : count;
+
+            this.renderer.__flexPackInfo = this._inputState.singleSource ? {
                 layout: {
-                    baseLayer: Array.from({ length: this._inputState.count }, (_, i) => i),
-                    packCount: Array.from({ length: this._inputState.count }, () => 1),
-                    totalLayers: this._inputState.count
+                    baseLayer: [0],
+                    packCount: [count],
+                    totalLayers: count
                 },
-                channelCount: Array.from({ length: this._inputState.count }, () => 4)
+                packCount: [count],
+                channelCount: [this._inputState.channelCount || count * cpp],
+                componentsPerPack: [cpp]
+            } : {
+                layout: {
+                    baseLayer: Array.from({ length: count }, (_, i) => i),
+                    packCount: Array.from({ length: count }, () => 1),
+                    totalLayers: count
+                },
+                packCount: Array.from({ length: count }, () => 1),
+                channelCount: Array.from({ length: count }, () => cpp),
+                componentsPerPack: Array.from({ length: count }, () => cpp)
             };
 
             this.renderer.setDimensions(
@@ -1507,8 +1604,8 @@
                 0,
                 this._inputState.width,
                 this._inputState.height,
-                this._inputState.count,
-                this._inputState.count
+                count,
+                tiledImageCount
             );
 
             const source = this._buildSyntheticFirstPassSource();
@@ -1521,7 +1618,7 @@
          * standalone input. This is the only input path that can carry non-8-bit data — the
          * rasterizing path below goes through a 2D canvas and is unorm8 by construction.
          */
-        runtime._setGpuTextureSetInput = async function(textureSet) {
+        runtime._setGpuTextureSetInput = async function(textureSet, options = {}) {
             const result = await this.renderer.prepareGpuTextureTile({
                 data: textureSet,
                 textureOptions: { imageSmoothingEnabled: false }
@@ -1540,6 +1637,9 @@
             this._inputState.height = result.height;
             this._inputState.normalized = result.normalized !== false;
             this._inputState.usePackIndex = true;
+            this._inputState.componentsPerPack = result.componentsPerPack || 4;
+            this._inputState.channelCount = result.channelCount || null;
+            this._inputState.singleSource = !!options.singleSource;
             this._inputState.key = `${result.width}x${result.height}:${this._inputState.count}:gpu`;
 
             // This runtime has no drawer and no world, so it plays the drawer's part in the
@@ -1548,7 +1648,8 @@
             this.renderer.setDataCarriesHighPrecision(!this._inputState.normalized);
 
             this.renderer.setDimensions(0, 0, result.width, result.height,
-                this._inputState.count, this._inputState.count);
+                this._inputState.count,
+                this._inputState.singleSource ? 1 : this._inputState.count);
         };
 
         runtime.setInputs = async function(inputs, options = {}) {
@@ -1556,7 +1657,7 @@
 
             if (sourceList.length === 1 && sourceList[0] && typeof sourceList[0] === "object" &&
                 Array.isArray(sourceList[0].packs)) {
-                await this._setGpuTextureSetInput(sourceList[0]);
+                await this._setGpuTextureSetInput(sourceList[0], options);
                 return;
             }
 
@@ -1570,7 +1671,9 @@
                 this._inputState.count = 0;
                 this.renderer.__flexPackInfo = {
                     layout: { baseLayer: [], packCount: [], totalLayers: 0 },
-                    channelCount: []
+                    packCount: [],
+                    channelCount: [],
+                    componentsPerPack: []
                 };
                 this.setSize(options.width || this._inputState.width, options.height || this._inputState.height);
                 return;
@@ -1635,7 +1738,16 @@
             }
 
             this.renderer.setShaderLayerOrder(shaderOrder || Object.keys(normalized));
-            this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+            try {
+                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+            } catch (e) {
+                // The previously linked program is kept, so draws continue rather than erroring
+                // once per frame through locations belonging to a deleted program.
+                $.console.error("FlexRenderer standalone: the overridden shaders could not be " +
+                    "compiled; the previous program is kept.", e);
+                this.renderer.notifyProgramBuildFailed(
+                    this.renderer.backend.secondPassProgramKey, e, "standalone-override");
+            }
         };
 
         runtime.getOverriddenShaderConfig = function(key) {
@@ -1646,6 +1758,7 @@
         runtime._buildRenderArray = function({
             zoom = 1,
             pixelSize = 1,
+            devicePixelScale = [1, 1],
             opacity = 1
         } = {}) {
             const renderArray = [];
@@ -1653,6 +1766,7 @@
                 renderArray.push({
                     zoom,
                     pixelSize,
+                    devicePixelScale,
                     opacity,
                     shader
                 });
