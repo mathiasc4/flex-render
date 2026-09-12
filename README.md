@@ -66,6 +66,11 @@ OpenSeadragon drawer state, render dimensions, renderer-local presentation canva
 Calling `clear()` on one shared renderer clears only that renderer's presentation canvas; it must not
 clear another renderer's visible output.
 
+`clear()` drops the renderer's pass results and, in shared-context mode, clears the presentation
+canvas to fully transparent. `clearOutput()` is the other one: it clears the output surface to the
+presentation backdrop and keeps the pass results, which is what a caller re-running only the second
+pass wants.
+
 Important constraints:
 
 - all renderers using the same `sharedContextKey` must request the same WebGL version;
@@ -151,6 +156,135 @@ For GLSL, the second-pass shader already receives per-source runtime sampling me
 
 `overrideConfigureAll(...)` is therefore not required to "consume data first". The more precise rule is:
 ensure shaders can refresh when source metadata becomes known, and rebuild the program when metadata changes shader structure.
+
+### Render Precision
+
+The first pass stitches tile textures into an offscreen `TEXTURE_2D_ARRAY`, and the second pass runs
+`ShaderLayer` instances against it. By default that intermediate colour target is `RGBA8`, so **all** data
+reaching a shader is quantized to 8 bits and clamped to `[0,1]` — even when the tile itself was uploaded as
+`RGBA16F` (e.g. geotiff float packs). GPU-side rescale/VOI on real float data is impossible in that mode.
+
+Opt into a half-float target with the `precision` option:
+
+```js
+viewer.drawerOptions['flex-renderer'] = {
+    precision: 'auto'   // 'unorm8' (default) | 'auto' | 'float16'
+};
+```
+
+**Precision is a property of the data, not of the shader.** The same `single_channel` layer is used over an
+8-bit brightfield slide and over a 16-bit float plane, so it cannot know in advance what it will be pointed
+at. Under `'auto'` the negotiation therefore runs that way round: the *data* declares what it carries, a
+`ShaderLayer` may *veto*, and the renderer resolves.
+
+| `precision` | behaviour |
+|---|---|
+| `'unorm8'` (default) | `RGBA8` always. Float tile data is quantized and clamped; one `info` names the fix. |
+| `'auto'` | `RGBA16F` when the data carries float **and** nothing vetoes. |
+| `'float16'` | `RGBA16F` whenever the context supports it, ignoring data and vetoes. |
+
+Under `'auto'`:
+
+1. the drawer reports what the tiles carry — `FlexRenderer#setDataCarriesHighPrecision(bool)`, aggregated over
+   the world from each prepared tile's pack format, plus an optional early
+   `tileSource.getTileDataPrecision()` (`'unorm8' | 'float16'`) that lets a source answer from its header and
+   skip one mid-load program rebuild;
+2. a shader config declaring `precision: 'float16'` demands the upgrade even over 8-bit data;
+3. a `ShaderLayer` class whose `static supportsHighPrecision()` returns `false`, or a config declaring
+   `precision: 'unorm8'`, **vetoes** it for the whole renderer — there is only one colour target, so a mixed
+   verdict resolves to the clamped one;
+4. otherwise `RGBA8`.
+
+> **Removed:** `static requiresHighPrecision()`. A class still defining it gets a warning at registration time
+> and is otherwise ignored — use `static supportsHighPrecision()` to veto, or config `precision: 'float16'`
+> to demand.
+
+`float16` requires `EXT_color_buffer_half_float` or `EXT_color_buffer_float`
+(`renderer.backend.supportsHighPrecisionTargets` probes this). If neither is present the renderer **warns
+loudly and falls back to `RGBA8`** rather than downgrading silently. `RGBA16F` is the target rather than
+`RGBA32F` on purpose: it is filterable in WebGL2 core and blendable wherever it is colour-renderable, while
+32-bit float would additionally need `EXT_float_blend`.
+
+**Behaviour change under `precision: 'float16'`:** `RGBA8` used to clamp first-pass output implicitly, and
+`RGBA16F` does not. Values sampled through `sampleChannel()` / `osd_channel()` / `osd_texture()` are therefore
+**no longer guaranteed to be in `[0,1]`** — they can be negative or greater than one. Layers that relied on the
+old clamp must clamp explicitly. Tiles uploaded as 8-bit unorm are still clamped by the first-pass copy, so an
+8-bit background mixed with a float layer behaves exactly as before. The stencil/coverage target stays `RGBA8`.
+
+**Memory:** the colour array is `width × height × dataLayerCount`. At 3840×2160 with 8 data layers this grows
+from 66 MB to 133 MB per layer, 531 MB total — per renderer, and a viewer's navigator has one of its own.
+That cost is why `'auto'` is off by default: enabling the negotiation is a deployment decision, even though
+the negotiation itself then needs no per-shader configuration. Narrowing the *colour target* to `R16F`/`RG16F`
+when active layers need fewer channels is a possible follow-up — that is a different thing from the narrow
+*tile* formats below, which are already supported.
+
+### Shaders That Need Interaction Forwarding
+
+`FlexDrawer` interaction forwarding is **off by default**: while it is on, every changed pointer move forwards
+state and triggers a redraw, so a host wants it enabled only while a layer that consumes pointer state is
+actually visible. Which layers those are is declared, not guessed:
+
+```js
+const Klass = OpenSeadragon.FlexRenderer.ShaderLayerRegistry.get(type);
+if (Klass.requiresInteraction()) {
+    drawer.setInteractionEnabled(true);      // or drawerOptions interaction: {enabled: true}
+}
+```
+
+`static requiresInteraction()` returns `false` on `ShaderLayer` and `true` on layers whose GLSL calls the
+`fr_interaction_*` helpers (`fisheye-lens`, `interaction-debug`). Unlike `supportsHighPrecision()` it is **not a
+veto**: nothing in the renderer changes because of it. The layer compiles and draws with forwarding off — it
+just renders its inactive branch (the lens never opens, the debug overlay stays transparent), which is
+indistinguishable from a broken shader. The drawer therefore logs one warning per shader type when such a
+layer is built while forwarding is disabled, and never enables forwarding on its own.
+
+The flag is published for catalogues and tooling: `compileDocsModel()` reports `requiresInteraction` per
+shader and `compileConfigSchemaModel()` emits `x-requiresInteraction: true` on that shader's layer schema
+(the key is absent when false).
+
+Three similarly named things, kept apart:
+
+| name | owner | meaning |
+|---|---|---|
+| `ShaderLayer.requiresInteraction()` | shader class | the layer's GLSL reads host-supplied pointer state |
+| control `interactive: true/false` | UI control definition | whether that control is user-editable / shown |
+| `interaction: {enabled}` | `FlexDrawer` option | whether pointer events are observed and forwarded |
+
+The new static is about *pointer state reaching the GLSL* only; it says nothing about UI controls.
+
+### Tile Pack Formats
+
+A `gpuTextureSet` tile payload declares a pixel format per pack. Four are accepted:
+
+| `format` | upload | data view | components/pack | bytes/texel |
+|---|---|---|---|---|
+| `RGBA8` (default) | RGBA / `UNSIGNED_BYTE` | `Uint8Array` | 4 | 4 |
+| `RGBA16F` | RGBA / `HALF_FLOAT` | `Uint16Array` | 4 | 8 |
+| `RG16F` | RG / `HALF_FLOAT` | `Uint16Array` | 2 | 4 |
+| `R16F` | RED / `HALF_FLOAT` | `Uint16Array` | 1 | 2 |
+
+The narrow formats exist so a quantitative layer with one or two channels does not pay for four. A cached
+`R16F` tile is a quarter of the `RGBA16F` one, which matters wherever the tile cache holds many small
+single-channel tiles rather than a few big ones.
+
+**This shrinks the tile cache, not the colour target.** The first pass still blits each pack into a full
+RGBA layer of the shared offscreen array, so `dataLayerCount` and the memory figure above are unchanged.
+`R16F`/`RG16F` are core WebGL2 sized formats and are filterable in core; they are never rendered *into*, so
+they need no extension and the capability gate is the same as before.
+
+All packs of one tile must share a format, and `data.length` must be exactly
+`width × height × componentsPerPack` — both are validated, with `"unsupported-data"` and `"invalid-data"`
+respectively.
+
+**Channel addressing.** Channel `N` lives in pack `N / componentsPerPack`, component `N % componentsPerPack`.
+Four channels stored as four `R16F` packs therefore occupy four packs, not one — `sampleChannel()` and
+`osd_channel()` handle that, and a channel index at or past the source's `channelCount` reads `0.0`.
+
+**Alpha is not payload in a narrow pack.** Sampling `R16F` yields `(r, 0, 0, 1)` and `RG16F` yields
+`(r, g, 0, 1)`; those extra components are the format fill supplied by texture-format conversion. This is the
+one place the usual "alpha can carry data just like any other channel" rule does not hold. Declare
+`channelCount` on the payload — or let it default to `packs.length × componentsPerPack` — so shaders know
+where the data stops. A swizzle wider than the source carries logs a warning and reads zeros.
 
 ### Lazy Shader Sources
 
@@ -338,6 +472,66 @@ But since it does not hardcode any specific properties (missing `required` prope
 we can provide any values we want (including type change) as long as we pass the ``accepts`` check,
 which in this case verifies the control outputs ``vec3`` type.
 
+### Icon Fonts
+The `icon` control and the `iconmap` shader layer draw glyphs into the WebGL
+texture atlas. FlexRenderer ships **icon metadata only** — names, aliases, tags
+and codepoints. **No webfont is bundled or downloaded by the library.** Loading
+a font is the host page's job, and it only needs to do so for the sets it wants.
+
+| Set | Font family | Host must load |
+| --- | --- | --- |
+| `html-glyphs` *(default)* | system emoji / symbol fonts | nothing |
+| `ph-regular-common` | `Phosphor` | Phosphor regular |
+| `ph-fill-common` | `Phosphor-Fill` | Phosphor fill |
+| `ph-brands-common` | `Phosphor` | Phosphor regular |
+| `fa-solid-common` | `Font Awesome 6 Free` (900) | Font Awesome 6 Free |
+| `fa-regular-common` | `Font Awesome 6 Free` (400) | Font Awesome 6 Free |
+| `fa-brands-common` | `Font Awesome 6 Brands` | Font Awesome 6 Free |
+
+`html-glyphs` is the default precisely because it renders with no setup. To use
+the others, add the stylesheet (or an equivalent local `@font-face`):
+
+````html
+<!-- Phosphor -->
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/fill/style.css">
+<!-- Font Awesome -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+````
+
+Then select the set per control or per vector-tile class:
+
+````js
+{ type: 'icon', iconSet: 'ph-fill-common', default: 'map-pin', color: '#c03030' }
+````
+
+Loading order does not matter. Because codepoints are known ahead of time, only
+the *font* is required — not the stylesheet's CSS classes. Icons whose font has
+not arrived yet stay unrendered and resolve themselves once `document.fonts`
+reports the family, so a late or slow CDN costs nothing but a short delay.
+
+Both families are addressed by plain names (`house`, `map-pin`, `star`), and
+Font Awesome names are registered as aliases on the Phosphor sets, so a style
+written as `icon: 'fa-house'` resolves against Phosphor too. Font Awesome is
+kept for the brand icons Phosphor has no counterpart for: `docker`, `npm`,
+`node-js`, `firefox`, `edge`, `python`.
+
+To contribute your own font, register a set:
+
+````js
+OpenSeadragon.FlexRenderer.UIControls.IconLibrary.registerSet('my-icons', {
+   kind: 'font-class',
+   fontFamily: "'My Icon Font'",
+   fontWeight: '400',
+   items: [{ name: 'logo', className: 'mi mi-logo', aliases: [], tags: [] }]
+});
+````
+
+Entries without a codepoint fall back to probing the icon stylesheet in the
+DOM, so a set defined this way works as long as its CSS is loaded. The bundled
+sets get their codepoints from `src/flex-controls/icon-sets/icon-codepoints.generated.js`,
+regenerated with `npm run icons`.
+
 ### Changing Configuration Values
 Config values can be changed anytime. It is a good idea to not to force the renderer to copy the object,
 this way you can share the configuration object active state all the time and modify it as needed.
@@ -405,15 +599,11 @@ Additional configurator debug pages are available under `test/demo/`:
 
 ## Roadmap
 - Bugfixing & getting ready for the first release
-    - Fixing tests: inherited from OpenSeadragon, they expect incompatible behavior
-    - Fixing coverage tests
-- Adding support for WebGL 1.0 (fallback)
+    - Fixing coverage tests: `grunt coverage` still fails, istanbul/esprima cannot parse the modern JS in `src/`
 - Modularize ShaderLayers
     - Implement modules (sample color, apply gaussian...) to connect together to create a ShaderLayer.
-- Add support for concave clipping polygons.
-- Adding support for better debugging & cropping
+- Clipping & cropping: concave polygons, and better debugging of both
     - For now, only convex polygons are supported
-- Dynamic documentation and configuration schema output that parse available shaders and controls and show what JSON can be used where.
 
 #### What might be supported
 - Canvas2D proxy. People tend to use Canvas2D api to access the rendered data, which

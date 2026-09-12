@@ -235,8 +235,30 @@
                 this.renderer.setShaderLayerOrder([shaderId]);
 
                 // Rebuild second-pass to regenerate controls and shader JS/GL state.
-                this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
-                this.renderer.useProgram(this.renderer.getProgram(this.renderer.backend.secondPassProgramKey), "second-pass");
+                try {
+                    this.renderer.registerProgram(null, this.renderer.backend.secondPassProgramKey);
+                } catch (e) {
+                    // The previously linked program is kept and keeps rendering, but it was built
+                    // for the shaders this call just replaced -- regenerating controls against it
+                    // would advertise uniforms it does not have, so stop here.
+                    $.console.error(`Configurator::setShader: shader '${shaderId}' could not be ` +
+                        `compiled; the previous visualization is kept.`, e);
+                    this.renderer.notifyProgramBuildFailed(
+                        this.renderer.backend.secondPassProgramKey, e, "configurator-set-shader");
+                    return;
+                }
+
+                // useProgram() is kept for its HTML-control regeneration side effect, but its
+                // return value is the program's one-shot `requiresLoad` flag and the caller is
+                // obliged to run load() in response. Consuming it and dropping it left every
+                // control holding a uniform location from the program registerProgram() had just
+                // deleted -- the next draw then uploaded through it and raised INVALID_OPERATION.
+                // load() resolves locations for every registered shader, so the empty array here
+                // is not a partial load.
+                const program = this.renderer.getProgram(this.renderer.backend.secondPassProgramKey);
+                if (this.renderer.useProgram(program, "second-pass")) {
+                    program.load([]);
+                }
             } finally {
                 this._suspendVisualizationSync = false;
             }
@@ -374,6 +396,7 @@
                     description: typeof Shader.description === "function" ? Shader.description() : "",
                     intent: typeof Shader.intent === "function" ? Shader.intent() : undefined,
                     expects: typeof Shader.expects === "function" ? Shader.expects() : undefined,
+                    requiresInteraction: this._resolveShaderRequiresInteraction(Shader),
                     exampleParams: typeof Shader.exampleParams === "function" ? Shader.exampleParams() : undefined,
                     controlCouplings: this._serializeControlCouplings(Shader),
                     preview: this._resolveShaderPreview(Shader),
@@ -394,7 +417,7 @@
             const controls = this._compileAvailableControls();
 
             const model = {
-                version: 6,
+                version: 7,
                 generatedAt: new Date().toISOString(),
                 shaders,
                 controls
@@ -404,8 +427,43 @@
             return model;
         },
 
-        compileConfigSchemaModel() {
+        /**
+         * Builds the published JSON Schema.
+         *
+         * The schema is generated from the shader classes and is always returned: bundled
+         * `examples` are optional, decorative data and must never take the document down.
+         * When an example does not validate against its own schema (or violates a coupling)
+         * it is dropped from the returned schema and reported via `console.warn` — a missing
+         * example is strictly better than one a consumer would copy and then fail on.
+         *
+         * @param {object} [options]
+         * @param {boolean} [options.strict=false] throw instead of degrading when a bundled
+         *   example is inconsistent. Off by default; intended for build/CI checks. See also
+         *   {@link validatePublishedExamples} / {@link assertPublishedExamplesValid}.
+         */
+        compileConfigSchemaModel(options = {}) {
+            const strict = options.strict === true;
             const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
+            const schema = this._buildConfigSchema(availableShaders);
+
+            const compiledShaders = this._compileExampleConsistencyInputs(availableShaders);
+            const issues = this._collectPublishedExampleIssues(availableShaders, schema, compiledShaders);
+            if (issues.length) {
+                if (strict) {
+                    throw new Error(this._formatPublishedExampleIssues(issues));
+                }
+                this._warnIfExampleParamsInconsistent(compiledShaders);
+                this._dropInvalidPublishedExamples(schema, issues);
+            }
+            return schema;
+        },
+
+        /**
+         * Pure schema construction, no example validation and no degradation.
+         * The result is deterministic for a given shader registry — no timestamps —
+         * so consumers can content-hash it and diff two dumps.
+         */
+        _buildConfigSchema(availableShaders) {
             const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
             const shaderLayerRefs = availableShaders.map(Shader => ({
                 $ref: `#/$defs/shaderLayers/${Shader.type()}`
@@ -439,6 +497,14 @@
                     shaders: {
                         type: "object",
                         additionalProperties: {
+                            // Tells a validator to pick the branch by `type` instead of trying all
+                            // of them. Without it a single misplaced key fails every branch, so one
+                            // mistake is reported once per registered shader type -- 23 findings for
+                            // one layer, most of them about shader types the config never mentions.
+                            // `discriminator` is an OpenAPI keyword; 2020-12 ignores unknown
+                            // keywords, so a validator that does not implement it falls back to
+                            // plain oneOf and stays correct.
+                            discriminator: { propertyName: "type" },
                             oneOf: deepClone(shaderLayerRefs)
                         },
                         description: "Map of shader id -> shader configuration object."
@@ -448,16 +514,36 @@
                     uiControlEnvelopes,
                     shaderLayers
                 },
-                "x-schemaVersion": 2,
-                "x-generatedAt": new Date().toISOString()
+                "x-schemaVersion": 2
             };
 
-            this._assertPublishedExamplesValid(availableShaders, schema);
             return schema;
         },
 
-        async compileConfigSchemaModelAsync() {
-            return this.compileConfigSchemaModel();
+        async compileConfigSchemaModelAsync(options = {}) {
+            return this.compileConfigSchemaModel(options);
+        },
+
+        /**
+         * Strict verdict on the bundled examples, without punishing schema consumers.
+         * @returns {{ok: boolean, issues: Array<object>}}
+         */
+        validatePublishedExamples() {
+            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
+            // Validate the undegraded document, not the one compile() already pruned.
+            const schema = this._buildConfigSchema(availableShaders);
+            const issues = this._collectPublishedExampleIssues(availableShaders, schema);
+            return { ok: issues.length === 0, issues };
+        },
+
+        /**
+         * Throwing form of {@link validatePublishedExamples}, for build/CI use.
+         */
+        assertPublishedExamplesValid() {
+            const { ok, issues } = this.validatePublishedExamples();
+            if (!ok) {
+                throw new Error(this._formatPublishedExampleIssues(issues));
+            }
         },
 
         /**
@@ -562,9 +648,14 @@
             });
         },
 
-        _assertPublishedExamplesValid(ShaderClasses, schemaModel) {
+        /**
+         * Collects every inconsistency between the bundled examples and the schema they
+         * are published under. Pure: never throws, never mutates `schemaModel`. Callers
+         * decide whether to warn, prune, or fail.
+         */
+        _collectPublishedExampleIssues(ShaderClasses, schemaModel, compiledShaders) {
             const issues = [];
-            const compiledShaders = this._compileExampleConsistencyInputs(ShaderClasses);
+            compiledShaders = compiledShaders || this._compileExampleConsistencyInputs(ShaderClasses);
             const keyIssues = this.checkExampleParamsConsistency(compiledShaders);
             for (const issue of keyIssues) {
                 issues.push({
@@ -575,7 +666,9 @@
                 });
             }
 
-            const ajv = this._createSchemaAjv();
+            // Ajv is optional at runtime: without it we still report key and coupling
+            // issues rather than failing the whole collection.
+            const ajv = AjvConstructor ? this._createSchemaAjv() : null;
             for (const Shader of ShaderClasses || []) {
                 const type = Shader && typeof Shader.type === "function" ? Shader.type() : Shader && Shader.type;
                 if (!type) {
@@ -588,16 +681,26 @@
                     continue;
                 }
 
-                const validate = ajv.compile({
-                    ...layerSchema,
-                    $defs: deepClone((schemaModel && schemaModel.$defs) || {})
-                });
-                if (!validate(exampleLayer)) {
-                    issues.push({
-                        kind: "schema",
-                        type,
-                        errors: deepClone(validate.errors || [])
-                    });
+                if (ajv) {
+                    try {
+                        const validate = ajv.compile({
+                            ...layerSchema,
+                            $defs: deepClone((schemaModel && schemaModel.$defs) || {})
+                        });
+                        if (!validate(exampleLayer)) {
+                            issues.push({
+                                kind: "schema",
+                                type,
+                                errors: deepClone(validate.errors || [])
+                            });
+                        }
+                    } catch (e) {
+                        issues.push({
+                            kind: "schema",
+                            type,
+                            errors: [{ message: `example validation could not run: ${e && e.message}` }]
+                        });
+                    }
                 }
 
                 for (const coupling of this.getShaderCouplingValidators(type)) {
@@ -647,13 +750,37 @@
                 }
             }
 
-            if (!issues.length) {
-                return;
+            return issues;
+        },
+
+        _formatPublishedExampleIssues(issues) {
+            return "[FlexRenderer.ShaderConfigurator] published examples failed validation:\n" +
+                (issues || []).map(issue => `  ${JSON.stringify(issue)}`).join("\n");
+        },
+
+        /**
+         * Removes `examples[0]` from every shader layer schema that has a reported issue,
+         * so no consumer copies a sample known to fail its own validation. Mutates
+         * `schemaModel` in place and warns once per dropped example.
+         */
+        _dropInvalidPublishedExamples(schemaModel, issues) {
+            const shaderLayers = (schemaModel && schemaModel.$defs && schemaModel.$defs.shaderLayers) || {};
+            const affected = new Set((issues || []).map(issue => issue && issue.type).filter(Boolean));
+            for (const type of affected) {
+                const layerSchema = shaderLayers[type];
+                if (!layerSchema || !Array.isArray(layerSchema.examples) || !layerSchema.examples.length) {
+                    continue;
+                }
+                layerSchema.examples.shift();
+                if (!layerSchema.examples.length) {
+                    delete layerSchema.examples;
+                }
+                console.warn(
+                    `[FlexRenderer.ShaderConfigurator] dropped invalid published example for shader "${type}"; ` +
+                    `schema is still served. Details: ` +
+                    JSON.stringify((issues || []).filter(issue => issue && issue.type === type))
+                );
             }
-            throw new Error(
-                "[FlexRenderer.ShaderConfigurator] published examples failed validation:\n" +
-                issues.map(issue => `  ${JSON.stringify(issue)}`).join("\n")
-            );
         },
 
         _createSchemaAjv() {
@@ -663,7 +790,13 @@
             return new AjvConstructor({
                 allErrors: true,
                 strict: false,
-                schemaId: "auto"
+                // Acts on the `discriminator` keyword the schema emits next to its `oneOf` branches.
+                // AJV 6 ignores the option; AJV 8 needs it, otherwise the keyword is inert and a
+                // misplaced key is reported once per registered shader type again.
+                discriminator: true
+                // `schemaId: "auto"` used to be passed here. It was removed in AJV 7, and AJV 8 does
+                // not reject it -- `schemaId` is typed "id" | "$id" there, so "auto" silently makes
+                // it look for `schema.auto` and $id/$anchor registration stops working.
             });
         },
 
@@ -1182,16 +1315,17 @@
                         usage: "Shader-specific settings, built-in use_* options, UI-control configs, and custom parameters."
                     },
                     {
-                        key: "_controls",
-                        type: "object",
-                        required: false,
-                        usage: "Renderer-managed control storage present on ShaderConfig."
-                    },
-                    {
                         key: "cache",
                         type: "object",
                         required: false,
                         usage: "Persistent runtime state used by controls and reset* helpers."
+                    },
+                    {
+                        key: "precision",
+                        type: "string",
+                        required: false,
+                        allowedValues: ["float16", "unorm8"],
+                        usage: "Optional per-layer override of the first-pass color target precision, honored only while the renderer option `precision` is \"auto\"."
                     }
                 ]
             };
@@ -1290,6 +1424,16 @@
                     type: "array",
                     items: { type: "integer", minimum: 0 },
                     description: "Persisted-config form: indices into config.data the shader samples from. Hosts (e.g. xOpat) resolve these to tiledImages at open time. Either tiledImages OR dataReferences (or both, when they agree) is acceptable; tiledImages takes precedence at the renderer boundary."
+                },
+                cache: {
+                    type: "object",
+                    description: "Runtime value store owned by the shader's controls (ShaderLayer.cache / loadProperty / storeProperty). Populated by the renderer, persisted with the config, and reapplied on load. Keys are control-defined, so the shape is open."
+                },
+                // Enumerated rather than left open: the schema stays closed, so a typo in this
+                // key is still reported instead of being silently accepted as an unknown value.
+                precision: {
+                    enum: ["float16", "unorm8"],
+                    description: "Per-instance override of the first-pass color target precision, honored only while the renderer option `precision` is \"auto\". \"float16\" demands a high-precision (RGBA16F) target even over 8-bit data and upgrades the target for the whole renderer; \"unorm8\" is the veto and forces the renderer back to 8-bit even when the data carries float."
                 }
             };
 
@@ -1302,6 +1446,8 @@
                 properties.shaders = {
                     type: "object",
                     additionalProperties: {
+                        // Same reasoning as the root `shaders` map; see _buildConfigSchema.
+                        discriminator: { propertyName: "type" },
                         oneOf: deepClone(shaderLayerRefs)
                     }
                 };
@@ -1339,6 +1485,10 @@
             if (expects) {
                 schema["x-expects"] = expects;
             }
+            // Absent means false: a consumer that does not know the key behaves as before.
+            if (this._resolveShaderRequiresInteraction(Shader)) {
+                schema["x-requiresInteraction"] = true;
+            }
 
             const examples = this._buildShaderLayerExamples(Shader, sources);
             if (examples.length) {
@@ -1367,6 +1517,16 @@
             return {
                 type: "object",
                 additionalProperties: false,
+                // `use_*` is a reserved built-in namespace (channels, mode, blend, filters). The
+                // enumerated built-ins above are only the ones derivable from the declared sources
+                // and defaultControls; a shader with a dynamic source count, or a host adding a
+                // filter at runtime, produces valid `use_*` keys this compile step cannot see.
+                // Keys listed in `properties` keep their stricter schema -- both apply.
+                patternProperties: {
+                    "^use_[A-Za-z0-9_]+$": {
+                        description: "Reserved built-in shader param (channel pattern, mode, blend or filter)."
+                    }
+                },
                 properties
             };
         },
@@ -1509,8 +1669,19 @@
         },
 
         _compileCustomParamJsonSchema(Shader, item) {
-            const schema = this._compileSpecialCustomParamJsonSchema(Shader, item) ||
+            let schema = this._compileSpecialCustomParamJsonSchema(Shader, item) ||
                 this._compileTypeExpressionSchema(item.type, firstDefined(item.required, item.default));
+
+            // Mirrors _compileBuiltInParamJsonSchema: a null default has to be admitted by the
+            // type, or _synthesizeExampleParamsFromDefaults emits an example the schema rejects.
+            // The raw declaration is the only source of truth here -- _compileShaderParamsSchema
+            // coerces an *absent* default to null, so `item.default === null` cannot tell
+            // "declared null" from "no default" and would make every such param nullable.
+            const declared = (Shader && Shader.customParams && Shader.customParams[item.key]) || null;
+            if (declared && declared.default === null) {
+                schema = this._withNullableSchema(schema);
+            }
+
             if (item.default !== undefined && item.default !== null) {
                 schema.default = deepClone(item.default);
             }
@@ -1733,6 +1904,7 @@
             return couplings.map(coupling => ({
                 name: coupling.name,
                 summary: coupling.summary,
+                corrective: coupling.corrective,
                 controls: deepClone(coupling.controls || [])
             }));
         },
@@ -1740,9 +1912,25 @@
         _buildShaderSchemaDescription(Shader, description) {
             const type = Shader && typeof Shader.type === "function" ? Shader.type() : "";
             if (type === "time-series" || type === "channel-series") {
-                return `${description} Wrapper-specific settings live under params alongside built-ins and UI controls.`;
+                return `${description} Wrapper-specific settings live under params alongside ` +
+                    `built-ins and UI controls. Placing them at the layer top level is rejected: ` +
+                    `the runtime reads them from params only, and a legacy top-level key is moved ` +
+                    `into params by the shader's normalizeConfig with a deprecation warning.`;
             }
             return description;
+        },
+
+        /**
+         * Whether the shader class declares it reads host-supplied pointer state
+         * (`static requiresInteraction()`). Unknown/absent static reads as false, so
+         * externally registered shaders written against an older version stay valid.
+         *
+         * This is about the `fr_interaction_*` GLSL state a host forwards through
+         * `FlexDrawer`, not about a UI control's `interactive` flag.
+         */
+        _resolveShaderRequiresInteraction(Shader) {
+            return !!(Shader && typeof Shader.requiresInteraction === "function" &&
+                Shader.requiresInteraction() === true);
         },
 
         _resolveShaderSchemaExpects(Shader, sources = []) {
@@ -2091,6 +2279,9 @@
                 if (shader.expects) {
                     out.push(`Expects: ${JSON.stringify(shader.expects)}`);
                 }
+                if (shader.requiresInteraction) {
+                    out.push(`Requires interaction forwarding: yes (FlexDrawer option interaction: {enabled: true})`);
+                }
                 if (shader.exampleParams !== undefined) {
                     out.push(`Example params: ${JSON.stringify(shader.exampleParams)}`);
                 }
@@ -2324,6 +2515,7 @@
         <span class="min-w-[180px] flex-1">
             <span class="block text-lg font-semibold">${escapeHtml(shader.name)}</span>
             <span class="badge badge-outline mt-1">${escapeHtml(shader.type)}</span>
+            ${shader.requiresInteraction ? `<span class="badge badge-warning mt-1">needs interaction forwarding</span>` : ""}
             <span class="mt-2 block text-sm opacity-80">${escapeHtml(shader.description || "")}</span>
         </span>
         ${this._renderShaderPreviewMarkup(preview, "rounded-box border border-base-300 max-w-[150px] max-h-[150px] shrink-0")}
@@ -2339,6 +2531,15 @@
     <div class="mb-3">
         <div class="font-semibold">Expects</div>
         <pre class="text-xs whitespace-pre-wrap">${escapeHtml(JSON.stringify(shader.expects, null, 2))}</pre>
+    </div>` : ""}
+
+    ${shader.requiresInteraction ? `
+    <div class="mb-3">
+        <div class="font-semibold">Requires interaction forwarding</div>
+        <div>Reads host-supplied pointer state (<code>fr_interaction_*</code>). Enable the
+        <code>FlexDrawer</code> option <code>interaction: {enabled: true}</code> (or call
+        <code>drawer.setInteractionEnabled(true)</code>); without it the layer renders its
+        inactive branch. Unrelated to a control's <code>interactive</code> flag.</div>
     </div>` : ""}
 
     ${shader.exampleParams !== undefined ? `
@@ -3029,12 +3230,12 @@
         wrap.innerHTML = `
 <label class="form-control col-span-2">
     <div class="label"><span class="label-text">Default icon query</span></div>
-    <input class="input input-bordered input-sm" data-k="default" type="text" value="${escapeHtml(controlConfig.default || "")}" placeholder="fa-house, &#xf015;, ★">
+    <input class="input input-bordered input-sm" data-k="default" type="text" value="${escapeHtml(controlConfig.default || "")}" placeholder="ph-house, fa-house, &#xf015;, ★">
 </label>
 <label class="form-control">
     <div class="label"><span class="label-text">Icon set</span></div>
     <select class="select select-bordered select-sm" data-k="iconSet">
-        ${iconSets.map(name => `<option value="${escapeHtml(name)}" ${name === (controlConfig.iconSet || "core") ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        ${iconSets.map(name => `<option value="${escapeHtml(name)}" ${name === (controlConfig.iconSet || "html-glyphs") ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
     </select>
 </label>
 <label class="form-control">

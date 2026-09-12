@@ -1,6 +1,301 @@
 OPENSEADRAGON FLEX RENDERER
 ===========================
 
+0.0.2
+Standalone drawer construction options:
+ * NEW makeStandaloneFlexDrawer(viewer, optionOverrides). Deep-merged over copy of
+   viewer.drawerOptions['flex-renderer'].
+ * Only way in for construction-time renderer options. presentationClearColor: getter, no setter.
+   sharedContextKey: read before drawer state exists. Old workaround: mutate LIVE viewer
+   drawerOptions around constructor, restore after - not concurrency-safe.
+ * makeStandaloneFlexRenderer already took presentationClearColor + backgroundColor. OFFSCREEN.md
+   already documented overriding sharedContextKey - impossible until now.
+ * PINNED, override ignored: debug, htmlReset, htmlHandler, interactive, handleNavigator, offScreen.
+   Why: interactive/htmlHandler bind controls via getElementById(shaderId + "_" + control) ->
+   DOM-less drawer hits another renderer's live controls. offScreen -> destroy() would take live
+   viewer canvas.
+ * FIX every extract()/drawWithConfiguration() raster opaque. Backdrop default [1,1,1,1], no way to
+   ask otherwise. presentationClearColor: [0,0,0,0] -> true alpha, BOTH context modes, ordinary
+   return value, no new readback path. Private: clears default framebuffer (= presentation canvas),
+   copy-out never fills there. Shared: color target cleared [0,0,0,0] regardless, copy-out fill
+   guarded on non-zero backdrop alpha. Test standalone-drawer-overrides.js.
+ * presentationClearColor declared in FlexDrawer.defaultOptions. Always passed through untyped
+   options spread, undocumented; sibling backgroundColor was declared.
+ * backgroundColor != presentationClearColor. backgroundColor = composition seed baked into
+   second-pass shader (source). presentationClearColor = gl.clear of surface it blends onto
+   (destination). Premultiplied: out = stack(seeded by backgroundColor) + backdrop * (1 - src.a).
+ * DOC FIX OFFSCREEN.md: second pass is ONE/ONE_MINUS_SRC_ALPHA, not SRC_ALPHA/ONE_MINUS_SRC_ALPHA.
+   File's own translucent-backdrop rule depends on it.
+ * DOC OFFSCREEN.md: gl.readPixels on renderer.gl is private-context-only. Shared mode default
+   framebuffer = registry page-global scratch canvas, owned by no one renderer.
+
+MVT vector tiles, world not a multiple of tileSize:
+ * FIX mesh vertices normalized against NOMINAL tile (0..extent / layer.extent) -> mesh spanned
+   UV 0..1 across whole tileSize. FlexDrawer._updateTileMatrix maps UV 0..1 onto
+   Tile.positionedBounds, which OSD CLIPS at level right/bottom edge. Agree only on exact multiples
+   of tileSize = every square web-mercator pyramid = everything MVT was pointed at.
+ * Symptom, 105185 x 221772 slide, tileSize 512, maxLevel 9: z0 layer squeezed 2.49x in x, 1.18x in
+   y. Last column 225/512, last row 76/512 clipped, every level.
+ * Raster path always compensated via texcoord scaling (_computeTilePosition sourceWidthFraction).
+   Vector tile has no texcoords. GeoJSONTileSource unaffected - worker normalizes to clipped rect
+   (getTileLevelRect / imageToTileUv). MVT was the outlier.
+ * NEW AbstractMVTTileSource._tileUvScale(tile). Nominal/clipped from getTileBounds(level,x,y,true),
+   shipped per tile as uvScaleX / uvScaleY. Worker folds into extent divisor for every mesh kind:
+   fills, stroked lines, native line primitives, points, icons. Absent/non-finite -> 1, square
+   pyramids byte-identical. Test mvt-partial-tile-uv.js.
+ * FIX worker `config` handler did STYLE = msg.style || STYLE - replaced whole object. TileJSON
+   style declares `layers` only -> STYLE.fallback undefined -> unknown layer name dereferenced
+   undefined.type -> worker throw instead of default style. Now merged.
+
+Shader coordinate units on HiDPI displays:
+ * FIX grid + gridheatmap drew cells 1/devicePixelRatio of configured size when devicePixelRatio
+   != 1. cell_x: 512 measured 426.7 slide px at DPR 1.2, stable across zoom.
+ * Cause: both divide (gl_FragCoord.xy - imageOriginPx) by pixelSize, _collectShaderUniforms
+   produced them in different units. imageOriginPx * canvas.width / _containerInnerSize.x =
+   framebuffer px. pixelSize from _tiledImageViewportToImageZoom / _containerInnerSize = CSS px.
+   Quotient = image px scaled by ratio between them. Origin stayed correct -> read as drift from
+   anchor, not wrong cell size. These shaders are measurement references -> correct overlays
+   checked against them looked broken.
+ * NEW UNIFORM u_devicePixelScale, GLSL global devicePixelScale = framebuffer px per CSS px.
+   Frame-global, uploaded next to u_zoom. Defaults 1 on standalone + self-test paths (no viewport).
+ * Second-pass GLSL units:
+     pixelSize                      CSS px per image px
+     devicePixelScale               framebuffer px per CSS px
+     pixelSize * devicePixelScale   framebuffer px per image px
+     gl_FragCoord.xy, imageOriginPx framebuffer px
+   Controls documented "screen px" = CSS px. Multiply by devicePixelScale before comparing against
+   framebuffer distances.
+ * grid + gridheatmap convert with pixelSize * devicePixelScale. line_width, solid_px, boundary_px
+   lifted to framebuffer px -> on-screen thickness unchanged at DPR 1, DPR-independent above.
+ * adaptive_lod keeps CSS scale as merge/subdivide basis, deliberate. Threshold is perceptual ->
+   HiDPI snaps at same zoom as everything else.
+ * patternmap, same defect weaker: spacing, line_width, both offsets documented screen px, consumed
+   framebuffer px -> pattern 1/devicePixelRatio-sized. All four scale by devicePixelScale.
+ * NEW TEST grid-dpr.js. Grid at known cell_x, OpenSeadragon.pixelDensityRatio forced 2, measures
+   on-screen line period. Headless Chrome runs devicePixelRatio 1 - why this shipped.
+   pixelDensityRatio is what sizes the canvas. Pre-fix: 30 framebuffer px where 60 configured.
+
+Rebuild failure recovery:
+ * FIX second-pass build that failed to link DESTROYED external configuration instead of disabling
+   it. FlexDrawer rebuild caught throw -> overrideConfigureAll(undefined) -> deletes every shader.
+   Drawer never retained the `shaders` map -> nothing to restore from. getOverriddenShaderConfig()
+   undefined for every id, tiledImageCreated() wrote fresh identity config per world item, every
+   later rebuild took internal branch. Visualization lost for page life, reload only.
+ * Reachable from any GLSL-regenerating UI action: visibility toggle, type/blend/mode change, filter
+   toggle, reorder, cache clear. Usually via per-device fragment uniform budget.
+ * Catch now keeps previously linked program - as the other five registerProgram() call sites
+   already did.
+ * NEW EVENT shader-program-failed on FlexRenderer. Raised from every registerProgram() catch site:
+   drawer rebuild, shader rebuild callback, changeShaderType, refreshShaderLayer, standalone
+   override, configurator setShader. Carries program key, error, call site, shader ids, snapshot of
+   still-live configuration. Was $.console only -> host could not learn its config no longer matched
+   the GPU program without reading private state. See src/EVENTS.md.
+ * ShaderLayer no longer stores a control that failed to build. UIControls._buildFallback returns
+   undefined when neither requested nor declared type builds; that undefined was stored verbatim,
+   then dereferenced unguarded by getFragmentShaderDefinition, init, htmlControls, glLoaded,
+   glDrawing.
+ * `params` keys no control / custom param / use_* built-in declares are reported at construction.
+   params.classifier on colormap, params.color on threshold (declares fg_color), etc. Were silently
+   dead config - no control, no GLSL, no warning, surfaced later as unexplained render result.
+   Reported, NOT deleted.
+ * _sanitizeShaderParams no longer drops valid keys on shader type change. Kept only static
+   defaultControls names -> customParams (channel-series channelRenderer, ...) and array-expanded
+   control names (iconmap icon0, icon1, ...) deleted as orphans of previous type.
+ * colormap palette substitution warning prints schemeGroups[mode] -> case-sensitivity mismatch
+   ("turbo" != "Turbo") self-correcting.
+
+Shared-context correctness:
+ * FIX program that failed to compile/link broke rendering permanently and silently.
+   registerProgram() deleted working WebGLProgram (and via destroy() its VAO) before knowing the
+   replacement linked, then returned bare undefined on failure while registry held the unlinked one.
+   created() - only place uniform locations are re-queried - runs on success only. Every cached
+   location still named the deleted program -> next frame "INVALID_OPERATION: uniform4f: location
+   is not from the associated program", forever, nothing re-links on its own.
+ * Now: builds + links into scratch program, swaps only after link succeeds. Failure leaves previous
+   program bound and rendering. Throws like the validation path instead of returning undefined.
+ * Reachable whenever SecondPassProgram widens uniform arrays (world past _uTiInfoSlots, or past
+   instance/texture-index sizes) on a device where that crosses MAX_FRAGMENT_UNIFORM_VECTORS.
+ * Every registerProgram() caller that could not see a failure now handles the throw and reports it:
+   _applyColorTargetPrecision (called from registerProgram prologue - escaping throw would abort a
+   different pass), per-shader rebuild callback, changeShaderType, refreshShaderLayer,
+   _scheduleRelink microtask, drawer shader-config mutation path, configurator setShader, standalone
+   shader override.
+ * SecondPassProgram#use() self-heals like ShaderLayer#glDrawing and TextureAtlas#bind. Re-binds and
+   re-resolves when cached locations do not belong to the program it uploads through - last uploader
+   trusting unverified state. created() split so repair does not allocate a VAO per draw.
+   InspectorCompositorProgram + FirstPassProgram get same guard.
+ * Bound program tracked per GL CONTEXT, not per renderer. CURRENT_PROGRAM is context-global in
+   shared mode while each renderer keeps its own `_program` belief - every hand-reconciliation site
+   was a future instance of the bug above. All three gl.useProgram calls funnel through
+   FlexRenderer#_bindGLProgram: records binding on shared context entry (or on renderer when it owns
+   its context), skips GL call when nothing moved. `debug` on -> verifies the bind took.
+ * FIX "INVALID_OPERATION: uniform1f: location is not from the associated program", plus controls
+   silently writing to the wrong uniform. Control uniform location belongs to the WebGLProgram it
+   was resolved against; registerProgram() deletes and recreates that program without clearing
+   caches. Re-resolve signal was `requiresLoad`, ONE program-wide one-shot flag -> whichever render
+   array ran first after a rebuild discharged it for every shader, including ones it did not
+   contain. ShaderLayer#glDrawing now compares the program it loaded against, re-resolves on
+   difference.
+ * SecondPassProgram#load() resolves locations for EVERY registered shader, not only those in the
+   render array handed to it. Partial array (renderVisualizationToTexture with explicit shaderMap,
+   offscreen region pass) no longer strands omitted shaders.
+ * TextureAtlas#bind() accepts the program, re-resolves its own uniform locations same way.
+ * FIX configurator setShader() consumed useProgram() return value and discarded it -> program.load()
+   never ran -> every control kept a location from the deleted program.
+ * FIX atlas uploads reachable from Image.onload, document.fonts.ready, DOM change handlers ran GL
+   calls with nothing of ours bound. Leaked active texture unit, TEXTURE_2D_ARRAY binding,
+   UNPACK_FLIP_Y_WEBGL to whichever renderer drew last. Producers now only enqueue;
+   TextureAtlas#bind() flushes queue inside a draw; remaining detached work runs in a scope that
+   restores what it borrows.
+ * FIX prepareBitmapTile / prepareGpuTextureTile run after an await and NULLED the TEXTURE_2D_ARRAY
+   binding instead of restoring it.
+ * Debug-only: `debug` on -> control uploading while a different program is bound names itself and
+   its shader instead of a bare WebGL error.
+
+GPU texture pack formats:
+ * NEW gpuTextureSet pack formats R16F, RG16F, alongside RGBA8 + RGBA16F. Cached R16F tile = 1/4 of
+   RGBA16F -> 1- or 2-channel quantitative layer stops paying for four. TILE cache only; first-pass
+   colour target still a full RGBA layer per pack. No new capability gate - both core WebGL2 sized
+   formats, filterable in core, never rendered into.
+ * Channel addressing no longer hardwired to 4 components per pack. Components-per-pack carried from
+   pack format -> prepared-tile result -> __flexPackInfo -> u_tiInfo (now ivec4, no uniform-vector
+   cost). osd_channel() divides by it instead of shifting by two. Channel N of a four-pack R16F
+   source reads pack N, not component N of pack 0.
+ * osd_channel() returns 0.0 at or past source channel count. Was: osd_texture() pack clamp made an
+   over-range channel return real data from the last pack.
+ * payload channelCount defaults packs.length * componentsPerPack, was packs.length * 4. Explicit
+   channelCount still wins.
+ * Pack payload validation: typed array must match format pixel type, data.length must equal
+   width * height * componentsPerPack.
+ * BREAKING (backend authors): WebGLImplementation#sampleTexture(index, coords) takes optional 3rd
+   packIndex. FlexDrawer#_updatePackMetadata takes optional 5th componentsPerPack. Both default to
+   previous behaviour.
+ * NEW ShaderLayer#getSourceComponentsPerPack(sourceIndex),
+   FlexDrawer#getComponentsPerPack(tiledImage), GLSL osd_components_per_pack(sourceIndex).
+ * Swizzle reading past source channel count warns once.
+
+Standalone drawer (makeStandaloneFlexDrawer):
+ * extract() + drawWithConfiguration() accept waitFullLoad, waitImages, loadTimeoutMs,
+   stallTimeoutMs, pollIntervalMs. Without waitFullLoad: draws whatever tiles are resident, as
+   before.
+ * waitImages narrows what completeness MEANS, not what is drawn -> one overlay that can never load
+   stops branding every render incomplete. Both paths; with 'view' omitted (pass re-uses live
+   drawer first-pass texture) entries are live world items.
+ * Live-texture path waits like the off-screen one. Exits on stall instead of burning whole timeout.
+   No longer holds pass mutex while waiting. Image added mid-wait can no longer hang it - wait set
+   is a snapshot of the world the pass started with.
+ * status.waited = EFFECTIVE wait. Image unable to report load state downgrades pass to
+   best-effort, no longer reads as a completed wait.
+ * Image drawing nothing in the pass - hidden, or outside rendered region - excluded from
+   completeness instead of blocking it. Never requests a tile -> 'fully loaded' flag can never flip
+   -> every extract of a region an overlay does not cover used to hit the stall exit and report
+   incomplete despite a complete raster.
+ * Every wait signal scoped to pass images. Tile traffic filtered by tiled image. ImageLoader
+   counters shared with live viewer no longer consulted -> user navigating the viewer no longer
+   counts as progress, drives off-screen update() pumps, or suppresses the stall exit.
+ * BREAKING extract({mode: "second-pass"}) returns {data, fullyLoaded, timedOut, stalled}, was bare
+   payload. One-shot extract has no next frame -> caller must tell complete raster from partial.
+   "viewport-copy" + "first-pass-layer" unchanged.
+ * Tiled image bound to standalone viewport only for a SYNCHRONOUS block - update() pump, tile
+   collect, draw - never across an await. Pass over live world items no longer hands the on-screen
+   viewer's loop an image pointing at the off-screen viewport, which used to paint the extracted
+   region on screen for the length of the wait.
+ * Live-texture path clears its output before the second pass. Bypasses renderer.render() -> never
+   cleared at all. With blending on: smaller/more transparent region showed the previous one
+   through it, pass with nothing to draw left previous region on screen in full.
+ * Live-texture path presents through the renderer color target -> real picture in shared-context
+   mode instead of blank. Used to render into shared default framebuffer while copying out of the
+   presentation canvas, which only the color-target transfer writes.
+ * Both drawWithConfiguration() paths composite identically. Backdrop applied by GL clear in private
+   mode, by 2D copy-out in shared mode, never twice. Was visible as translucent
+   presentationClearColor reading back at wrong alpha.
+ * makeStandaloneFlexRenderer accepts presentationClearColor. Every pass it draws clears to it ->
+   caller wanting anything but opaque white must be able to say so.
+
+FlexRenderer:
+ * NEW clearOutput(). Binds output surface, sets viewport, clears to presentation backdrop. Unlike
+   clear() keeps __firstPassResult + __finalPassResult -> caller re-running only the second pass
+   wipes the surface without losing the input it composes from.
+ * NEW renderSecondPassToOutput(). Routes second pass to presentation canvas in both context modes.
+   renderSecondPass() renders into the framebuffer handed to it = wrong surface in shared mode.
+ * render() binds default framebuffer before clearing in private mode. Frame whose second pass was
+   empty left first-pass offscreen framebuffer bound -> next frame clear landed there, not on the
+   canvas.
+
+ShaderLayer interaction requirement:
+ * NEW static ShaderLayer.requiresInteraction(), default false. True on fisheye-lens +
+   interaction-debug. Declares the layer GLSL reads host-forwarded pointer state (fr_interaction_*
+   helpers). Hosts read it off the registered class -
+   ShaderLayerRegistry.get(type).requiresInteraction() - before constructing anything, instead of
+   regex-scanning generated GLSL.
+ * Why: interaction forwarding is off by default, every changed pointer move triggers a redraw ->
+   host must know which layers are worth it.
+ * NOT a veto, unlike supportsHighPrecision(). Nothing in the renderer changes; layer renders its
+   inactive branch when state is missing. Unrelated to a UI control `interactive` flag.
+ * FlexDrawer warns once per shader type when such a layer is built while forwarding is disabled.
+   Names the type + the fix (setInteractionEnabled(true)). Never enables forwarding itself; warning
+   re-arms if forwarding is turned off again.
+ * Published: compileDocsModel() reports requiresInteraction per shader, model version 6 -> 7,
+   renders badge + note on docs page. compileConfigSchemaModel() emits x-requiresInteraction: true
+   on that shader's layer schema, absent when false.
+
+Interaction forwarding:
+ * FIX drawer-side forwarding observed the drawer's own WebGL canvas -> any host stacking an overlay
+   above it (xOpat fabric annotation layer covers the viewer completely) got ZERO
+   pointerdown/pointermove. Interaction uniforms stayed at zero defaults while
+   isInteractionEnabled() still read true.
+ * Listeners now bind to the drawer container - the viewer canvas div OpenSeadragon's own
+   MouseTracker uses - ancestor of both drawer canvas and overlay-mechanism overlays -> events
+   arrive by bubbling. pointerenter/pointerleave dispatch to ancestors even without bubbling ->
+   observer set unchanged.
+ * NEW interaction.eventTarget option: element, CSS selector, or drawer => element. For hosts whose
+   overlay stack lives outside that subtree. Changing it while forwarding is enabled moves the
+   listeners.
+ * clientPointToFramebufferPx() takes its client rect from the PRESENTED CANVAS, not from whichever
+   element listeners are bound to. Same element before; with container as default target the old
+   code would offset every reported pointer position by the container inset.
+ * FlexDrawer hit-tests the event target one frame after attaching, warns when another element
+   covers it. Names covering element + two fixes (interaction.eventTarget, or drive
+   setInteractionState from the host). Last silent failure mode in forwarding.
+ * fisheye-lens buttonMask defaults 2 (secondary button). BEHAVIOUR CHANGE - primary button pans the
+   OpenSeadragon viewport, so old default 1 made the lens unusable unless the host suppressed viewer
+   input globally via viewerInputCaptureMode. Set interaction.preventContextMenu to keep the browser
+   menu away. Configs pinning buttonMask unaffected.
+ * fisheye-lens NEW buttonMask -1 = "None (hover)", active whenever pointer is inside. 0 stays "any
+   button, but some button" -> there was no hover-only mode before. Hover needs no viewer input
+   capture.
+
+UI controls:
+ * FIX colormap + advanced_slider dereferenced their DOM mount unchecked; every other control
+   (including colormap's own non-interactive branch) guards. Throw swallowed by FlexRenderer
+   per-shader init() catch into "The shader control will not work." -> control whose markup was not
+   mounted in time looked like a styling bug (empty select, empty 9px div) with no way to tell it
+   from an unstyled control. Both now skip interactive wiring and report the control id through
+   shared IControl#_warnMissingNode(), silent when the renderer has no htmlHandler (navigator,
+   standalone, offscreen) and a missing node is expected.
+ * FIX "FlexDrawer: failed to sync navigator control state ... IControl::set() must be implemented."
+   colormap, custom_colormap, advanced_slider, text_area, button never implemented set() -> every
+   navigator state sync and cache restore threw, navigator kept stale values. All registered
+   controls now implement the full IControl API. NEW test module ControlApi fails the build if one
+   stops.
+ * FIX TextArea + Button called jQuery methods ($(...).val/.html/.click) on the OpenSeadragon
+   namespace -> init() threw, neither control ever worked. Plain DOM now.
+ * FIX checkbox (bool) never followed a programmatic value change - set() assigned node.value, state
+   lives in node.checked. Control components can provide optional applyToNode(node, encoded).
+ * FIX control falling back to its default type got the params object in place of its DOM id ->
+   unlocatable in the document.
+ * FIX navigator sync compared array-valued encoded state by identity -> re-applied every redraw.
+ * AdvancedSlider#set() also accepts {breaks, mask} - both halves of state at once. encoded still
+   returns the breaks array.
+ * Icon encodes "no icon selected" as empty string, the shape it loads back.
+ * grunt test/coverage accept --port, for when 8888 is taken.
+
+GeoJSONTileSource:
+ * style can derive color per feature: class label, property path, or colormap over a numeric
+   property. See GEOJSON.md. Defaults unchanged.
+ * color fields accept hex strings, 0-255 arrays, 0..1 arrays, QuPath packed ints.
+ * NEW setStyle() - re-meshes without refetching or reindexing the source.
+ * Malformed features skipped + reported, was permanently failing every tile of the source.
+
 0.0.1
 This is a plugin for OpenSeadragon that adds the flex renderer.
-

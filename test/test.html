@@ -29,7 +29,14 @@
     <script src="/test/lib/jquery-1.9.1.min.js"></script>
     <script src="/test/lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js"></script>
     <script src="/test/lib/jquery.simulate.js"></script>
+    <!-- AJV 6 (transitive, via eslint). Kept first so window.Ajv stays populated. -->
     <script src="/node_modules/ajv/dist/ajv.min.js"></script>
+    <!-- AJV 8, vendored: the npm package ships only a CommonJS dist/ajv.js, no browser bundle, and
+         making it a direct devDependency would take over node_modules/ajv and break the line above.
+         The 2020 build specifically -- the published schema declares the 2020-12 dialect, which the
+         draft-07 build cannot compile. Exposes window.ajv2020, which configurator.js already probes
+         for ahead of window.Ajv, and which supports the `discriminator` keyword the schema emits. -->
+    <script src="/test/lib/ajv2020-8.17.1.min.js"></script>
 
     <script src="/openseadragon/openseadragon.min.js"></script>
     <script src="/build/openseadragon/flex-renderer.min.js"></script>
@@ -44,5 +51,21 @@
     <script src="/test/modules/multi-image.js"></script>
     <script src="/test/modules/drawer.js"></script>
     <script src="/test/modules/schema-config.js"></script>
+    <script src="/test/modules/control-api.js"></script>
+    <script src="/test/modules/precision.js"></script>
+    <script src="/test/modules/pack-formats.js"></script>
+    <script src="/test/modules/shared-program-state.js"></script>
+    <script src="/test/modules/rebuild-failure.js"></script>
+    <script src="/test/modules/empty-order-blank.js"></script>
+    <script src="/test/modules/wrapper-param-placement.js"></script>
+    <script src="/test/modules/relink-diagnostics.js"></script>
+    <script src="/test/modules/draw-buffer-hygiene.js"></script>
+    <script src="/test/modules/interaction-requirement.js"></script>
+    <script src="/test/modules/standalone-extract.js"></script>
+    <script src="/test/modules/backdrop-residue.js"></script>
+    <script src="/test/modules/standalone-shared-context.js"></script>
+    <script src="/test/modules/standalone-drawer-overrides.js"></script>
+    <script src="/test/modules/grid-dpr.js"></script>
+    <script src="/test/modules/mvt-partial-tile-uv.js"></script>
 </body>
 </html>

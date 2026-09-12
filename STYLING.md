@@ -201,6 +201,13 @@ Advanced control elements:
 - `.er-control__input--icon-color`
 - `.er-control__results--icon`
 
+The icon control renders its glyphs onto a `<canvas>`, so its colors come from
+the control's own color input rather than from CSS. What the host page *does*
+own is the icon font itself: FlexRenderer bundles no webfont, and the Phosphor
+and Font Awesome sets render only once the page loads the corresponding font.
+See "Icon Fonts" in [README.md](README.md#icon-fonts) for the set/font table and
+the stylesheet links. The default `html-glyphs` set needs no font at all.
+
 ### Suggested styling pattern
 
 Use the base classes for broad styling and the modifiers for exceptions.

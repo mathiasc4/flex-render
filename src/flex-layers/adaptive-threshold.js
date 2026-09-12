@@ -16,7 +16,7 @@
         static docs() {
             return {
                 summary: "Adaptive threshold shader for a single scalar input channel.",
-                description: "Computes a local statistic over a square neighborhood and compares the center sample against localStat - C. The neighborhood may be uniformly weighted or approximately Gaussian weighted.",
+                description: "Computes a local statistic over a square source-pixel neighborhood and compares the center sample against localStat - C. The neighborhood may be uniformly weighted or approximately Gaussian weighted.",
                 kind: "shader",
                 inputs: [{
                     index: 0,
@@ -131,9 +131,15 @@ float ${fnWeight}(in float dx, in float dy, in float radius, in bool gaussianMod
             const ch = this.getDefaultChannelBase();
             const fnWeight = `adaptive_threshold_weight_${this.uid}`;
 
-            // Your preferred form
+            // v_texture_coords belongs to the full-screen second pass, while the source
+            // neighbourhood is expressed in source-image pixels.  pixelSize is supplied by
+            // the drawer as screen pixels per source pixel and is derived from the actual
+            // tiled-image dimensions and viewport scale.  Convert that distance to normalized
+            // framebuffer coordinates; using only getTextureSize() would make the window
+            // screen-sized and produces a flat class when the source is downsampled.
+            const textureSizeExpr = this.getTextureSize();
             const texelSizeExpr =
-                `vec2(1.0) / vec2(float(${this.getTextureSize()}.x), float(${this.getTextureSize()}.y))`;
+                `max(pixelSize, 0.000001) / vec2(float(${textureSizeExpr}.x), float(${textureSizeExpr}.y))`;
 
             // Fixed compile-time bound; runtime block_size chooses active neighborhood inside it.
             // block_size max = 11 -> radius max = 5
@@ -148,7 +154,8 @@ float ${fnWeight}(in float dx, in float dy, in float radius, in bool gaussianMod
 
     vec2 texelSize = ${texelSizeExpr};
 
-    float blockSize = ${this.block_size.sample()};
+    // range_input controls arrive normalized to [0, 1]; restore their declared ranges.
+    float blockSize = mix(3.0, 11.0, ${this.block_size.sample()});
     float radius = floor(blockSize * 0.5);
     float center = ${sampleAt("v_texture_coords")};
 
@@ -172,7 +179,8 @@ float ${fnWeight}(in float dx, in float dy, in float radius, in bool gaussianMod
     }
 
     float localStat = (wsum > 0.0) ? (sum / wsum) : center;
-    float thresholdValue = localStat - ${this.c_value.sample()};
+    float cValue = mix(-0.5, 0.5, ${this.c_value.sample()});
+    float thresholdValue = localStat - cValue;
     float mask = step(thresholdValue, center);
 
     if (${this.invert.sample()}) {
