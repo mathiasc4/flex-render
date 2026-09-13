@@ -169,7 +169,7 @@ $.FlexRenderer.UIControls = class {
 
             // if cannot use the new control type, try to use the default one
             if (!this._impls[controlType]) {
-                return this._buildFallback(controlType, originalType, owner, controlName, controlObject, params);
+                return this._buildFallback(controlType, originalType, owner, controlName, controlObject, controlId, params);
             }
 
             let cls = new this._impls[controlType](owner, controlName, controlId, params);
@@ -179,7 +179,7 @@ $.FlexRenderer.UIControls = class {
             }
 
             // cannot built with custom implementation, try to build with a default one
-            return this._buildFallback(controlType, originalType, owner, controlName, controlObject, params);
+            return this._buildFallback(controlType, originalType, owner, controlName, controlObject, controlId, params);
 
         } else { // control's type (eg.: range/number/...) is defined in this._items
             let intristicComponent = this.getUiElement(params.type);
@@ -191,11 +191,11 @@ $.FlexRenderer.UIControls = class {
                 return comp;
             }
             return this._buildFallback(intristicComponent.glType, originalType,
-                owner, controlName, controlObject, params);
+                owner, controlName, controlObject, controlId, params);
         }
     }
 
-    static _buildFallback(newType, originalType, owner, controlName, controlObject, customParams) {
+    static _buildFallback(newType, originalType, owner, controlName, controlObject, controlId, customParams) {
         //repeated check when building object from type
 
         customParams.interactive = false;
@@ -205,7 +205,7 @@ $.FlexRenderer.UIControls = class {
         } else { //otherwise try to build with originalType (default)
             customParams.type = originalType;
             console.warn("Incompatible UI control type '" + newType + "': making the input non-interactive.");
-            return this.build(owner, controlName, controlObject, customParams);
+            return this.build(owner, controlName, controlObject, controlId, customParams);
         }
     }
 
@@ -219,6 +219,10 @@ $.FlexRenderer.UIControls = class {
                                                 gl[glUniformFunName()](...) can pass to GPU
         glType: //what's the type of this parameter wrt. GLSL: int? vec3?
         docs: object|function // optional machine-readable docs descriptor
+        applyToNode: function(node, encodedValue) {...} //optional; how to write the encoded value back
+                                                to the DOM element. Defaults to 'node.value = encodedValue',
+                                                which is wrong for inputs whose state lives elsewhere
+                                                (checkbox 'checked'). Not part of the required contract.
      * @param type the identifier under which is this control used: lookup made against params.type
      * @param uiElement the object to register, fulfilling the above-described contract
      */
@@ -436,6 +440,13 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
         decode: function(fromValue) {
             return fromValue && fromValue !== "false" ? 1 : 0;
         },
+        // A checkbox' user-visible state is 'checked', not 'value'; the html() hack above only
+        // mirrors it into 'value' on user-driven change events, so a programmatic write must
+        // set both or the DOM and the control drift apart.
+        applyToNode: function(node, encodedValue) {
+            node.checked = !!this.decode(encodedValue);
+            node.value = node.checked;
+        },
         normalize: function(value, params) {
             return value;
         },
@@ -501,6 +512,10 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
         decode: function(fromValue) {
             const parsed = Number.parseInt(fromValue, 10);
             return Number.isNaN(parsed) ? 0 : parsed;
+        },
+        // <option value> is always a string: assigning a number silently fails to select anything.
+        applyToNode: function(node, encodedValue) {
+            node.value = String(this.decode(encodedValue));
         },
         normalize: function(value, params) {
             return value;
@@ -578,6 +593,30 @@ $.FlexRenderer.UIControls.IControl = class IControl {
         this.webGLVariableName = `${name}_${owner.uid}`;
         this._params = {};
         this.__onchange = {};
+    }
+
+    /**
+     * Report a control whose HTML mount is not present in the DOM.
+     *
+     * Control init() runs inside FlexRenderer's per-shader try/catch, which reduces any throw to a
+     * generic "the shader control will not work" and drops the reason. A missing mount is a host
+     * integration problem (markup not inserted, or inserted after init), so it is reported here
+     * where the control identity is still known and the caller skips the interactive wiring.
+     *
+     * Silent when the renderer has no htmlHandler: such a configuration renders without control
+     * markup on purpose (navigator drawer, standalone/offscreen rendering), so an absent node is
+     * expected rather than a fault.
+     *
+     * @param {string} className control class name used in the message
+     * @param {string} [detail] what the absent node costs
+     */
+    _warnMissingNode(className, detail = "Cannot set event listener for the control.") {
+        const renderer = this.owner && this.owner._renderer;
+        if (!renderer || !renderer.htmlHandler) {
+            return;
+        }
+        console.warn(`$.FlexRenderer.UIControls.${className}::init: HTML element with id =`,
+            this.id, "not found!", detail);
     }
 
     /**
@@ -709,7 +748,6 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * TODO: improve overall setter API
      * Allows to set the control value programatically.
      * Does not trigger canvas re-rednreing, must be done manually (e.g. control.owner.invalidate()).
-     * You should raise the 'change' event when the value is changed.
      * @param encodedValue any value the given control can support, encoded
      *  (e.g. as the control acts on the GUI - for input number of
      *    values between 5 and 42, the value can be '6' or 6 or 6.15
@@ -811,7 +849,7 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * @return {{}}
      */
     get supportsAll() {
-        throw "FlexRenderer.UIControls.IControl::typeDefs must be implemented.";
+        throw "FlexRenderer.UIControls.IControl::supportsAll must be implemented.";
     }
 
     /**
@@ -949,8 +987,8 @@ $.FlexRenderer.UIControls.IControl = class IControl {
             shaderType: this.owner.constructor.type(),
             controlName: this.name,
             controlVariableName: event,  // we use here event for names of the control vars like 'default', 'breaks'
-            encodedValue: this.encodedValue,
-            value: this.value
+            encodedValue: encodedValue,
+            value: value
         });
     }
 
@@ -1041,18 +1079,38 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
                     _this.owner.invalidate();
                 };
 
-                // TODO: some elements do not have 'value' attribute, but 'checked' or 'selected' instead
-                node.value = this.encodedValue;
+                this._applyToNode(node, this.encodedValue);
                 node.addEventListener('change', updater);
-            } else if (this.owner._renderer.htmlHandler) {
-                console.warn('$.FlexRenderer.UIControls.SimpleUIControl::init: HTML element with id =', this.id, 'not found! Cannot set event listener for the control.');
+            } else {
+                this._warnMissingNode("SimpleUIControl");
             }
+        }
+    }
+
+    /**
+     * Write the encoded value to the control's DOM element. Components whose input keeps its state
+     * somewhere other than 'value' (checkbox 'checked', select needing a string) provide their own
+     * 'applyToNode'; the rest use the plain assignment.
+     */
+    _applyToNode(node, encodedValue) {
+        if (typeof this.component.applyToNode === "function") {
+            this.component.applyToNode(node, encodedValue);
+        } else {
+            node.value = encodedValue;
         }
     }
 
     set(encodedValue) {
         this.encodedValue = encodedValue;
         this.value = this.component.normalize(this.component.decode(this.encodedValue), this.params);
+
+        if (this.params.interactive) {
+            let node = document.getElementById(this.id);
+            if (node) {
+                // no synthetic 'change' event dispatched here: the listener from init() would re-enter set()
+                this._applyToNode(node, this.encodedValue);
+            }
+        }
 
         this.changed("default", this.value, this.encodedValue, this);
         this.store(this.encodedValue);
@@ -1063,6 +1121,19 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
         if (this._needsLoad) {
             // debugging purposes
             // console.debug('Setting', this.component.glUniformFunName(), 'corresponding to', this.webGLVariableName, 'to value', this.value);
+
+            // A uniform upload is only valid while its own program is the current one. Under a
+            // shared WebGL context CURRENT_PROGRAM is context-global, so a stale binding shows up
+            // here as "location is not from the associated program" with no clue which control is
+            // responsible. Debug-only: getParameter is a pipeline stall.
+            if (this.owner && this.owner.backend && this.owner.backend.renderer &&
+                    this.owner.backend.renderer.debug &&
+                    gl.getParameter(gl.CURRENT_PROGRAM) !== program) {
+                $.console.error(
+                    `FlexRenderer: control '${this.webGLVariableName}' of shader '${this.owner.id}' ` +
+                    `is uploading while a different program is bound. The uniform will be rejected.`
+                );
+            }
 
             gl[this.component.glUniformFunName()](this.glLocation, this.value);
             this._needsLoad = false;
@@ -1159,6 +1230,7 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
                 c2.value = encoded;
             }
             _this._c2.value = value;
+            _this._c2.encodedValue = encoded;
             _this.changed("default", value, encoded, owner);
         }, true); //silently fail if registered
         this._c2.on("default", function(value, encoded, owner) {
@@ -1167,14 +1239,23 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
                 c1.value = encoded;
             }
             _this._c1.value = value;
+            _this._c1.encodedValue = encoded;
             // Only C1 loads values to gpu, request change
             _this._c1._needsLoad = true;
             _this.changed("default", value, encoded, owner);
         }, true); //silently fail if registered
     }
 
-    glDrawing(program, dimension, gl) {
-        this._c1.glDrawing(program, dimension, gl);
+    /**
+     * Writing the range half is enough: its "default" handler registered in init()
+     * mirrors the value into _c2 (and its DOM node) and raises the change event on this control.
+     */
+    set(encodedValue) {
+        this._c1.set(encodedValue);
+    }
+
+    glDrawing(program, gl) {
+        this._c1.glDrawing(program, gl);
     }
 
     glLoaded(program, gl) {
@@ -1231,6 +1312,10 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
 
     get supports() {
         return this._c1.supports;
+    }
+
+    get supportsAll() {
+        return this._c1.supportsAll;
     }
 
     get params() {

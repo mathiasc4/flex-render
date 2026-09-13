@@ -40,7 +40,9 @@ const drawerOptions = {
             enabled: true,
             preventContextMenu: true,
             notifyOnMove: false,
-            viewerInputCaptureMode: "drag"
+            // The fisheye lens defaults to the secondary button, which OpenSeadragon does not use
+            // for navigation, so no viewer input capture is needed to drive it.
+            viewerInputCaptureMode: "none"
         },
         htmlHandler: renderShaderLayerControls,
         htmlReset: resetShaderLayerControls
@@ -172,6 +174,12 @@ function renderShaderConfigPanel() {
             Drag layers to reorder them. Keep at least one layer above and below Interaction Debug
             to test composition. Toggle visibility, mode, blend, type, and image source to validate
             that the interaction layer behaves as a regular ShaderLayer.
+        </p>
+
+        <p class="shader-config-help">
+            The fisheye lens is driven by the <strong>secondary (right) button</strong> by default —
+            the primary button pans the viewport. Set its Button control to
+            <em>None (hover)</em> to drive it by hover alone, with no viewer input capture.
         </p>
     `);
 

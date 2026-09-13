@@ -65,17 +65,6 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
         };
     }
 
-    static _readWrapperParam(config, name, fallback = undefined) {
-        const params = (config && config.params) || {};
-        if (params[name] !== undefined) {
-            return params[name];
-        }
-        if (config && config[name] !== undefined) {
-            return config[name];
-        }
-        return fallback;
-    }
-
     static get defaultControls() {
         return {
             timeline: {
@@ -92,13 +81,11 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
             return config;
         }
 
-        const params = config.params || (config.params = {});
-        if (config.series !== undefined && params.series === undefined) {
-            params.series = config.series;
-        }
-        if (config.seriesRenderer !== undefined && params.seriesRenderer === undefined) {
-            params.seriesRenderer = config.seriesRenderer;
-        }
+        // Lifts legacy top-level `series` / `seriesRenderer` into params and removes the originals.
+        // The hoist used to leave them behind, which kept the normalized config failing the
+        // published (params-only, additionalProperties: false) schema it had just been made to obey.
+        this.hoistWrapperParams(config, ["series", "seriesRenderer"]);
+        const params = config.params;
 
         const series = Array.isArray(params.series) ? params.series : [];
         const defs = this.defaultControls || {};
@@ -212,7 +199,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
         return {
             id: `${this.id}_delegate`,
             name: config.name || "Time series delegate",
-            type: this.constructor._readWrapperParam(config, "seriesRenderer", "identity"),
+            type: this.constructor.readWrapperParam(config, "seriesRenderer", "identity"),
             visible: 1,
             fixed: false,
             tiledImages: activeWorldIndex === null ? [] : [activeWorldIndex],
@@ -224,7 +211,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     construct() {
         const config = this.getConfig();
         const params = config.params || (config.params = {});
-        const rawSeries = this.constructor._readWrapperParam(config, "series", []);
+        const rawSeries = this.constructor.readWrapperParam(config, "series", []);
         const series = Array.isArray(rawSeries) ? rawSeries : [];
         const timeline = params.timeline || (params.timeline = {});
         const min = Number(timeline.min) || 0;
@@ -305,7 +292,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     }
 
     scrubTo(offset) {
-        const series = this.constructor._readWrapperParam(this.getConfig(), "series", []);
+        const series = this.constructor.readWrapperParam(this.getConfig(), "series", []);
         if (!Array.isArray(series) || series.length === 0) {
             return;
         }

@@ -215,66 +215,102 @@
             viewer.open('/test/data/testpattern.dzi');
         });
 
-        QUnit.test('Transparent image on top of others', function(assert) {
-            var done = assert.async();
-            viewer.open('/test/data/testpattern.dzi');
+        // The html drawer renders into <div>s, so there is no surface to read pixels back
+        // from; this test is only meaningful for the canvas-backed drawers.
+        if (drawerType !== 'html') {
+            QUnit.test('Transparent image on top of others', function(assert) {
+                var done = assert.async();
+                viewer.open('/test/data/testpattern.dzi');
 
-            function getPixelFromViewerScreenCoords(x, y) {
-                const density = OpenSeadragon.pixelDensityRatio;
-                const imageData = viewer.drawer.context.getImageData(x * density, y * density, 1, 1);
-                return {
-                    r: imageData.data[0],
-                    g: imageData.data[1],
-                    b: imageData.data[2],
-                    a: imageData.data[3]
-                };
-            }
+                // Drawer-agnostic readback: only canvas/webgl expose a 2D `.context`, but every
+                // canvas-backed drawer exposes `.canvas`, so snapshot that into a scratch 2D
+                // canvas (same approach as test/modules/backdrop-residue.js).
+                function getPixelFromViewerScreenCoords(x, y) {
+                    const density = OpenSeadragon.pixelDensityRatio;
+                    const source = viewer.drawer.canvas;
+                    const scratch = document.createElement('canvas');
+                    scratch.width = source.width;
+                    scratch.height = source.height;
+                    const ctx = scratch.getContext('2d', { willReadFrequently: true });
+                    ctx.drawImage(source, 0, 0);
+                    const data = ctx.getImageData(x * density, y * density, 1, 1).data;
+                    return {
+                        r: data[0],
+                        g: data[1],
+                        b: data[2],
+                        a: data[3]
+                    };
+                }
 
-            viewer.addHandler('open', function() {
-                var firstImage = viewer.world.getItemAt(0);
-                firstImage.addHandler('fully-loaded-change', function() {
-                    viewer.addOnceHandler('update-viewport', function(){
-                        // Pixel 250,250 will be in the hole of the A
-                        var expectedVal = getPixelFromViewerScreenCoords(250, 250);
+                // A drawer may schedule work of its own when the world changes (the
+                // flex-renderer drawer rebuilds its programs on a timeout), so the first
+                // update-viewport after a load can still show the previous frame. Redraw on
+                // a bounded deadline until the frame settles; on timeout the assertions run
+                // anyway and report the stale pixels.
+                function pollForFrame(predicate, onSettled) {
+                    var deadline = OpenSeadragon.now() + 5000;
+                    (function tick() {
+                        if (predicate() || OpenSeadragon.now() > deadline) {
+                            onSettled();
+                            return;
+                        }
+                        viewer.forceRedraw();
+                        setTimeout(tick, 50);
+                    })();
+                }
 
-                        assert.notEqual(expectedVal.r, 0, 'Red channel should not be 0');
-                        assert.notEqual(expectedVal.g, 0, 'Green channel should not be 0');
-                        assert.notEqual(expectedVal.b, 0, 'Blue channel should not be 0');
-                        assert.notEqual(expectedVal.a, 0, 'Alpha channel should not be 0');
+                viewer.addHandler('open', function() {
+                    var firstImage = viewer.world.getItemAt(0);
+                    firstImage.addHandler('fully-loaded-change', function() {
+                        viewer.addOnceHandler('update-viewport', function(){
+                            // Pixel 250,250 will be in the hole of the A
+                            var expectedVal = getPixelFromViewerScreenCoords(250, 250);
 
-                        viewer.addSimpleImage({
-                            url: '/test/data/A.png',
-                            success: function() {
-                                var secondImage = viewer.world.getItemAt(1);
-                                secondImage.addHandler('fully-loaded-change',  function() {
-                                    viewer.addOnceHandler('update-viewport', function(){
-                                        var actualVal = getPixelFromViewerScreenCoords(250, 250);
+                            assert.notEqual(expectedVal.r, 0, 'Red channel should not be 0');
+                            assert.notEqual(expectedVal.g, 0, 'Green channel should not be 0');
+                            assert.notEqual(expectedVal.b, 0, 'Blue channel should not be 0');
+                            assert.notEqual(expectedVal.a, 0, 'Alpha channel should not be 0');
 
-                                        assert.equal(actualVal.r, expectedVal.r,
-                                            'Red channel should not change in transparent part of the A');
-                                        assert.equal(actualVal.g, expectedVal.g,
-                                            'Green channel should not change in transparent part of the A');
-                                        assert.equal(actualVal.b, expectedVal.b,
-                                            'Blue channel should not change in transparent part of the A');
-                                        assert.equal(actualVal.a, expectedVal.a,
-                                            'Alpha channel should not change in transparent part of the A');
+                            viewer.addSimpleImage({
+                                url: '/test/data/A.png',
+                                success: function() {
+                                    var secondImage = viewer.world.getItemAt(1);
+                                    secondImage.addHandler('fully-loaded-change',  function() {
+                                        viewer.addOnceHandler('update-viewport', function(){
+                                            // wait until the second image has reached the surface
+                                            pollForFrame(function() {
+                                                var px = getPixelFromViewerScreenCoords(333, 250);
+                                                return px.a === 255 && px.r === 0 && px.g === 0 && px.b === 0;
+                                            }, function() {
+                                                var actualVal = getPixelFromViewerScreenCoords(250, 250);
 
-                                        var onAVal = getPixelFromViewerScreenCoords(333 , 250);
-                                        assert.equal(onAVal.r, 0, 'Red channel should be 0 on the A');
-                                        assert.equal(onAVal.g, 0, 'Green channel should be 0 on the A');
-                                        assert.equal(onAVal.b, 0, 'Blue channel should be 0 on the A');
-                                        assert.equal(onAVal.a, 255, 'Alpha channel should be 255 on the A');
+                                                assert.equal(actualVal.r, expectedVal.r,
+                                                    'Red channel should not change in transparent part of the A');
+                                                assert.equal(actualVal.g, expectedVal.g,
+                                                    'Green channel should not change in transparent part of the A');
+                                                assert.equal(actualVal.b, expectedVal.b,
+                                                    'Blue channel should not change in transparent part of the A');
+                                                assert.equal(actualVal.a, expectedVal.a,
+                                                    'Alpha channel should not change in transparent part of the A');
 
-                                        done();
+                                                var onAVal = getPixelFromViewerScreenCoords(333 , 250);
+                                                assert.equal(onAVal.r, 0, 'Red channel should be 0 on the A');
+                                                assert.equal(onAVal.g, 0, 'Green channel should be 0 on the A');
+                                                assert.equal(onAVal.b, 0, 'Blue channel should be 0 on the A');
+                                                assert.equal(onAVal.a, 255, 'Alpha channel should be 255 on the A');
+
+                                                done();
+                                            });
+                                        });
+                                        // trigger a redraw so the event fires
+                                        firstImage.redraw();
                                     });
-                                    // trigger a redraw so the event fires
-                                    firstImage.redraw();
-                                });
-                            }
+                                }
+                            });
                         });
                     });
                 });
             });
-        });
+        }
     }
 })();

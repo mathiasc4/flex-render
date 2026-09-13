@@ -88,9 +88,17 @@ Feed it to the renderer as:
 { width, height, channelCount: 4, packs: [{ format: "RGBA16F", data: uint16Array }] }
 ```
 
+`--format {RGBA16F,RG16F,R16F}` writes the same field with the trailing channels
+dropped: `RGBA16F` keeps the `ki67_f16.*` names above, the narrow ones write
+`ki67_rg16f.*` and `ki67_r16f.*`. They carry 2 and 1 components per texel, so
+`R16F` is a quarter of the bytes; use them to exercise the narrow tile-upload path
+and the cross-pack channel addressing that follows from it. Note that sampling a
+narrow pack returns the missing components as a format fill — `0` for colour and
+`1` for alpha — not as payload.
+
 ## Field reference
 
-`test/demo/synthetic-pathology-sources.js` installs four tile sources:
+`test/demo/synthetic-pathology-sources.js` installs six tile sources:
 
 | `type`             | payload                    | notes                                              |
 | ------------------ | -------------------------- | -------------------------------------------------- |
@@ -98,6 +106,8 @@ Feed it to the renderer as:
 | `synthetic-scalar` | canvas / `image`           | `field:` one of the fields below                    |
 | `synthetic-if`     | 2× RGBA8 `gpuTextureSet`   | 8 markers: DAPI, CD3, CD8, CD20, PanCK, Ki-67, CD68, aSMA |
 | `synthetic-f16`    | 1× RGBA16F `gpuTextureSet` | declares `getTileDataPrecision() → "float16"`       |
+| `synthetic-r16f`   | 1× R16F `gpuTextureSet`    | the same Ki-67 score at a quarter of the memory     |
+| `synthetic-rg16f`  | 2× RG16F `gpuTextureSet`   | 4 markers, channels 2-3 in pack 1 — crosses a pack boundary |
 
 Scalar fields: `tumour-prob`, `grade-classes`, `nuclei-density`,
 `expression-delta`, `mask`, `truth-hematoxylin`, `class-stroma`,

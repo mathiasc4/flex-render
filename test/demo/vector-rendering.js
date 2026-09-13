@@ -114,7 +114,34 @@ function createImageOptionsElement(key, label){
 
 // ---------- Icon mapping UI (MVT only) ----------
 
-const ICON_SETS = ["html-glyphs", "fa-solid-common", "fa-regular-common", "fa-brands-common"];
+const ICON_SETS = [
+    "html-glyphs",
+    "ph-regular-common", "ph-fill-common", "ph-brands-common",
+    "fa-solid-common", "fa-regular-common", "fa-brands-common"
+];
+
+// flex-renderer ships icon metadata only — no webfonts. Everything except
+// "html-glyphs" stays blank until the host page loads the matching font, which
+// is what these buttons do. The renderer picks the icons up on its own once
+// document.fonts reports the family; no reload needed.
+const ICON_FONTS = [
+    {
+        id: "phosphor",
+        label: "Load Phosphor",
+        sets: "ph-*",
+        hrefs: [
+            "https://unpkg.com/@phosphor-icons/web@2.1.2/src/regular/style.css",
+            "https://unpkg.com/@phosphor-icons/web@2.1.2/src/fill/style.css"
+        ]
+    },
+    {
+        id: "fontawesome",
+        label: "Load Font Awesome",
+        sets: "fa-*",
+        hrefs: ["https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css"]
+    }
+];
+
 const DEFAULT_NEW_CLASS_SPEC = { icon: "●", iconSet: "html-glyphs", color: "#333333" };
 
 function buildIconMappingPanelMarkup(key) {
@@ -124,7 +151,7 @@ function buildIconMappingPanelMarkup(key) {
     <div class="icon-mapping-header">
         <span>Place icon mapping (vector "place" layer)</span>
         <span class="actions">
-            <button type="button" data-action="load-fa">Load Font Awesome</button>
+            ${ICON_FONTS.map(font => `<button type="button" data-action="load-font" data-font="${font.id}" title="Needed for the ${font.sets} sets">${font.label}</button>`).join("")}
             <button type="button" data-action="reset-defaults">Reset to defaults</button>
         </span>
     </div>
@@ -284,25 +311,45 @@ function applyIconPanelToSource() {
 
     if (typeof src.refreshIcons === "function") {
         src.refreshIcons();
-        setIconStatus(panel, "Updated. Pan/zoom or wait if Font Awesome is still loading.");
+        setIconStatus(panel, "Updated. Pan/zoom, or wait if the icon webfont is still loading.");
     }
 }
 
 function wireIconMappingPanel(panel) {
-    panel.querySelector('[data-action="load-fa"]').addEventListener("click", () => {
-        if (document.querySelector('link[data-fa-loader]')) {
-            setIconStatus(panel, "Font Awesome already loaded.");
-            return;
-        }
-        const link = document.createElement("link");
-        link.rel = "stylesheet";
-        link.href = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css";
-        link.setAttribute("data-fa-loader", "1");
-        document.head.appendChild(link);
-        setIconStatus(panel, "Font Awesome loading…");
-        link.addEventListener("load", () => {
-            setIconStatus(panel, "Font Awesome loaded.");
-            applyIconPanelToSource();
+    panel.querySelectorAll('[data-action="load-font"]').forEach((button) => {
+        const font = ICON_FONTS.find(entry => entry.id === button.dataset.font);
+        button.addEventListener("click", () => {
+            if (document.querySelector(`link[data-icon-font="${font.id}"]`)) {
+                setIconStatus(panel, `${font.label.replace("Load ", "")} already loaded.`);
+                return;
+            }
+            setIconStatus(panel, `${font.label.replace("Load ", "")} loading…`);
+            let remaining = font.hrefs.length;
+            font.hrefs.forEach((href) => {
+                const link = document.createElement("link");
+                link.rel = "stylesheet";
+                link.href = href;
+                link.setAttribute("data-icon-font", font.id);
+                link.addEventListener("load", () => {
+                    remaining -= 1;
+                    if (remaining > 0) {
+                        return;
+                    }
+                    // The stylesheet only declares @font-face; wait for the
+                    // webfont itself before re-resolving, otherwise the first
+                    // pass still sees the family as unavailable.
+                    const done = () => {
+                        setIconStatus(panel, `${font.label.replace("Load ", "")} loaded — ${font.sets} sets ready.`);
+                        applyIconPanelToSource();
+                    };
+                    if (document.fonts && document.fonts.ready) {
+                        document.fonts.ready.then(done, done);
+                    } else {
+                        done();
+                    }
+                });
+                document.head.appendChild(link);
+            });
         });
     });
 

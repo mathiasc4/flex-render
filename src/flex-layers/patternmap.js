@@ -30,7 +30,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     }
 
     static description() {
-        return "Heatmap rendered through a sparse pattern (grid / diagonal / crosshatch / dots) so the underlying slide remains visible. Color/threshold/inverse behave like the heatmap shader; pattern spacing and line width are in screen pixels and stay constant under zoom. Offset and rotation exist to phase-shift stacked overlays and are non-interactive by default.";
+        return "Heatmap rendered through a sparse pattern (grid / diagonal / crosshatch / dots) so the underlying slide remains visible. Color/threshold/inverse behave like the heatmap shader; pattern spacing and line width are in CSS pixels and stay constant under zoom and devicePixelRatio. Offset and rotation exist to phase-shift stacked overlays and are non-interactive by default.";
     }
 
     static intent() {
@@ -168,7 +168,7 @@ ${super.getFragmentShaderDefinition()}
 // Pattern alpha at fragment for patternmap_${uid}.
 //   kind     - 0 grid, 1 diagonal, 2 crosshatch, 3 dots
 //   coord    - rotated/offset coordinate in screen pixels
-//   spacing  - pattern period in screen pixels
+//   spacing  - pattern period in framebuffer pixels (caller converts from CSS px)
 //   halfW    - half line width / dot half-thickness in screen pixels
 // All distances are in screen pixels, so smoothstep feather is just fwidth()
 // (~1 fragment) — gives a stable single-pixel-wide AA edge regardless of zoom.
@@ -232,13 +232,20 @@ float patternmap_alpha_${uid}(int kind, vec2 coord, float spacing, float halfW) 
         return vec4(.0);
     }
 
-    float spacing = max(mix(${f(sp.min)}, ${f(sp.max)}, ${this.spacing.sample()}), 1.0);
-    float halfWidth = mix(${f(lw.min)}, ${f(lw.max)}, ${this.line_width.sample()}) * 0.5;
-    float offsetX = mix(${f(ox.min)}, ${f(ox.max)}, ${this.offset_x.sample()});
-    float offsetY = mix(${f(oy.min)}, ${f(oy.max)}, ${this.offset_y.sample()});
+    // spacing / line_width / offsets are configured in CSS px, but the coordinates
+    // below are framebuffer px, so lift them through devicePixelScale — otherwise the
+    // pattern renders 1/devicePixelRatio-sized on any HiDPI display.
+    // The pattern rotates, so spacing and line width must be single numbers: they take
+    // the x scale, the two components differing only by per-axis framebuffer rounding.
+    // The offsets are a plain translation and take their own axis.
+    vec2 dps = max(devicePixelScale, vec2(1e-6));
+    float spacing = max(mix(${f(sp.min)}, ${f(sp.max)}, ${this.spacing.sample()}), 1.0) * dps.x;
+    float halfWidth = mix(${f(lw.min)}, ${f(lw.max)}, ${this.line_width.sample()}) * 0.5 * dps.x;
+    float offsetX = mix(${f(ox.min)}, ${f(ox.max)}, ${this.offset_x.sample()}) * dps.x;
+    float offsetY = mix(${f(oy.min)}, ${f(oy.max)}, ${this.offset_y.sample()}) * dps.y;
     float angle = mix(${f(rt.min)}, ${f(rt.max)}, ${this.rotation.sample()}) * 0.017453292519943295;
 
-    // Screen-pixel coords anchored to the bound tiledImage origin. Subtracting
+    // Framebuffer-pixel coords anchored to the bound tiledImage origin. Subtracting
     // imageOriginPx keeps the pattern panning with the slide; we do *not*
     // divide by pixelSize, so spacing/line width stay constant under zoom.
     vec2 coord = (gl_FragCoord.xy - imageOriginPx) - vec2(offsetX, offsetY);

@@ -26,6 +26,10 @@
             return { dataKind: "any", channels: "any" };
         }
 
+        static requiresInteraction() {
+            return true;
+        }
+
         static exampleParams() {
             return {
                 use_mode: "show",  // eslint-disable-line camelcase
@@ -38,6 +42,7 @@
                 summary: "Interaction-uniform diagnostic overlay.",
                 description: "Draws screen-space markers from fr_interaction_* GLSL helpers. It does not sample image data and is intended for validating pointer, click, button, and drag state.",
                 kind: "shader",
+                requiresInteraction: true,
                 inputs: [],
                 controls: [],
                 notes: [

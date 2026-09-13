@@ -18,7 +18,15 @@ self.onmessage = async (e) => {
     try {
         if (msg.type === 'config') {
             EXTENT = msg.extent || EXTENT;
-            STYLE = msg.style || STYLE;
+            // Merge, do not replace: a TileJSON-derived style declares `layers`
+            // only, and dropping `fallback` turns every unstyled layer name into
+            // a throw on `fstyle.type` rather than a default-styled layer.
+            if (msg.style) {
+                STYLE = {
+                    fallback: msg.style.fallback || STYLE.fallback,
+                    layers: msg.style.layers || {}
+                };
+            }
             USE_NATIVE_LINES = msg.useNativeLines === true;
             return;
         }
@@ -38,6 +46,16 @@ self.onmessage = async (e) => {
             const {key, url, z, x, y} = msg;
 
             let tileDepth = (z << 2) + (2 * (y % 2) + (x % 2)) + 1; // we only need 2 bits to encode for the 4 possibilities for the combination of x and y
+
+            // MVT geometry is authored against the NOMINAL tile (0..extent spans a
+            // full tileSize), but the drawer maps UV 0..1 onto the tile rectangle
+            // CLIPPED at the level's right/bottom edge. The two agree only when the
+            // world is an exact multiple of the tile size. `uvScale*` (computed by
+            // the tile source, which is the only side that knows the world) carries
+            // nominal/clipped so the mesh lands where the geometry actually is;
+            // absent or non-finite it degrades to 1, i.e. today's behaviour.
+            const uvScaleX = Number.isFinite(msg.uvScaleX) && msg.uvScaleX > 0 ? msg.uvScaleX : 1;
+            const uvScaleY = Number.isFinite(msg.uvScaleY) && msg.uvScaleY > 0 ? msg.uvScaleY : 1;
 
             // lazy-load libs
             if (!self.Pbf || !self.vectorTile || !self.earcut) {
@@ -61,6 +79,9 @@ self.onmessage = async (e) => {
             for (const lname in vt.layers) {
                 const lyr = vt.layers[lname];
                 const lstyle = STYLE.layers[lname] || STYLE.fallback;
+                // extent units -> renderer UV, including the partial-tile correction.
+                const kx = uvScaleX / lyr.extent;
+                const ky = uvScaleY / lyr.extent;
 
                 for (let f = 0; f < lyr.length; f++) {
                     const feat = lyr.feature(f);
@@ -96,8 +117,8 @@ self.onmessage = async (e) => {
                                 const vertCount = flat.length / 2;
                                 const verts = new Float32Array(4 * vertCount);
                                 for (let v = 0; v < vertCount; v += 1) {
-                                    verts[4 * v + 0] = flat[2 * v + 0] / lyr.extent;
-                                    verts[4 * v + 1] = flat[2 * v + 1] / lyr.extent;
+                                    verts[4 * v + 0] = flat[2 * v + 0] * kx;
+                                    verts[4 * v + 1] = flat[2 * v + 1] * ky;
                                     verts[4 * v + 2] = tileDepth;
                                     verts[4 * v + 3] = -1;
                                 }
@@ -119,8 +140,8 @@ self.onmessage = async (e) => {
                                 const idx = new Uint32Array((pts.length - 1) * 2);
 
                                 for (let v = 0; v < pts.length; v += 1) {
-                                    verts[4 * v + 0] = pts[v].x / lyr.extent;
-                                    verts[4 * v + 1] = pts[v].y / lyr.extent;
+                                    verts[4 * v + 0] = pts[v].x * kx;
+                                    verts[4 * v + 1] = pts[v].y * ky;
                                     verts[4 * v + 2] = tileDepth;
                                     verts[4 * v + 3] = -1;
 
@@ -148,8 +169,8 @@ self.onmessage = async (e) => {
                                     const vertCount = mesh.vertices.length / 2;
                                     const verts = new Float32Array(4 * vertCount);
                                     for (let v = 0; v < vertCount; v += 1) {
-                                        verts[4 * v + 0] = mesh.vertices[2 * v + 0] / lyr.extent;
-                                        verts[4 * v + 1] = mesh.vertices[2 * v + 1] / lyr.extent;
+                                        verts[4 * v + 0] = mesh.vertices[2 * v + 0] * kx;
+                                        verts[4 * v + 1] = mesh.vertices[2 * v + 1] * ky;
                                         verts[4 * v + 2] = tileDepth;
                                         verts[4 * v + 3] = -1;
                                     }
@@ -171,10 +192,10 @@ self.onmessage = async (e) => {
                                 const pt = pts[pi];
                                 const base = verts.length / 4;
 
-                                verts.push((pt.x - size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
-                                verts.push((pt.x - size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
-                                verts.push((pt.x + size) / lyr.extent, (pt.y + size) / lyr.extent, tileDepth, -1);
-                                verts.push((pt.x + size) / lyr.extent, (pt.y - size) / lyr.extent, tileDepth, -1);
+                                verts.push((pt.x - size) * kx, (pt.y - size) * ky, tileDepth, -1);
+                                verts.push((pt.x - size) * kx, (pt.y + size) * ky, tileDepth, -1);
+                                verts.push((pt.x + size) * kx, (pt.y + size) * ky, tileDepth, -1);
+                                verts.push((pt.x + size) * kx, (pt.y - size) * ky, tileDepth, -1);
 
                                 idx.push(
                                     base + 0, base + 1, base + 2,
@@ -215,12 +236,12 @@ self.onmessage = async (e) => {
                             for (let pi = 0; pi < pts.length; pi += 1) {
                                 const pt = pts[pi];
 
-                                const xStart = (pt.x - half) / lyr.extent;
-                                const xEnd = (pt.x + half) / lyr.extent;
-                                const yStart = (pt.y - half) / lyr.extent;
-                                const yEnd = (pt.y + half) / lyr.extent;
-                                const w = (2 * half) / lyr.extent;
-                                const h = w;
+                                const xStart = (pt.x - half) * kx;
+                                const xEnd = (pt.x + half) * kx;
+                                const yStart = (pt.y - half) * ky;
+                                const yEnd = (pt.y + half) * ky;
+                                const w = (2 * half) * kx;
+                                const h = (2 * half) * ky;
 
                                 const base = verts.length / 4;
 

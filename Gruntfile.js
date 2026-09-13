@@ -37,9 +37,12 @@ module.exports = function(grunt) {
             "src/flex-modules/scalar-mask-modules.js",
             "src/flex-modules/classification-colormap-modules.js",
             "src/flex-modules/neighborhood-edge-modules.js",
+            "src/flex-module-graph-editor.js",
             "src/flex-controls/basic-controls.js",
             "src/flex-controls/advanced-controls.js",
-            "src/flex-module-graph-editor.js",
+            "src/flex-controls/icon-sets/icon-codepoints.generated.js",
+            "src/flex-controls/icon-sets/phosphor.js",
+            "src/flex-controls/icon-sets/font-awesome.js",
             "src/flex-webgl-context.js",
             "src/flex-webgl2.js",
             "src/flex-webgl2-atlas.js",
@@ -108,6 +111,9 @@ module.exports = function(grunt) {
     if (grunt.option('module')) {
         moduleFilter = '?module=' + grunt.option('module');
     }
+
+    // --port lets the suite run when something else already holds the default (docker, WSL, ...)
+    const testPort = grunt.option('port') || 8888;
 
     // ----------
     // Project configuration.
@@ -279,8 +285,14 @@ module.exports = function(grunt) {
         qunit: {
             normal: {
                 options: {
-                    urls: [ "http://localhost:8888/test/test.html" + moduleFilter ],
-                    timeout: 10000,
+                    urls: [ "http://localhost:" + testPort + "/test/test.html" + moduleFilter ],
+                    // grunt-contrib-qunit spends this budget twice over: it is the per-test QUnit
+                    // timeout AND the timeout on the initial page.goto(), which waits for `load`.
+                    // Every OSD viewer a test opens keeps tile requests pending against that same
+                    // budget, so as viewer-based modules were added the navigation started timing
+                    // out ("Navigation timeout of 10000 ms exceeded") before a single assertion ran
+                    // -- intermittently at first, then reliably. The suite itself finishes in ~13s.
+                    timeout: 60000,
                     puppeteer: {
                         headless: 'new'
                     }
@@ -288,7 +300,7 @@ module.exports = function(grunt) {
             },
             coverage: {
                 options: {
-                    urls: [ "http://localhost:8888/test/coverage.html" + moduleFilter ],
+                    urls: [ "http://localhost:" + testPort + "/test/coverage.html" + moduleFilter ],
                     coverage: {
                         src: ['src/*.js'],
                         htmlReport: coverageDir + '/html/',
@@ -308,7 +320,7 @@ module.exports = function(grunt) {
         connect: {
             server: {
                 options: {
-                    port: 8888,
+                    port: testPort,
                     base: {
                         path: ".",
                         options: {

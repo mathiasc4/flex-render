@@ -11,6 +11,15 @@
         page from loading at all. If it does not arrive, those three cards still
         render correctly and only their break sliders go dead.
     -->
+    <!--
+        flex-renderer ships icon metadata only, never the webfonts. The icon
+        control's default "html-glyphs" set needs nothing, but the Phosphor and
+        Font Awesome sets in its picker stay blank unless the host page loads
+        the fonts, which is what these three stylesheets do.
+    -->
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.2/src/regular/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.2/src/fill/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
     <style>
         :root {
             --bg: #10131a;

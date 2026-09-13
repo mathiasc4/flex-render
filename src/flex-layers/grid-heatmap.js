@@ -16,9 +16,10 @@
  *     so zooming in reveals more of the tissue under each cell.
  *
  * Like the grid layer, geometry is anchored to the bound tiledImage through the
- * drawer-provided `pixelSize` (screen-px per image-px) and `imageOriginPx`
- * uniforms, so the grid pans/zooms with the slide. With no binding pixelSize
- * defaults to 1 and the grid degrades into screen-pixel space.
+ * drawer-provided `pixelSize` (CSS-px per image-px), `devicePixelScale`
+ * (framebuffer-px per CSS-px) and `imageOriginPx` uniforms, so the grid
+ * pans/zooms with the slide. With no binding pixelSize defaults to 1 and the
+ * grid degrades into screen-pixel space. solid_px / boundary_px are CSS px.
  *
  * Colour/threshold/connect behave exactly like the colormap layer.
  *
@@ -100,7 +101,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     static docs() {
         return {
             summary: "Grid-of-squares colormap whose interiors fade with zoom so tissue shows through.",
-            description: "Samples a scalar value and maps it through a colormap control exactly like the colormap layer, then drives the output alpha from on-screen cell size. A cell smaller than solid_px on screen is filled solid; a larger cell keeps an opaque boundary frame of constant screen thickness (boundary_px) while the inner fill alpha decays as solid_px / cellScreenPx, so zooming in reveals more tissue. Geometry is anchored to the bound tiledImage via the drawer-provided pixelSize/imageOriginPx uniforms.",
+            description: "Samples a scalar value and maps it through a colormap control exactly like the colormap layer, then drives the output alpha from on-screen cell size. A cell smaller than solid_px on screen is filled solid; a larger cell keeps an opaque boundary frame of constant CSS-pixel thickness (boundary_px) while the inner fill alpha decays as solid_px / cellScreenPx, so zooming in reveals more tissue. Geometry is anchored to the bound tiledImage via the drawer-provided pixelSize/devicePixelScale/imageOriginPx uniforms.",
             kind: "shader",
             inputs: [{
                 index: 0,
@@ -235,35 +236,44 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
     float cell = max(mix(${f(c.min)}, ${f(c.max)}, ${this.cell.sample()}), 1.0);
     float offsetX = mix(${f(ox.min)}, ${f(ox.max)}, ${this.offset_x.sample()});
     float offsetY = mix(${f(oy.min)}, ${f(oy.max)}, ${this.offset_y.sample()});
-    float scale = max(pixelSize, 1e-6); // screen-px per image-px
+    float scale = max(pixelSize, 1e-6);              // CSS px per image px
+    vec2 dps = max(devicePixelScale, vec2(1e-6));    // framebuffer px per CSS px, per axis
+    vec2 scaleFb = scale * dps;                      // framebuffer px per image px
 
     // Optional symmetric LOD: snap cell size to a power of two so the on-screen
-    // cell stays in [1x, 2x) of the configured size.
+    // cell stays in [1x, 2x) of the configured size. On the CSS scale, so the
+    // threshold lands at the same zoom on every devicePixelRatio.
     if (${this.adaptive_lod.sample()}) {
         float lodMult = exp2(-floor(log2(scale)));
         cell *= lodMult;
     }
 
-    vec2 imgCoord = (gl_FragCoord.xy - imageOriginPx) / scale - vec2(offsetX, offsetY);
+    // gl_FragCoord and imageOriginPx are framebuffer px, so divide by scaleFb — the
+    // CSS scale here would make every cell 1/devicePixelRatio-sized.
+    vec2 imgCoord = (gl_FragCoord.xy - imageOriginPx) / scaleFb - vec2(offsetX, offsetY);
     float modX = mod(imgCoord.x, cell);
     float modY = mod(imgCoord.y, cell);
     float dx = min(modX, cell - modX);
     float dy = min(modY, cell - modY);
 
-    // Distance to the nearest cell boundary, expressed in screen pixels.
-    float edgeDistScreen = min(dx, dy) * scale;
-    float cellScreen = cell * scale; // on-screen cell size in px
+    // Distance to the nearest cell boundary, expressed in framebuffer pixels. These are
+    // single numbers, so they take the x scale by choice: the two components differ only
+    // by the per-axis framebuffer rounding (~0.02%), well under a pixel.
+    float edgeDistFb = min(dx, dy) * scaleFb.x;
+    float cellFb = cell * scaleFb.x; // on-screen cell size in framebuffer px
 
     // Inner fill opacity: 1.0 while the cell is at most solid_px on screen, then
     // decaying as the cell grows so zooming in fades the interior and reveals tissue.
     // Continuous at the threshold because solid_px / solid_px == 1.
-    float solidPx = max(mix(${f(sp.min)}, ${f(sp.max)}, ${this.solid_px.sample()}), 1e-6);
-    float innerAlpha = clamp(solidPx / max(cellScreen, 1e-6), 0.0, 1.0);
+    // solid_px is CSS px, so lift it to framebuffer px to match cellFb (the ratio is
+    // DPR-invariant either way, but keeping one unit avoids re-deriving that).
+    float solidPx = max(mix(${f(sp.min)}, ${f(sp.max)}, ${this.solid_px.sample()}), 1e-6) * dps.x;
+    float innerAlpha = clamp(solidPx / max(cellFb, 1e-6), 0.0, 1.0);
 
-    // Opaque boundary frame of constant *screen* thickness, independent of zoom.
-    float boundaryPx = max(mix(${f(bp.min)}, ${f(bp.max)}, ${this.boundary_px.sample()}), 0.0);
-    float feather = max(fwidth(edgeDistScreen), 1e-4);
-    float boundaryMask = 1.0 - smoothstep(boundaryPx - feather, boundaryPx + feather, edgeDistScreen);
+    // Opaque boundary frame of constant *CSS* thickness, independent of zoom and DPR.
+    float boundaryPx = max(mix(${f(bp.min)}, ${f(bp.max)}, ${this.boundary_px.sample()}), 0.0) * dps.x;
+    float feather = max(fwidth(edgeDistFb), 1e-4);
+    float boundaryMask = 1.0 - smoothstep(boundaryPx - feather, boundaryPx + feather, edgeDistFb);
 
     // Boundary stays at full alpha; interior uses the fading innerAlpha.
     float fillAlpha = mix(innerAlpha, 1.0, boundaryMask);

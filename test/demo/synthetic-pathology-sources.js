@@ -12,6 +12,8 @@
  *   synthetic-scalar  one scalar field in the red channel, canvas tiles
  *   synthetic-if      8-channel immunofluorescence, 2x RGBA8 gpuTextureSet packs
  *   synthetic-f16     4-channel RGBA16F gpuTextureSet with values outside [0,1]
+ *   synthetic-r16f    1-channel R16F gpuTextureSet, a quarter of the f16 memory
+ *   synthetic-rg16f   4 markers as 2x RG16F packs, so channels cross a pack boundary
  *
  * Three properties make the whole thing hang together:
  *
@@ -1063,6 +1065,149 @@
                 height: geom.size,
                 channelCount: 4,
                 packs: [{ format: "RGBA16F", data: data }]
+            };
+        }
+    };
+
+    // ------------------------------------------------------- narrow half-float packs
+
+    /**
+     * R16F tile source: one quantitative channel, one component per texel.
+     *
+     * Same Ki-67 score as `synthetic-f16` carries in its red channel, but uploaded as R16F
+     * instead of RGBA16F. Renders identically and costs a quarter of the texture memory,
+     * because it no longer pays for three channels of zeroes.
+     *
+     * Sampling gives `(r, 0, 0, 1)`: green, blue and alpha are a format fill, not payload.
+     * Point `identity` at this source and the fill is what you see -- which is why
+     * `channelCount` is declared, so shaders can tell where the data stops.
+     */
+    $.SyntheticR16FTileSource = class SyntheticR16FTileSource extends $.TileSource {
+
+        supports(data, url) {
+            const probe = (data && typeof data === "object") ? data : url;
+            return !!(probe && typeof probe === "object" && probe.type === "synthetic-r16f");
+        }
+
+        configure(options) {
+            return baseConfigure(options, {});
+        }
+
+        getTileUrl(level, x, y) {
+            return ["synthetic-r16f", level, x, y].join(":");
+        }
+
+        getMetadata() {
+            return {
+                type: "synthetic-r16f",
+                channels: ["ki67-score"]
+            };
+        }
+
+        getTileDataPrecision() {
+            return "float16";
+        }
+
+        downloadTileStart(context) {
+            const coords = parseCoords(context, this, "synthetic-r16f", 0);
+            context.finish(this._pack(coords.level, coords.x, coords.y), undefined, "gpuTextureSet");
+        }
+
+        _pack(level, x, y) {
+            const geom = tileGeometry(this, level, x, y);
+            const data = new Uint16Array(geom.size * geom.size);
+            const ctx = makeTileContext(geom, 17);
+
+            for (let py = 0; py < geom.size; py++) {
+                const iy = geom.originY + py * geom.stepY;
+                for (let px = 0; px < geom.size; px++) {
+                    const ix = geom.originX + px * geom.stepX;
+                    const lesion = ctx.lesion(px, py);
+                    const noise = fbm(ix / 640, iy / 640, 2749, 3);
+
+                    // Same deliberately out-of-range score as synthetic-f16's red channel.
+                    data[py * geom.size + px] = toHalf(-0.4 + 3.5 * lesion * (0.55 + 0.75 * noise));
+                }
+            }
+
+            return {
+                getType: () => "gpuTextureSet",
+                width: geom.size,
+                height: geom.size,
+                channelCount: 1,
+                packs: [{ format: "R16F", data: data }]
+            };
+        }
+    };
+
+    /**
+     * RG16F tile source: four markers as two two-component packs.
+     *
+     * The interesting case for channel addressing. With four components per pack the whole
+     * source would be one RGBA pack and every channel would live in it; here channels 0-1 are
+     * in pack 0 and channels 2-3 in pack 1, so `use_channel_base0: 2` has to cross a pack
+     * boundary to find its data. Half the memory of the RGBA16F equivalent.
+     */
+    $.SyntheticRG16FTileSource = class SyntheticRG16FTileSource extends $.TileSource {
+
+        supports(data, url) {
+            const probe = (data && typeof data === "object") ? data : url;
+            return !!(probe && typeof probe === "object" && probe.type === "synthetic-rg16f");
+        }
+
+        configure(options) {
+            return baseConfigure(options, {});
+        }
+
+        getTileUrl(level, x, y) {
+            return ["synthetic-rg16f", level, x, y].join(":");
+        }
+
+        getMetadata() {
+            return {
+                type: "synthetic-rg16f",
+                channels: ["DAPI", "CD3", "PanCK", "Ki-67"]
+            };
+        }
+
+        getTileDataPrecision() {
+            return "float16";
+        }
+
+        downloadTileStart(context) {
+            const coords = parseCoords(context, this, "synthetic-rg16f", 0);
+            context.finish(this._pack(coords.level, coords.x, coords.y), undefined, "gpuTextureSet");
+        }
+
+        _pack(level, x, y) {
+            const geom = tileGeometry(this, level, x, y);
+            const pixels = geom.size * geom.size;
+            const packs = [new Uint16Array(pixels * 2), new Uint16Array(pixels * 2)];
+            const ctx = makeTileContext(geom, 4099);
+
+            for (let py = 0; py < geom.size; py++) {
+                const iy = geom.originY + py * geom.stepY;
+                for (let px = 0; px < geom.size; px++) {
+                    const ix = geom.originX + px * geom.stepX;
+                    const offset = (py * geom.size + px) * 2;
+
+                    for (let m = 0; m < 4; m++) {
+                        const v = IF_MARKERS[m](ix, iy, px, py, ctx);
+                        // Channel m -> pack m>>1, component m&1. Two per pack, not four.
+                        packs[m >> 1][offset + (m & 1)] = toHalf(clamp01(v));
+                    }
+                }
+            }
+
+            return {
+                getType: () => "gpuTextureSet",
+                width: geom.size,
+                height: geom.size,
+                channelCount: 4,
+                packs: [
+                    { format: "RG16F", data: packs[0] },
+                    { format: "RG16F", data: packs[1] }
+                ]
             };
         }
     };

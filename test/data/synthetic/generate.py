@@ -384,16 +384,29 @@ def lesion_field(x, y):
     return np.clip(lobes * texture, 0.0, 1.0) * tissue_mask(x, y)
 
 
-def build_precision_fixture(out_dir: str, size: int, force: bool) -> None:
-    binary_path = os.path.join(out_dir, "ki67_f16.bin")
-    manifest_path = os.path.join(out_dir, "ki67_f16.json")
+# Components carried by one texture layer, per pack format. The narrow formats let a
+# quantitative field skip the channels it does not use; see README.md "Tile Pack Formats".
+PRECISION_FORMATS = {
+    "RGBA16F": 4,
+    "RG16F": 2,
+    "R16F": 1,
+}
+
+
+def build_precision_fixture(out_dir: str, size: int, force: bool,
+                            pack_format: str = "RGBA16F") -> None:
+    components = PRECISION_FORMATS[pack_format]
+    # RGBA16F keeps the historical stem; the documented path is out/ki67_f16.bin.
+    stem = "ki67_f16" if pack_format == "RGBA16F" else "ki67_" + pack_format.lower()
+    binary_path = os.path.join(out_dir, f"{stem}.bin")
+    manifest_path = os.path.join(out_dir, f"{stem}.json")
 
     if os.path.exists(binary_path) and not force:
         log(f"{binary_path} already exists; pass --force to rebuild")
         return
 
     ensure_dir(out_dir)
-    log(f"generating {size}x{size} RGBA16F Ki-67 field")
+    log(f"generating {size}x{size} {pack_format} Ki-67 field")
 
     # Sample the full image extent, matching what the runtime source produces at
     # the pyramid level whose tile grid covers `size` pixels.
@@ -408,34 +421,46 @@ def build_precision_fixture(out_dir: str, size: int, force: bool) -> None:
     ratio = 2.4 * (lesion - 0.42) + 0.9 * (noise - 0.5)
     normalized = np.clip(score / 3.1, 0.0, 1.0)
 
-    rgba = np.empty((size, size, 4), dtype=np.float16)
-    rgba[..., 0] = score.astype(np.float16)
-    rgba[..., 1] = ratio.astype(np.float16)
-    rgba[..., 2] = normalized.astype(np.float16)
-    rgba[..., 3] = np.float16(1.0)
+    planes = [
+        (score.astype(np.float16), "ki67-score", float(score.min()), float(score.max())),
+        (ratio.astype(np.float16), "log2-ratio", float(ratio.min()), float(ratio.max())),
+        (normalized.astype(np.float16), "ki67-normalized", 0.0, 1.0),
+        (np.full((size, size), 1.0, dtype=np.float16), "one", 1.0, 1.0),
+    ][:components]
+
+    packed = np.empty((size, size, components), dtype=np.float16)
+    for index, (plane, _name, _lo, _hi) in enumerate(planes):
+        packed[..., index] = plane
 
     with open(binary_path, "wb") as handle:
-        handle.write(rgba.tobytes())
+        handle.write(packed.tobytes())
 
     manifest = {
-        "format": "RGBA16F",
+        "format": pack_format,
         "width": size,
         "height": size,
-        "channelCount": 4,
+        "channelCount": components,
+        "componentsPerPack": components,
         "byteOrder": "little-endian",
-        "layout": "interleaved RGBA, row-major, top-left origin",
+        "layout": f"interleaved {pack_format[:components] if components < 4 else 'RGBA'}, "
+                  "row-major, top-left origin",
         "binary": os.path.basename(binary_path),
         "channels": [
-            {"index": 0, "name": "ki67-score", "min": float(score.min()), "max": float(score.max())},
-            {"index": 1, "name": "log2-ratio", "min": float(ratio.min()), "max": float(ratio.max())},
-            {"index": 2, "name": "ki67-normalized", "min": 0.0, "max": 1.0},
-            {"index": 3, "name": "one", "min": 1.0, "max": 1.0},
+            {"index": index, "name": name, "min": lo, "max": hi}
+            for index, (_plane, name, lo, hi) in enumerate(planes)
         ],
         "notes": [
             "Channels 0 and 1 deliberately leave [0,1]; an RGBA8 colour target clamps them away.",
-            "Feed as {width, height, channelCount, packs: [{format: 'RGBA16F', data: Uint16Array}]}.",
+            f"Feed as {{width, height, channelCount, packs: [{{format: '{pack_format}', "
+            "data: Uint16Array}]}.",
         ],
     }
+
+    if components < 4:
+        manifest["notes"].append(
+            f"Sampling a {pack_format} pack yields the missing components as a format fill "
+            "(0 for colour, 1 for alpha), not payload."
+        )
 
     with open(manifest_path, "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
@@ -460,7 +485,15 @@ def main(argv=None) -> int:
         epilog=__doc__,
     )
     parser.add_argument("--slide", action="store_true", help="fetch and tile a real H&E slide")
-    parser.add_argument("--precision", action="store_true", help="write the RGBA16F Ki-67 fixture")
+    parser.add_argument("--precision", action="store_true", help="write the half-float Ki-67 fixture")
+    parser.add_argument(
+        "--format",
+        dest="pack_format",
+        default="RGBA16F",
+        choices=sorted(PRECISION_FORMATS),
+        help="pack format for --precision; narrow formats drop the unused channels "
+             "(default: RGBA16F)",
+    )
     parser.add_argument("--all", action="store_true", help="do everything")
     parser.add_argument("--force", action="store_true", help="overwrite existing output")
     parser.add_argument("--out", default=DEFAULT_OUT, help=f"output directory (default: {DEFAULT_OUT})")
@@ -479,7 +512,7 @@ def main(argv=None) -> int:
         "--precision-size",
         type=int,
         default=512,
-        help="side length of the RGBA16F fixture (default: 512)",
+        help="side length of the half-float fixture (default: 512)",
     )
 
     args = parser.parse_args(argv)
@@ -498,7 +531,7 @@ def main(argv=None) -> int:
         build_slide(args.out, args.slide_url, args.slide_width, args.force)
 
     if do_precision:
-        build_precision_fixture(args.out, args.precision_size, args.force)
+        build_precision_fixture(args.out, args.precision_size, args.force, args.pack_format)
 
     return 0
 
