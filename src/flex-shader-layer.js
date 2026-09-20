@@ -7,15 +7,15 @@
      */
 
     /**
-     * @typedef {object} ShaderLayerConfig
-     * @property {string} id
-     * @property {string} name
-     * @property {string} type         equal to ShaderLayer.type(), e.g. "identity"
-     * @property {number} visible      1 = use for rendering, 0 = do not use for rendering
-     * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages images that provide the data
-     * @property {object} params          settings for the ShaderLayer
-     * @property {object} cache          cache object used by the ShaderLayer's controls
-     * @property {"float16"|"unorm8"} [precision] per-instance override of the first-pass color
+     * @typedef {Object} ShaderLayerConfig
+     * @property {string} id - Unique identifier the ShaderLayer is constructed with.
+     * @property {string} name - Label for this specific ShaderLayer instance.
+     * @property {string} type - Key of the ShaderLayer class to be fetched from the ShaderLayerRegistry; must be equal to ShaderLayer.type() of the desired ShaderLayer class, e.g. "identity".
+     * @property {number} visible - The ShaderLayer's visibility encoded as a number; 1 = use for rendering, 0 = do not use for rendering.
+     * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages - Mapping from source indexes (the array index) to tiled images that provide the data for the shader layer.
+     * @property {object} params - Settings for the ShaderLayer as well as parameters for its controls.
+     * @property {object} cache - Cache object used by the ShaderLayer.
+     * @property {"float16"|"unorm8"} [precision] - Per-instance override of the first-pass color
      *      target precision, honored only while the renderer option `precision` is `"auto"`.
      *      `"float16"` demands a high-precision (RGBA16F) target even over 8-bit data — any
      *      active layer declaring it upgrades the target for the whole renderer. `"unorm8"`
@@ -30,7 +30,21 @@
      */
 
     /**
-     * Abstract base class for classes that implement any rendering logic and are part of the final WebGLProgram.
+     * @typedef {Object} ShaderLayerOptions
+     * @property {ShaderLayerConfig} shaderConfig - Config object bound to the ShaderLayer. Can change within the class, e.g., by adding a `cache` field.
+     * @property {boolean} interactive - Whether the ShaderLayer's UI controls should be enabled.
+     * @property {Function} invalidate  // callback to re-render the viewport
+     * @property {Function} rebuild     // callback to rebuild the WebGL program
+     * @property {Function} refresh     // callback to recreate the ShaderLayer when control layout changes
+     * @property {Function} refetch     // callback to request source/config refetch work from the owning drawer
+     * @property {WebGLImplementation} backend
+     */
+
+    /**
+     * Abstract base class for classes that represent visualization layers.
+     *
+     * The main purpose of this class is to provide the framework and methods necessary
+     * for users to be able to define their own ShaderLayers easily.
      *
      * @property {object} defaultControls default controls for the ShaderLayer
      * @property {object} customParams
@@ -50,48 +64,40 @@
          */
 
         /**
-         * @param {String} id unique identifier
-         * @param {Object} privateOptions
-         * @param {Object} privateOptions.shaderConfig              object bind with this ShaderLayer
-         * @param {WebGLImplementation} privateOptions.backend
-         * @param {Object} privateOptions.cache
-         * @param {Function} privateOptions.invalidate  // callback to re-render the viewport
-         * @param {Function} privateOptions.rebuild     // callback to rebuild the WebGL program
-         * @param {Function} privateOptions.refresh     // callback to recreate the ShaderLayer when control layout changes
-         * @param {Function} privateOptions.refetch     // callback to request source/config refetch work from the owning drawer
+         * @param {String} layerId - Unique identifier for the layer.
+         * @param {ShaderLayerOptions} options
          */
-        constructor(id, privateOptions) {
+        constructor(layerId, options) {
             /**
              * Unique identifier of this ShaderLayer for FlexRenderer.
              *
              * @type {string}
              */
-            this.id = id;
+            this.id = layerId;
 
             /**
              * Unique identifier of this ShaderLayer for WebGLProgram.
              *
              * @type {string}
              */
-            this.uid = this.constructor.type().replaceAll('-', '_') + '_' + id;
+            this.uid = this.constructor.type().replaceAll('-', '_') + '_' + layerId;
 
             if (!$.FlexRenderer.idPattern.test(this.uid)) {
-                console.error(`Invalid ID for the shader: ${id} does not match to the pattern`, $.FlexRenderer.idPattern);
+                console.error(`Invalid ID for the shader: ${layerId} does not match to the pattern`, $.FlexRenderer.idPattern);
             }
 
-            this.__shaderConfig = privateOptions.shaderConfig;
+            this.__shaderConfig = options.shaderConfig;
 
-            this.backend = privateOptions.backend;
+            this.backend = options.backend;
 
-            this._interactive = privateOptions.interactive;
+            this._interactive = options.interactive;
             this._controls = {};
-            this._params = privateOptions.params ? privateOptions.params : {};
+            this._params = options.params ? options.params : {};
 
-
-            this.invalidate = privateOptions.invalidate;
-            this._rebuild = privateOptions.rebuild;
-            this._refresh = privateOptions.refresh;
-            this._refetch = privateOptions.refetch;
+            this.invalidate = options.invalidate;
+            this._rebuild = options.rebuild;
+            this._refresh = options.refresh;
+            this._refetch = options.refetch;
 
             // channels used for sampling data from the texture
             this.__channels = null;
@@ -131,14 +137,15 @@
             this._buildControls();
         }
 
-        // STATIC METHODS
+        // STATIC UTILITY METHODS
         /**
-         * Parses value to a float string representation with given precision (length after decimal)
+         * Formats a numeric `value` to a float string representation with a specific precision,
+         * i.e., the amount of digits after the decimal point.
          *
-         * @param {number} value value to convert
-         * @param {number} defaultValue default value on failure
-         * @param {number} precision number of decimals
-         * @return {string}
+         * @param {number} value - Value to format. Assumed to be a variable expression.
+         * @param {number} defaultValue - Default value to format when formatting `value` fails. Should be a constant.
+         * @param {number} precision - The desired precision of the resulting float string representation.
+         * @returns {string} The formatted float string representation of `value`.
          */
         static toShaderFloatString(value, defaultValue, precision = 5) {
             if (!Number.isInteger(precision) || precision < 0 || precision > 9) {
@@ -333,7 +340,7 @@
         }
 
         /**
-         * Declare supported controls by a particular shader,
+         * Declare controls slots for the given ShaderLayer along with default controls,
          * each control defined this way is automatically created for the shader.
          *
          * Structure:
@@ -380,8 +387,6 @@
          * textures apply gamma filter with 0.5 by default if not overridden
          * todo: allow also custom object without structure being specified (use in custom manner,
          *  but limited in automated docs --> require field that summarises its usage)
-         *
-         * @member {object}
          */
         static get defaultControls() {
             return {
