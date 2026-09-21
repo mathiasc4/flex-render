@@ -26,74 +26,60 @@ module.exports = function(grunt) {
         packageDir = "build/" + packageDirName + "/",
         releaseRoot = "../site-build/built-openseadragon/",
         coverageDir = 'coverage/' + dateFormat(new Date(), 'yyyymmdd-HHMMss'),
+        // flex-layers/*.js and flex-modules/*.js each independently extend a shared
+        // base class (ShaderLayer / ShaderModule, loaded earlier below) and never
+        // reference one another, so their internal order is not load-bearing and
+        // new files are picked up automatically. Everything else here has a real
+        // dependency order (interfaces before implementations, base classes before
+        // the things extending them, drawer before what references it) and stays
+        // an explicit, curated list.
         sources = [
-            "src/flex-renderer.js",
-            "src/colormaps.js",
-            "src/flex-shader-layer.js",
-            "src/flex-shader-module.js",
-            "src/flex-modules/source-sampling.js",
-            "src/flex-modules/threshold-mask.js",
-            "src/flex-modules/colorize.js",
-            "src/flex-modules/scalar-mask-modules.js",
-            "src/flex-modules/classification-colormap-modules.js",
-            "src/flex-modules/neighborhood-edge-modules.js",
-            "src/flex-module-graph-editor.js",
-            "src/flex-controls/basic-controls.js",
-            "src/flex-controls/advanced-controls.js",
-            "src/flex-controls/icon-sets/icon-codepoints.generated.js",
-            "src/flex-controls/icon-sets/phosphor.js",
-            "src/flex-controls/icon-sets/font-awesome.js",
-            "src/flex-webgl-context.js",
-            "src/flex-webgl2.js",
-            "src/flex-webgl2-atlas.js",
-            "src/flex-drawer.js",
-            "src/workers/http-bridge.main.js",
-            "src/flex-standalone.js",
-            "src/flex-layers/adaptive-threshold.js",
-            "src/flex-layers/bipolar-heatmap.js",
-            "src/flex-layers/colormap.js",
-            "src/flex-layers/default.js",
-            "src/flex-layers/edge.js",
-            "src/flex-layers/fisheye-lens.js",
-            "src/flex-layers/grid.js",
-            "src/flex-layers/grid-heatmap.js",
-            "src/flex-layers/group.js",
-            "src/flex-layers/heatmap.js",
-            "src/flex-layers/iconmap.js",
-            "src/flex-layers/interaction-debug.js",
-            "src/flex-layers/modular.js",
-            "src/flex-layers/patternmap.js",
-            "src/flex-layers/sobel.js",
-            "src/flex-layers/stain-separation.js",
-            "src/flex-layers/texture.js",
-            "src/flex-layers/threshold.js",
-            "src/flex-layers/time-series.js",
-            "src/flex-layers/channel.js",
-            "src/flex-layers/channel-series.js",
-            "src/mvt-tile-source.js",
-            "src/fabric-tile-source.js",
-            "src/geojson-tile-source.js",
-            "src/configurator.js"
-        ],
+            "src/core/flex-renderer.js",
+            "src/core/colormaps.js",
+            "src/core/flex-shader-layer.js",
+            "src/core/flex-shader-module.js"
+        ].concat(
+            grunt.file.expand("src/core/flex-modules/*.js").sort()
+        ).concat([
+            "src/tooling/flex-module-graph-editor.js",
+            "src/core/flex-controls/basic-controls.js",
+            "src/core/flex-controls/advanced-controls.js",
+            "src/core/flex-controls/icon-sets/icon-codepoints.generated.js",
+            "src/core/flex-controls/icon-sets/phosphor.js",
+            "src/core/flex-controls/icon-sets/font-awesome.js",
+            "src/core/flex-webgl-context.js",
+            "src/core/flex-webgl2.js",
+            "src/core/flex-webgl2-atlas.js",
+            "src/osd/flex-drawer.js",
+            "src/osd/workers/http-bridge.main.js",
+            "src/osd/flex-standalone.js"
+        ]).concat(
+            grunt.file.expand("src/core/flex-layers/*.js").sort()
+        ).concat([
+            "src/osd/mvt-tile-source.js",
+            "src/osd/fabric-tile-source.js",
+            "src/osd/geojson-tile-source.js",
+            "src/tooling/configurator.js"
+        ]),
         shaderModuleGraphEditorDeps = [
             "src/vendor/litegraph.min.js",
         ],
         mvtWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
+            "src/osd/workers/http-bridge.worker.js",
             "src/vendor/pbf.min.js",
             "src/vendor/vector-tile.min.js",
             "src/vendor/earcut.min.js",
-            "src/workers/mvt-worker.core.js"
+            "src/osd/workers/mvt-worker.core.js"
         ],
         fabricWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
+            "src/osd/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
-            "src/workers/fabric-worker.core.js"
+            "src/osd/workers/fabric-worker.core.js"
         ],
         geojsonWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
+            "src/osd/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
-            "src/workers/geojson-worker.core.js"
+            "src/osd/workers/geojson-worker.core.js"
         ];
 
     const banner = "//! <%= pkg.name %> <%= pkg.version %>\n" +
@@ -302,7 +288,7 @@ module.exports = function(grunt) {
                 options: {
                     urls: [ "http://localhost:" + testPort + "/test/coverage.html" + moduleFilter ],
                     coverage: {
-                        src: ['src/*.js'],
+                        src: ['src/**/*.js'],
                         htmlReport: coverageDir + '/html/',
                         instrumentedFiles: 'instrumented/src/',
                         baseUrl: '.',

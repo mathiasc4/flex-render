@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Generates `src/flex-controls/icon-sets/icon-codepoints.generated.js`.
+ * Generates `src/core/flex-controls/icon-sets/icon-codepoints.generated.js`.
  *
- * The icon sets in `src/flex-controls/icon-sets/*.js` declare CSS class names
+ * The icon sets in `src/core/flex-controls/icon-sets/*.js` declare CSS class names
  * ("ph ph-house", "fa-solid fa-house"). At render time the IconLibrary needs
  * the *codepoint* behind each class so it can draw the glyph on a canvas
  * without the icon stylesheet being present in the document. This script
@@ -20,7 +20,7 @@ const fs = require("fs");
 const path = require("path");
 
 const repoRoot = path.resolve(__dirname, "..");
-const setsDir = path.join(repoRoot, "src", "flex-controls", "icon-sets");
+const setsDir = path.join(repoRoot, "src", "core", "flex-controls", "icon-sets");
 const outFile = path.join(setsDir, "icon-codepoints.generated.js");
 
 const read = (...segments) => {

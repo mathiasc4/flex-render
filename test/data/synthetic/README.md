@@ -19,7 +19,7 @@ bytes on disk. The generator lives in `test/demo/synthetic-pathology-sources.js`
 
 The brightfield slide is built in stain-concentration space and composed forward
 through Beer–Lambert using the same Ruifrok–Johnston stain vectors that
-`src/flex-layers/stain-separation.js` inverts, so the deconvolution shader is
+`src/core/flex-layers/stain-separation.js` inverts, so the deconvolution shader is
 running on input it can actually be right about. The gallery's
 "Deconvolution vs ground truth" card differences the recovered hematoxylin
 concentration against the value the generator used; near-black means agreement.

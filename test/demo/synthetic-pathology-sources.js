@@ -24,7 +24,7 @@
  *
  * 2. The brightfield slide is built in stain-concentration space and composed
  *    forward through Beer-Lambert using the *same* Ruifrok-Johnston basis the
- *    `stain-separation` layer inverts (src/flex-layers/stain-separation.js).
+ *    `stain-separation` layer inverts (src/core/flex-layers/stain-separation.js).
  *    The reference tissue colours below are deconvolved into concentrations at
  *    load time, so the slide looks like a real slide AND round-trips exactly
  *    through the shader. `synthetic-scalar` field "truth-hematoxylin" exposes
@@ -121,7 +121,7 @@
 
     // -------------------------------------------------- Ruifrok-Johnston basis
 
-    // Ported verbatim from src/flex-layers/stain-separation.js so the generator
+    // Ported verbatim from src/core/flex-layers/stain-separation.js so the generator
     // and the shader cannot drift apart. If you change one, change both.
     const STAIN_VECTORS = {
         H: [0.65, 0.70, 0.29],
