@@ -37,6 +37,7 @@ module.exports = function(grunt) {
             "src/flex-modules/scalar-mask-modules.js",
             "src/flex-modules/classification-colormap-modules.js",
             "src/flex-modules/neighborhood-edge-modules.js",
+            "src/flex-module-graph-editor.js",
             "src/flex-controls/basic-controls.js",
             "src/flex-controls/advanced-controls.js",
             "src/flex-controls/icon-sets/icon-codepoints.generated.js",
@@ -60,6 +61,7 @@ module.exports = function(grunt) {
             "src/flex-layers/heatmap.js",
             "src/flex-layers/iconmap.js",
             "src/flex-layers/interaction-debug.js",
+            "src/flex-layers/modular.js",
             "src/flex-layers/patternmap.js",
             "src/flex-layers/sobel.js",
             "src/flex-layers/stain-separation.js",
@@ -72,6 +74,9 @@ module.exports = function(grunt) {
             "src/fabric-tile-source.js",
             "src/geojson-tile-source.js",
             "src/configurator.js"
+        ],
+        shaderModuleGraphEditorDeps = [
+            "src/vendor/litegraph.min.js",
         ],
         mvtWorkerDeps = [
             "src/workers/http-bridge.worker.js",
@@ -216,12 +221,14 @@ module.exports = function(grunt) {
                 dest: "build/openseadragon/geojson-worker.inline.js"
             },
             dist: {
-                // keep your existing dist concat; just ensure the inline is appended:
-                src: ["<banner>"].concat(sources).concat([
-                    "build/openseadragon/mvt-worker.inline.js",
-                    "build/openseadragon/fabric-worker.inline.js",
-                    "build/openseadragon/geojson-worker.inline.js"
-                ]),
+                src: ["<banner>"]
+                    .concat(shaderModuleGraphEditorDeps)
+                    .concat(sources)
+                    .concat([
+                        "build/openseadragon/mvt-worker.inline.js",
+                        "build/openseadragon/fabric-worker.inline.js",
+                        "build/openseadragon/geojson-worker.inline.js"
+                    ]),
                 dest: distribution
             }
         },

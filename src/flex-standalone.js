@@ -1420,7 +1420,9 @@
         interactive = false,
         precision = "auto",
         presentationClearColor = undefined,
-        canvasOptions = { stencil: true }
+        canvasOptions = { stencil: true },
+        sharedContextKey = null,
+        sharedContextBusyPolicy = undefined
     } = {}) {
         const runtime = {};
         const mutex = createLock();
@@ -1439,8 +1441,11 @@
             // Every pass this runtime draws clears to it, so a caller that wants a backdrop
             // other than opaque white has to be able to say so here.
             presentationClearColor,
-            canvasOptions
+            canvasOptions,
+            sharedContextKey,
+            sharedContextBusyPolicy
         });
+
         runtime.renderer.setDataBlendingEnabled(true);
         runtime.renderer.setDimensions(0, 0, width, height, 1, 1);
         runtime.canvas = runtime.renderer.getPresentationCanvas();

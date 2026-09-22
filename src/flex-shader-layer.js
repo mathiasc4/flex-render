@@ -1,4 +1,5 @@
 (function($) {
+
     /**
      * Determines how a shader layer participates in stack composition.
      *
@@ -6,15 +7,15 @@
      */
 
     /**
-     * @typedef {object} ShaderLayerConfig
-     * @property {string} id
-     * @property {string} name
-     * @property {string} type         equal to ShaderLayer.type(), e.g. "identity"
-     * @property {number} visible      1 = use for rendering, 0 = do not use for rendering
-     * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages images that provide the data
-     * @property {object} params          settings for the ShaderLayer
-     * @property {object} cache          cache object used by the ShaderLayer's controls
-     * @property {"float16"|"unorm8"} [precision] per-instance override of the first-pass color
+     * @typedef {Object} ShaderLayerConfig
+     * @property {string} id - Unique identifier the ShaderLayer is constructed with.
+     * @property {string} name - Label for this specific ShaderLayer instance.
+     * @property {string} type - Key of the ShaderLayer class to be fetched from the ShaderLayerRegistry; must be equal to ShaderLayer.type() of the desired ShaderLayer class, e.g. "identity".
+     * @property {number} visible - The ShaderLayer's visibility encoded as a number; 1 = use for rendering, 0 = do not use for rendering.
+     * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages - Mapping from source indexes (the array index) to tiled images that provide the data for the shader layer.
+     * @property {object} params - Settings for the ShaderLayer as well as parameters for its controls.
+     * @property {object} cache - Cache object used by the ShaderLayer.
+     * @property {"float16"|"unorm8"} [precision] - Per-instance override of the first-pass color
      *      target precision, honored only while the renderer option `precision` is `"auto"`.
      *      `"float16"` demands a high-precision (RGBA16F) target even over 8-bit data — any
      *      active layer declaring it upgrades the target for the whole renderer. `"unorm8"`
@@ -29,7 +30,21 @@
      */
 
     /**
-     * Abstract base class for classes that implement any rendering logic and are part of the final WebGLProgram.
+     * @typedef {Object} ShaderLayerOptions
+     * @property {ShaderLayerConfig} shaderConfig - Config object bound to the ShaderLayer. Can change within the class, e.g., by adding a `cache` field.
+     * @property {boolean} interactive - Whether the ShaderLayer's UI controls should be enabled.
+     * @property {Function} invalidate  // callback to re-render the viewport
+     * @property {Function} rebuild     // callback to rebuild the WebGL program
+     * @property {Function} refresh     // callback to recreate the ShaderLayer when control layout changes
+     * @property {Function} refetch     // callback to request source/config refetch work from the owning drawer
+     * @property {WebGLImplementation} backend
+     */
+
+    /**
+     * Abstract base class for classes that represent visualization layers.
+     *
+     * The main purpose of this class is to provide the framework and methods necessary
+     * for users to be able to define their own ShaderLayers easily.
      *
      * @property {object} defaultControls default controls for the ShaderLayer
      * @property {object} customParams
@@ -49,48 +64,40 @@
          */
 
         /**
-         * @param {String} id unique identifier
-         * @param {Object} privateOptions
-         * @param {Object} privateOptions.shaderConfig              object bind with this ShaderLayer
-         * @param {WebGLImplementation} privateOptions.backend
-         * @param {Object} privateOptions.cache
-         * @param {Function} privateOptions.invalidate  // callback to re-render the viewport
-         * @param {Function} privateOptions.rebuild     // callback to rebuild the WebGL program
-         * @param {Function} privateOptions.refresh     // callback to recreate the ShaderLayer when control layout changes
-         * @param {Function} privateOptions.refetch     // callback to request source/config refetch work from the owning drawer
+         * @param {String} layerId - Unique identifier for the layer.
+         * @param {ShaderLayerOptions} options
          */
-        constructor(id, privateOptions) {
+        constructor(layerId, options) {
             /**
              * Unique identifier of this ShaderLayer for FlexRenderer.
              *
              * @type {string}
              */
-            this.id = id;
+            this.id = layerId;
 
             /**
              * Unique identifier of this ShaderLayer for WebGLProgram.
              *
              * @type {string}
              */
-            this.uid = this.constructor.type().replaceAll('-', '_') + '_' + id;
+            this.uid = this.constructor.type().replaceAll('-', '_') + '_' + layerId;
 
             if (!$.FlexRenderer.idPattern.test(this.uid)) {
-                console.error(`Invalid ID for the shader: ${id} does not match to the pattern`, $.FlexRenderer.idPattern);
+                console.error(`Invalid ID for the shader: ${layerId} does not match to the pattern`, $.FlexRenderer.idPattern);
             }
 
-            this.__shaderConfig = privateOptions.shaderConfig;
+            this.__shaderConfig = options.shaderConfig;
 
-            this.backend = privateOptions.backend;
+            this.backend = options.backend;
 
-            this._interactive = privateOptions.interactive;
+            this._interactive = options.interactive;
             this._controls = {};
-            this._params = privateOptions.params ? privateOptions.params : {};
+            this._params = options.params ? options.params : {};
 
-
-            this.invalidate = privateOptions.invalidate;
-            this._rebuild = privateOptions.rebuild;
-            this._refresh = privateOptions.refresh;
-            this._refetch = privateOptions.refetch;
+            this.invalidate = options.invalidate;
+            this._rebuild = options.rebuild;
+            this._refresh = options.refresh;
+            this._refetch = options.refetch;
 
             // channels used for sampling data from the texture
             this.__channels = null;
@@ -130,14 +137,15 @@
             this._buildControls();
         }
 
-        // STATIC METHODS
+        // STATIC UTILITY METHODS
         /**
-         * Parses value to a float string representation with given precision (length after decimal)
+         * Formats a numeric `value` to a float string representation with a specific precision,
+         * i.e., the amount of digits after the decimal point.
          *
-         * @param {number} value value to convert
-         * @param {number} defaultValue default value on failure
-         * @param {number} precision number of decimals
-         * @return {string}
+         * @param {number} value - Value to format. Assumed to be a variable expression.
+         * @param {number} defaultValue - Default value to format when formatting `value` fails. Should be a constant.
+         * @param {number} precision - The desired precision of the resulting float string representation.
+         * @returns {string} The formatted float string representation of `value`.
          */
         static toShaderFloatString(value, defaultValue, precision = 5) {
             if (!Number.isInteger(precision) || precision < 0 || precision > 9) {
@@ -332,7 +340,7 @@
         }
 
         /**
-         * Declare supported controls by a particular shader,
+         * Declare controls slots for the given ShaderLayer along with default controls,
          * each control defined this way is automatically created for the shader.
          *
          * Structure:
@@ -379,8 +387,6 @@
          * textures apply gamma filter with 0.5 by default if not overridden
          * todo: allow also custom object without structure being specified (use in custom manner,
          *  but limited in automated docs --> require field that summarises its usage)
-         *
-         * @member {object}
          */
         static get defaultControls() {
             return {
@@ -472,12 +478,33 @@
         }
 
         /**
+         * Instance-level source definition hook.
+         * Override when source requirements depend on current config/state.
+         *
+         * @returns {channelSettings[]}
+         */
+        getSourceDefinitions() {
+            return this.constructor.sources();
+        }
+
+        /**
          * Instance-level control definition hook.
          * Override when the available controls depend on current config/state.
+         *
          * @returns {object}
          */
         getControlDefinitions() {
             return $.extend(true, {}, this.constructor.defaultControls);
+        }
+
+        /**
+         * Return caller-provided parameters for one expanded control.
+         *
+         * @param {string} controlName - Expanded control name.
+         * @returns {*}
+         */
+        getControlParams(controlName) {
+            return this._params[controlName];
         }
 
         /**
@@ -555,7 +582,7 @@
                     continue;
                 }
 
-                const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this._params[controlName]);
+                const control = $.FlexRenderer.UIControls.build(this, controlName, controlConfig, this.id + '_' + controlName, this.getControlParams(controlName));
 
                 // UIControls._buildFallback returns undefined when neither the requested nor the
                 // declared type could be built. Storing that made every later `this[controlName]`
@@ -806,14 +833,15 @@
 
             // regex to compare with value used with use_channel, to check its correctness
             const channelPattern = new RegExp('[rgba]{1,4}');
+            const controlDefinitions = this.getControlDefinitions();
             this.__channels = [];
             this.__baseChannels = [];
 
             const parseChannel = (def, sourceDef, index) => {
                 const controlName = `use_channel${index}`;
-                const predefined = this.constructor.defaultControls[controlName];
+                const predefined = controlDefinitions[controlName];
                 const baseName = `use_channel_base${index}`;
-                const predefinedBase = this.constructor.defaultControls[baseName];
+                const predefinedBase = controlDefinitions[baseName];
 
                 let base = 0;
                 let channel;
@@ -884,7 +912,7 @@
                 this.__baseChannels[index] = base;
             };
 
-            const sources = this.constructor.sources();
+            const sources = this.getSourceDefinitions();
             for (let i = 0; i < sources.length; i++) {
                 parseChannel("r", sources[i], i);
             }
@@ -947,6 +975,78 @@
 
             const chanPattern = this.__channels[sourceIndex] || "r";
             const glslExpr = this._buildChannelSampleExpr(sourceIndex, textureCoords, baseChannel, chanPattern);
+
+            return raw ? glslExpr : this.filter(glslExpr);
+        }
+
+        /**
+         * Sample one logical channel from one source slot by numeric index.
+         *
+         * This bypasses legacy use_channel/use_channel_base swizzle handling and samples
+         * the flattened logical channel index directly. It is intended for modular graph
+         * source-sampling nodes and custom ShaderLayers that address arbitrary-channel
+         * sources numerically.
+         *
+         * @param {string} textureCoords - GLSL vec2 expression used as texture coordinates.
+         * @param {number|string} [sourceIndex=0] - Source slot index or GLSL int expression.
+         * @param {number|string} [channelIndex=0] - Flattened channel index or GLSL int expression.
+         * @param {object|boolean} [options={}] - Options object, or boolean raw flag.
+         * @param {boolean} [options.raw=false] - When true, do not apply layer filters.
+         * @returns {string} GLSL expression returning float.
+         * @throws {Error} Thrown when a static index is invalid.
+         */
+        sampleSourceChannel(textureCoords, sourceIndex = 0, channelIndex = 0, options = {}) {
+            const raw = typeof options === "boolean" ? options : !!(options && options.raw);
+
+            const indexExpr = (value, label) => {
+                if (typeof value === "string") {
+                    return value;
+                }
+
+                const index = Number.parseInt(value, 10);
+                if (!Number.isInteger(index) || index < 0) {
+                    throw new Error(`${this.constructor.name}::sampleSourceChannel: ${label} must be a non-negative integer or GLSL expression.`);
+                }
+
+                return `${index}`;
+            };
+
+            const sourceExpr = indexExpr(sourceIndex, "sourceIndex");
+            const channelExpr = indexExpr(channelIndex, "channelIndex");
+            const glslExpr = `osd_channel(${sourceExpr}, ${channelExpr}, ${textureCoords})`;
+
+            return raw ? glslExpr : this.filter(glslExpr);
+        }
+
+        /**
+         * Sample one to four logical channels from one source slot by numeric indexes.
+         *
+         * @param {string} textureCoords - GLSL vec2 expression used as texture coordinates.
+         * @param {number|string} [sourceIndex=0] - Source slot index or GLSL int expression.
+         * @param {Array<number|string>} [channelIndexes=[0]] - Flattened channel indexes.
+         * @param {object|boolean} [options={}] - Options object, or boolean raw flag.
+         * @param {boolean} [options.raw=false] - When true, do not apply layer filters.
+         * @returns {string} GLSL expression returning float, vec2, vec3, or vec4.
+         * @throws {Error} Thrown when channelIndexes has an unsupported shape.
+         */
+        sampleSourceChannels(textureCoords, sourceIndex = 0, channelIndexes = [0], options = {}) {
+            const raw = typeof options === "boolean" ? options : !!(options && options.raw);
+            const indexes = Array.isArray(channelIndexes) && channelIndexes.length ? channelIndexes : [0];
+
+            if (indexes.length > 4) {
+                throw new Error(`${this.constructor.name}::sampleSourceChannels: at most four channels can be sampled into one GLSL value.`);
+            }
+
+            const samples = indexes.map(channelIndex =>
+                this.sampleSourceChannel(textureCoords, sourceIndex, channelIndex, { raw: true })
+            );
+
+            let glslExpr;
+            if (samples.length === 1) {
+                glslExpr = samples[0];
+            } else {
+                glslExpr = `vec${samples.length}(${samples.join(", ")})`;
+            }
 
             return raw ? glslExpr : this.filter(glslExpr);
         }
@@ -1545,96 +1645,112 @@ ${code}
 
 
     /**
-     * A registry of ShaderLayers.
-     *
-     * @property {boolean} _acceptsShaderLayers - Whether the mediator allows new ShaderLayer registrations.
-     * @property {Record<string, ShaderLayer>} _ShaderLayers - Registered ShaderLayers keyed by their type() output, { ShaderLayer.type(): ShaderLayer }.
+     * A registry for ShaderLayer classes.
      *
      * @memberof OpenSeadragon.FlexRenderer
      */
     class ShaderLayerRegistry {
         /**
-         * Enable or disable ShaderLayer registrations.
+         * Whether this registry currently accepts new ShaderLayer registrations.
          *
-         * @param {boolean} accepts
+         * @type {boolean}
          */
-        static setAcceptsRegistrations(accepts) {
-            if (accepts === true || accepts === false) {
-                this._acceptsShaderLayers = accepts;
-            } else {
-                console.warn("OpenSeadragon.FlexRenderer.ShaderLayerRegistry::setAcceptsRegistrations: accepts parameter must be either true or false!");
+        static get acceptsRegistrations() {
+            return this._acceptsRegistrations;
+        }
+
+        /**
+         * Set whether this registry accepts new ShaderLayer registrations.
+         *
+         * @param {boolean} accepts - Whether new ShaderLayer registrations are accepted.
+         */
+        static set acceptsRegistrations(accepts) {
+            if (typeof accepts !== "boolean") {
+                $.console.warn("accepts must be a boolean.");
             }
+
+            this._acceptsRegistrations = accepts;
         }
 
         /**
          * Registers a ShaderLayer.
          *
          * @param {typeof ShaderLayer} ShaderLayerClass - The ShaderLayer to be registered.
+         * @returns {void}
          */
         static register(ShaderLayerClass) {
-            if (this._acceptsShaderLayers) {
-                if (this._ShaderLayers[ShaderLayerClass.type()]) {
-                    console.warn(`OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayer ${ShaderLayerClass.type()} already registered, overwriting the content!`);
-                }
-
-                // Removed in favour of the data-driven negotiation (static supportsHighPrecision()
-                // + FlexRendererOptions.precision). An unknown static is simply never called, so
-                // without this the old opt-in fails silently.
-                if (typeof ShaderLayerClass.requiresHighPrecision === "function") {
-                    console.warn(`OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayer ${ShaderLayerClass.type()} defines the removed static requiresHighPrecision(); it is ignored. Precision is now declared by the data (see FlexRendererOptions.precision); use static supportsHighPrecision() to veto, or config precision: "float16" to demand.`);
-                }
-
-                this._ShaderLayers[ShaderLayerClass.type()] = ShaderLayerClass;
-            } else {
-                console.warn("OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayerRegistry is set to not accept new ShaderLayers!");
+            if (!this._acceptsRegistrations) {
+                $.console.warn("ShaderLayerRegistry is set to not accept new ShaderLayer registrations!");
+                return;
             }
+
+            if (!ShaderLayerClass || typeof ShaderLayerClass.type !== "function") {
+                throw new TypeError("Expected ShaderLayerClass to define a static type() method.");
+            }
+
+            // Removed in favour of the data-driven negotiation (static supportsHighPrecision()
+            // + FlexRendererOptions.precision). An unknown static is simply never called, so
+            // without this the old opt-in fails silently.
+            if (typeof ShaderLayerClass.requiresHighPrecision === "function") {
+                console.warn(`OpenSeadragon.FlexRenderer.ShaderLayerRegistry::register: ShaderLayer ${ShaderLayerClass.type()} defines the removed static requiresHighPrecision(); it is ignored. Precision is now declared by the data (see FlexRendererOptions.precision); use static supportsHighPrecision() to veto, or config precision: "float16" to demand.`);
+            }
+
+            const type = ShaderLayerClass.type();
+            if (typeof type !== "string" || type.trim().length === 0) {
+                throw new TypeError("Expected ShaderLayerClass.type() to return a non-empty string.");
+            }
+
+            if (this._layers[type]) {
+                $.console.warn(`ShaderLayer '${type}' already registered, overwriting.`);
+            }
+
+            this._layers[ShaderLayerClass.type()] = ShaderLayerClass;
         }
 
         /**
-         * Gets the specified ShaderLayer.
+         * Returns a registered ShaderLayer by its type.
          *
-         * @param {string} shaderLayerType - The output of type() of the desired ShaderLayer.
-         * @returns {typeof ShaderLayer}
+         * @param {string} type - The output of type() of the desired ShaderLayer.
+         * @returns {typeof ShaderLayer | undefined}
          */
-        static get(shaderLayerType) {
-            return this._ShaderLayers[shaderLayerType];
+        static get(type) {
+            return this._layers[type];
         }
 
         /**
-         * Gets all available ShaderLayer types.
+         * Returns all available ShaderLayer types.
          *
          * @returns {string[]}
          */
         static availableTypes() {
-            return Object.keys(this._ShaderLayers);
+            return Object.keys(this._layers);
         }
 
         /**
-         * Gets all available ShaderLayers.
+         * Returns all available ShaderLayers.
          *
          * @returns {(typeof ShaderLayer)[]}
          */
         static availableShaderLayers() {
-            return Object.values(this._ShaderLayers);
+            return Object.values(this._layers);
         }
     }
 
     /**
-     * Whether the mediator allows new ShaderLayer registrations.
+     * Whether the registry allows new ShaderLayer registrations.
      *
-     * @type {boolean}
      * @private
+     * @type {boolean}
      */
-    ShaderLayerRegistry._acceptsShaderLayers = true;
+    ShaderLayerRegistry._acceptsRegistrations = true;
 
     /**
      * Registered ShaderLayers keyed by their type() output, { ShaderLayer.type(): ShaderLayer }.
      *
-     * @type {Record<string, (typeof ShaderLayer)>}
      * @private
+     * @type {Record<string, (typeof ShaderLayer)>}
      */
-    ShaderLayerRegistry._ShaderLayers = {};
-
+    ShaderLayerRegistry._layers = {};
 
     $.FlexRenderer.ShaderLayerRegistry = ShaderLayerRegistry;
 
