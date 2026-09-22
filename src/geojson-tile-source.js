@@ -17,7 +17,7 @@
     /**
      * Ramps a numeric feature property through a color scale.
      *
-     * Supply either `name` (a scheme from src/core/colormaps.js) or `stops` (an explicit
+     * Supply either `name` (a scheme from src/colormaps.js) or `stops` (an explicit
      * ramp). `steps` only selects how many stops to pull from a named scheme, which
      * controls ramp fidelity; it is not a quantization count, since interpolation
      * between stops is continuous.
@@ -897,7 +897,7 @@
     /**
      * Normalize a colormap spec, resolving a named scheme to literal stops.
      *
-     * Stops are resolved here rather than in the worker because src/core/colormaps.js
+     * Stops are resolved here rather than in the worker because src/colormaps.js
      * attaches to the OpenSeadragon global and the worker is built standalone.
      *
      * `steps` selects how many stops to pull from a named scheme, which controls
@@ -936,7 +936,7 @@
             const schemes = $.FlexRenderer && $.FlexRenderer.ColorMaps;
 
             if (!schemes) {
-                throw new Error('GeoJSONTileSource: style.colormap.name requires src/core/colormaps.js to be loaded; pass explicit stops instead.');
+                throw new Error('GeoJSONTileSource: style.colormap.name requires src/colormaps.js to be loaded; pass explicit stops instead.');
             }
 
             if (typeof spec.name !== 'string' || !schemes[spec.name] || spec.name === 'defaults' || spec.name === 'schemeGroups') {
@@ -1028,7 +1028,7 @@
      * to the next precedence tier instead of failing a tile. Callers wanting a hard
      * failure should use normalizeColor.
      *
-     * Mirrored in src/osd/workers/geojson-worker.core.js, which is built standalone and
+     * Mirrored in src/workers/geojson-worker.core.js, which is built standalone and
      * cannot import from here. Keep the two copies identical.
      *
      * @param {*} value - Candidate color.

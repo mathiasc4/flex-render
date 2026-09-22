@@ -529,7 +529,7 @@ OpenSeadragon.FlexRenderer.UIControls.IconLibrary.registerSet('my-icons', {
 
 Entries without a codepoint fall back to probing the icon stylesheet in the
 DOM, so a set defined this way works as long as its CSS is loaded. The bundled
-sets get their codepoints from `src/core/flex-controls/icon-sets/icon-codepoints.generated.js`,
+sets get their codepoints from `src/flex-controls/icon-sets/icon-codepoints.generated.js`,
 regenerated with `npm run icons`.
 
 ### Changing Configuration Values

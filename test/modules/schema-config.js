@@ -5,7 +5,7 @@
     // Prefer the 2020-12 build: the published schema declares that dialect, so only this one can
     // compile the root document (the tests below that compile sub-schemas work under any of them).
     // `window.ajv2020` is a module namespace, hence the `.default` unwrap -- same shape
-    // src/tooling/configurator.js resolves.
+    // src/configurator.js resolves.
     const AjvModule = window.ajv2020 || window.ajv7 || window.Ajv;
     const Ajv = (AjvModule && typeof AjvModule.default === "function") ? AjvModule.default : AjvModule;
 

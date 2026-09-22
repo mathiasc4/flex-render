@@ -3,7 +3,7 @@
     /**
      * Construction options for ShaderModuleGraphEditor.
      *
-     * @typedef {Object} ShaderModuleGraphEditorOptions
+     * @typedef {object} ShaderModuleGraphEditorOptions
      * @property {HTMLElement} container - DOM element that receives the editor UI.
      * @property {object} [graphConfig] - Modular ShaderLayer graph config edited as a draft.
      * @property {number|string} [width="100%"] - Initial editor width.
@@ -24,7 +24,7 @@
     /**
      * Request passed from ShaderModuleGraphEditor to a preview provider.
      *
-     * @typedef {Object} ShaderModuleGraphEditorPreviewRequest
+     * @typedef {object} ShaderModuleGraphEditorPreviewRequest
      * @property {object} editor - Editor instance issuing the request.
      * @property {string} nodeId - Modular graph node id.
      * @property {string} output - Module output name.
@@ -47,7 +47,7 @@
     /**
      * Result returned by ShaderModuleGraphEditor#apply.
      *
-     * @typedef {Object} ShaderModuleGraphEditorApplyResult
+     * @typedef {object} ShaderModuleGraphEditorApplyResult
      * @property {boolean} ok - Whether the draft can be applied.
      * @property {object} graphConfig - Defensive copy of the draft graph config.
      * @property {?object} analysis - Last graph analysis result.
@@ -3631,7 +3631,7 @@
          *
          * @private
          * @returns {void}
-         * @throws {Error} Thrown when `destroy` has already completed.
+         * @throws {Error} Thrown when destroy has already completed.
          */
         _assertNotDestroyed() {
             if (this._destroyed) {

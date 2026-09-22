@@ -1495,7 +1495,7 @@ function shouldAggregateTile(tile, count) {
  * Returns null rather than throwing so per-feature resolution can fall through
  * to the next precedence tier instead of failing a tile.
  *
- * Mirrored from src/osd/geojson-tile-source.js. This worker is built standalone and
+ * Mirrored from src/geojson-tile-source.js. This worker is built standalone and
  * cannot import from there. Keep the two copies identical.
  *
  * @param {*} value - Candidate color.
@@ -1577,7 +1577,7 @@ function getPath(object, path) {
  * Sample a resolved colormap ramp.
  *
  * Stops arrive pre-resolved from the tile source as literal RGBA arrays, because
- * src/core/colormaps.js needs the OpenSeadragon global and this worker is standalone.
+ * src/colormaps.js needs the OpenSeadragon global and this worker is standalone.
  *
  * @param {object} colormap - Normalized colormap spec with domain and stops.
  * @param {number} value - Raw score value.

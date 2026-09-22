@@ -1648,7 +1648,7 @@ $.FlexRenderer.UIControls.IconLibrary = (() => {
     });
 
     // Font-backed sets (Phosphor, Font Awesome) register themselves from
-    // src/core/flex-controls/icon-sets/*.js via registerSet(). None of them ship a
+    // src/flex-controls/icon-sets/*.js via registerSet(). None of them ship a
     // webfont — the host page loads the font it wants, and icons stay pending
     // until document.fonts reports the family. Only "html-glyphs" renders with
     // no host setup at all, which is why it is the default.

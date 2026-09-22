@@ -136,7 +136,7 @@ style: {
 | field | meaning |
 |---|---|
 | `property` | Dotted path to the numeric property. Non-numeric values fall through to the next tier. |
-| `name` | Scheme from `src/core/colormaps.js` (`Viridis`, `Spectral`, `RdBu`, …). |
+| `name` | Scheme from `src/colormaps.js` (`Viridis`, `Spectral`, `RdBu`, …). |
 | `steps` | How many stops to pull from the named scheme. Defaults to the scheme's largest variant. |
 | `stops` | Explicit ramp, bypassing `name`. At least two colours. |
 | `domain` | `[min, max]`, default `[0, 1]`. Values outside are clamped. |
@@ -219,7 +219,7 @@ Recovering from a fatal error means constructing a new tile source.
 
 ### Per-feature colour is free
 
-`_prepareVectorTileBatch` (`src/core/flex-webgl2.js`) already allocates a per-vertex RGBA
+`_prepareVectorTileBatch` (`src/flex-webgl2.js`) already allocates a per-vertex RGBA
 buffer for every vector tile and fans one mesh colour across it, and the worker already
 emits one mesh per feature. Per-feature colour therefore only changes *which* colour
 each mesh carries — the GPU upload is byte-identical, and the renderer is untouched.
@@ -262,7 +262,7 @@ non-overlapping patch grid**. So:
 - a per-source opt-in flag (`vectorDataMode`) makes that source's vectors take the
   raster branch (`gl.disable(gl.BLEND)`), and `a_payload1` becomes `(r, g, b, score)`;
 - this is safely per-source: vector payloads are assembled per `TiledImage` in
-  `src/osd/flex-drawer.js` and the draw loop consumes each source's vectors as a unit, so
+  `src/flex-drawer.js` and the draw loop consumes each source's vectors as a unit, so
   blend state can be set per source with no cross-source contamination. Default off
   leaves every existing flow byte-identical;
 - vectors rasterize into the same texture array that ShaderLayers sample, so a stock
