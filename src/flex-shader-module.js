@@ -2798,7 +2798,7 @@ ${compiled.execution}
          *
          * @returns {(typeof ShaderModule)[]}
          */
-        static availableModules() {
+        static availableShaderModules() {
             return Object.values(this._modules);
         }
     }

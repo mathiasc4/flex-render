@@ -1731,7 +1731,7 @@ ${code}
          *
          * @returns {(typeof ShaderLayer)[]}
          */
-        static availableLayers() {
+        static availableShaderLayers() {
             return Object.values(this._layers);
         }
     }

@@ -383,7 +383,7 @@
         },
 
         compileDocsModel() {
-            const shaders = $.FlexRenderer.ShaderLayerRegistry.availableLayers().map(Shader => {
+            const shaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers().map(Shader => {
                 const sources = typeof Shader.sources === "function" ? (Shader.sources() || []) : [];
                 const controls = this._compileControlDescriptors(Shader);
                 const customParams = Shader.customParams || {};
@@ -445,7 +445,7 @@
          */
         compileConfigSchemaModel(options = {}) {
             const strict = options.strict === true;
-            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableLayers();
+            const availableShaders = $.FlexRenderer.ShaderLayerRegistry.availableShaderLayers();
             const schema = this._buildConfigSchema(availableShaders);
 
             const compiledShaders = this._compileExampleConsistencyInputs(availableShaders);
@@ -1192,11 +1192,11 @@
         _compileShaderModuleDescriptors() {
             const ShaderModuleRegistry = $.FlexRenderer.ShaderModuleRegistry;
 
-            if (!ShaderModuleRegistry || typeof ShaderModuleRegistry.availableModules !== "function") {
+            if (!ShaderModuleRegistry || typeof ShaderModuleRegistry.availableShaderModules !== "function") {
                 return [];
             }
 
-            return ShaderModuleRegistry.availableModules().map(ShaderModule => this._compileShaderModuleDescriptor(ShaderModule));
+            return ShaderModuleRegistry.availableShaderModules().map(ShaderModule => this._compileShaderModuleDescriptor(ShaderModule));
         },
 
         _compileShaderModuleDescriptor(ShaderModule) {
@@ -1286,11 +1286,11 @@
             const Mediator = $.FlexRenderer.ShaderModuleRegistry;
             const schemas = {};
 
-            if (!Mediator || typeof Mediator.availableModules !== "function") {
+            if (!Mediator || typeof Mediator.availableShaderModules !== "function") {
                 return schemas;
             }
 
-            for (const Module of Mediator.availableModules()) {
+            for (const Module of Mediator.availableShaderModules()) {
                 schemas[Module.type()] = this._compileShaderModuleNodeJsonSchema(Module);
             }
 

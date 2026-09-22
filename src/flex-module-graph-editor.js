@@ -983,12 +983,12 @@
          * @returns {void}
          */
         _renderModulePalette() {
-            if (!this.moduleList || !this.moduleRegistry || typeof this.moduleRegistry.availableModules !== "function") {
+            if (!this.moduleList || !this.moduleRegistry || typeof this.moduleRegistry.availableShaderModules !== "function") {
                 return;
             }
 
             const query = ((this.paletteSearch && this.paletteSearch.value) || "").toLowerCase();
-            const modules = this.moduleRegistry.availableModules();
+            const modules = this.moduleRegistry.availableShaderModules();
 
             this.moduleList.textContent = "";
 

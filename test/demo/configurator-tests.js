@@ -159,11 +159,11 @@
     function getRegisteredModules(context) {
         const mediator = context.ShaderModuleRegistry;
 
-        if (!mediator || typeof mediator.availableModules !== "function") {
+        if (!mediator || typeof mediator.availableShaderModules !== "function") {
             return [];
         }
 
-        return mediator.availableModules();
+        return mediator.availableShaderModules();
     }
 
     function getModularShader(context) {
@@ -349,7 +349,7 @@
                             const mediator = context.ShaderModuleRegistry;
 
                             assert(mediator, "ShaderModuleRegistry is not available.");
-                            assert(typeof mediator.availableModules === "function", "ShaderModuleRegistry.availableModules() is missing.");
+                            assert(typeof mediator.availableShaderModules === "function", "ShaderModuleRegistry.availableModules() is missing.");
                             assert(typeof mediator.availableTypes === "function", "ShaderModuleRegistry.availableTypes() is missing.");
 
                             const modules = getRegisteredModules(context);
