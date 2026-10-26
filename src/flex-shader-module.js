@@ -17,10 +17,35 @@
     ]);
 
     /**
-     * Input or output port declared by a ShaderModule.
+     * Input port declared by a ShaderModule.
      *
-     * @typedef {object} ShaderModulePortDescriptor
+     * @typedef {object} ShaderModuleInputPortDescriptor
      * @property {ShaderModuleValueType} type - Value type carried by the port.
+     * @property {boolean} [required=false] - Whether an input edge is required.
+     * @property {*} [default] - Optional default value or fallback descriptor.
+     * @property {string} [description] - Human-readable port description.
+     */
+
+    /**
+     * Output port declared by a ShaderModule.
+     *
+     * @typedef {object} ShaderModuleOutputPortDescriptor
+     * @property {ShaderModuleValueType} type - Value type carried by the port.
+     * @property {string} [description] - Human-readable port description.
+     */
+
+    /**
+     * Documentation-only input port descriptor declared by static inputs().
+     *
+     * This descriptor is used by ShaderConfigurator for generated documentation,
+     * schema metadata, and module palettes. It may describe multiple possible
+     * input types because static module metadata cannot see node-local params.
+     *
+     * Runtime graph analysis and graph building must use getInputDefinitions()
+     * on a configured module instance instead.
+     *
+     * @typedef {object} ShaderModuleStaticInputPortDescriptor
+     * @property {ShaderModuleValueType[]} type - Possible value types carried by the output port.
      * @property {boolean} [required=false] - Whether an input edge is required.
      * @property {*} [default] - Optional default value or fallback descriptor.
      * @property {string} [description] - Human-readable port description.
@@ -36,7 +61,7 @@
      * Runtime graph analysis and graph building must use getOutputDefinitions()
      * on a configured module instance instead.
      *
-     * @typedef {object} ShaderModuleStaticOutputDescriptor
+     * @typedef {object} ShaderModuleStaticOutputPortDescriptor
      * @property {ShaderModuleValueType[]} type - Possible value types carried by the output port.
      * @property {string} [description] - Human-readable port description.
      */
@@ -108,8 +133,8 @@
      * Analysis result returned by ShaderModule#analyze(...).
      *
      * @typedef {object} ShaderModuleAnalysisResult
-     * @property {Object<string, ShaderModulePortDescriptor>} inputDefinitions - Input port declarations.
-     * @property {Object<string, ShaderModulePortDescriptor>} outputDefinitions - Output port declarations.
+     * @property {Object<string, ShaderModuleInputPortDescriptor>} inputDefinitions - Input port declarations.
+     * @property {Object<string, ShaderModuleOutputPortDescriptor>} outputDefinitions - Output port declarations.
      * @property {Object<string, object|boolean>} controlDefinitions - Module-local control declarations.
      * @property {ShaderModuleSourceRequirement[]} sourceRequirements - Source requirements introduced by the module.
      */
@@ -288,7 +313,7 @@
          * schema output, and module palettes. Runtime graph analysis and graph building
          * must use getInputDefinitions() on a configured module instance instead.
          *
-         * @returns {Object<string, ShaderModulePortDescriptor>} Input port declarations keyed by port name.
+         * @returns {Object<string, ShaderModuleStaticInputPortDescriptor>} Input port declarations keyed by port name.
          */
         static inputs() {
             return {};
@@ -306,7 +331,7 @@
          * Runtime graph analysis and graph building must use getOutputDefinitions()
          * on a configured module instance instead.
          *
-         * @returns {Object<string, ShaderModuleStaticOutputDescriptor>} Output port declarations keyed by port name.
+         * @returns {Object<string, ShaderModuleStaticOutputPortDescriptor>} Output port declarations keyed by port name.
          */
         static outputs() {
             return {};
@@ -348,7 +373,7 @@
          * source of truth for configured module instances. Do not rely on static inputs()
          * here when the input shape may depend on node params.
          *
-         * @returns {Object<string, ShaderModulePortDescriptor>} Input port declarations keyed by port name.
+         * @returns {Object<string, ShaderModuleInputPortDescriptor>} Input port declarations keyed by port name.
          */
         getInputDefinitions() {
             return {};
@@ -361,7 +386,7 @@
          * truth for configured module instances. The returned type must be one concrete
          * ShaderModuleValueType string, not the array used by static outputs().
          *
-         * @returns {Object<string, ShaderModulePortDescriptor>} Output port declarations keyed by port name.
+         * @returns {Object<string, ShaderModuleOutputPortDescriptor>} Output port declarations keyed by port name.
          */
         getOutputDefinitions() {
             return {};
@@ -1220,7 +1245,7 @@
      * @param {"input"|"output"} kind - Port kind.
      * @param {string} nodeId - Owning node id.
      * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
-     * @returns {Object<string, ShaderModulePortDescriptor>} Valid object-like declaration map.
+     * @returns {Object<string, ShaderModuleInputPortDescriptor> | Object<string, ShaderModuleOutputPortDescriptor>} Valid object-like declaration map.
      */
     function validatePortDefinitionsForAnalysis(definitions, kind, nodeId, diagnostics) {
         if (!isGraphObject(definitions)) {
@@ -1269,7 +1294,7 @@
      *
      * @private
      * @param {*} inputRefs - Raw node input reference map.
-     * @param {Object<string, ShaderModulePortDescriptor>} inputDefinitions - Declared input ports.
+     * @param {Object<string, ShaderModuleInputPortDescriptor>} inputDefinitions - Declared input ports.
      * @param {string} nodeId - Owning node id.
      * @param {ShaderModuleGraphDiagnostic[]} diagnostics - Diagnostic target array.
      * @returns {void}
