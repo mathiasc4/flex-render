@@ -34,6 +34,7 @@ module.exports = function(grunt) {
             "src/flex-modules/source-sampling.js",
             "src/flex-modules/threshold-mask.js",
             "src/flex-modules/colorize.js",
+            "src/flex-modules/heatmap.js",
             "src/flex-modules/scalar-mask-modules.js",
             "src/flex-modules/classification-colormap-modules.js",
             "src/flex-modules/neighborhood-edge-modules.js",
