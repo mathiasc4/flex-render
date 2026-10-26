@@ -71,31 +71,31 @@ module.exports = function(grunt) {
             "src/flex-layers/time-series.js",
             "src/flex-layers/channel.js",
             "src/flex-layers/channel-series.js",
-            "src/blank-tile-source.js",
-            "src/mvt-tile-source.js",
-            "src/fabric-tile-source.js",
-            "src/geojson-tile-source.js",
+            "src/tile-sources/blank-tile-source.js",
+            "src/tile-sources/mvt-tile-source.js",
+            "src/tile-sources/fabric-tile-source.js",
+            "src/tile-sources/geojson-tile-source.js",
             "src/configurator.js"
         ],
         shaderModuleGraphEditorDeps = [
             "src/vendor/litegraph.min.js",
         ],
         mvtWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
             "src/vendor/pbf.min.js",
             "src/vendor/vector-tile.min.js",
             "src/vendor/earcut.min.js",
-            "src/workers/mvt-worker.core.js"
+            "src/tile-sources/workers/http-bridge.worker.js",
+            "src/tile-sources/workers/mvt-worker.core.js"
         ],
         fabricWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
-            "src/workers/fabric-worker.core.js"
+            "src/tile-sources/workers/http-bridge.worker.js",
+            "src/tile-sources/workers/fabric-worker.core.js"
         ],
         geojsonWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
-            "src/workers/geojson-worker.core.js"
+            "src/tile-sources/workers/http-bridge.worker.js",
+            "src/tile-sources/workers/geojson-worker.core.js"
         ];
 
     const banner = "//! <%= pkg.name %> <%= pkg.version %>\n" +
