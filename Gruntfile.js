@@ -71,6 +71,7 @@ module.exports = function(grunt) {
             "src/flex-layers/time-series.js",
             "src/flex-layers/channel.js",
             "src/flex-layers/channel-series.js",
+            "src/blank-tile-source.js",
             "src/mvt-tile-source.js",
             "src/fabric-tile-source.js",
             "src/geojson-tile-source.js",
