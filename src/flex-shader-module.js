@@ -594,31 +594,69 @@
             return $.FlexRenderer.sanitizeKey(`${this.graph.owner.uid}_${this.node.id}_${name}`);
         }
 
-
         /**
-         * Return a GLSL expression that samples one numeric source channel.
+         * Return a GLSL expression that samples one channel from one source slot by numeric index.
          *
-         * @param {number|string} sourceIndex - Source slot index or GLSL int expression.
-         * @param {number|string} channelIndex - Flattened source channel index or GLSL int expression.
-         * @param {string} [textureCoords="v_texture_coords"] - GLSL vec2 coordinate expression.
-         * @param {object|boolean} [options={raw:true}] - Sampling options.
+         * This bypasses legacy use_channel/use_channel_base swizzle handling and samples
+         * the channel index directly. It is intended for modular graph
+         * source-sampling nodes and custom ShaderLayers that address arbitrary-channel
+         * sources numerically.
+         *
+         * @param {number | string} sourceIndex - Source slot index or GLSL int expression.
+         * @param {number | string} channelIndex - Source channel index or GLSL int expression.
+         * @param {string} [textureCoords="v_texture_coords"] - GLSL vec2 expression used as texture coordinates.
          * @returns {string} GLSL expression returning float.
+         * @throws {Error} Thrown when a static index is invalid.
          */
-        sampleSourceChannel(sourceIndex, channelIndex, textureCoords = "v_texture_coords", options = { raw: true }) {
-            return this.node.owner.sampleSourceChannel(textureCoords, sourceIndex, channelIndex, options);
+        sampleSourceChannel(sourceIndex, channelIndex, textureCoords = "v_texture_coords") {
+            const indexExpr = (value, label) => {
+                if (typeof value === "string") {
+                    return value;
+                }
+
+                const index = Number.parseInt(value, 10);
+                if (!Number.isInteger(index) || index < 0) {
+                    throw new Error(`${this.constructor.name}::sampleSourceChannel: ${label} must be a non-negative integer or GLSL expression.`);
+                }
+
+                return `${index}`;
+            };
+
+            const sourceExpr = indexExpr(sourceIndex, "sourceIndex");
+            const channelExpr = indexExpr(channelIndex, "channelIndex");
+
+            return `osd_channel(${sourceExpr}, ${channelExpr}, ${textureCoords})`;
         }
 
         /**
-         * Return a GLSL expression that samples one to four numeric source channels.
+         * Return a GLSL expression that samples one to four channels from one source slot by numeric indexes.
          *
-         * @param {number|string} sourceIndex - Source slot index or GLSL int expression.
-         * @param {Array<number|string>} channelIndexes - Flattened source channel indexes.
-         * @param {string} [textureCoords="v_texture_coords"] - GLSL vec2 coordinate expression.
-         * @param {object|boolean} [options={raw:true}] - Sampling options.
+         * @param {number | string} sourceIndex - Source slot index or GLSL int expression.
+         * @param {Array<number | string>} channelIndexes - Source channel indexes.
+         * @param {string} [textureCoords="v_texture_coords"] - GLSL vec2 expression used as texture coordinates.
          * @returns {string} GLSL expression returning float, vec2, vec3, or vec4.
+         * @throws {Error} Thrown when channelIndexes has an unsupported shape.
          */
-        sampleSourceChannels(sourceIndex, channelIndexes, textureCoords = "v_texture_coords", options = { raw: true }) {
-            return this.node.owner.sampleSourceChannels(textureCoords, sourceIndex, channelIndexes, options);
+        sampleSourceChannels(sourceIndex, channelIndexes, textureCoords = "v_texture_coords") {
+            const indexes = Array.isArray(channelIndexes) && channelIndexes.length ? channelIndexes : [0];
+
+            if (indexes.length > 4) {
+                throw new Error(`${this.constructor.name}::sampleSourceChannels: at most four channels can be sampled into one GLSL value.`);
+            }
+
+            const samples = indexes.map(channelIndex =>
+                this.sampleSourceChannel(sourceIndex, channelIndex, textureCoords)
+            );
+
+            let glslExpr;
+
+            if (samples.length === 1) {
+                glslExpr = samples[0];
+            } else {
+                glslExpr = `vec${samples.length}(${samples.join(", ")})`;
+            }
+
+            return glslExpr;
         }
     }
 
