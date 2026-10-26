@@ -2303,13 +2303,13 @@
         /**
          * Forward an interaction-state patch to the renderer-owned interaction API.
          *
-         * @param {Partial<InteractionState>|undefined} state
+         * @param {Partial<InteractionStateInput>} state
          * @param {InteractionStateUpdateOptions} [options={}]
          * @return {InteractionState}
          */
-        setInteractionState(state = undefined, options = {}) {
+        setInteractionState(state, options = {}) {
             if (!this.renderer || typeof this.renderer.setInteractionState !== "function") {
-                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+                return new OpenSeadragon.FlexRenderer.InteractionState();
             }
 
             return this.renderer.setInteractionState(state, $.extend(true, {
@@ -2324,7 +2324,7 @@
          */
         getInteractionState() {
             if (!this.renderer || typeof this.renderer.getInteractionState !== "function") {
-                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+                return new OpenSeadragon.FlexRenderer.InteractionState();
             }
 
             return this.renderer.getInteractionState();
@@ -2340,7 +2340,7 @@
             this._resetInteractionTracking();
 
             if (!this.renderer || typeof this.renderer.clearInteractionState !== "function") {
-                return OpenSeadragon.FlexRenderer.normalizeInteractionState();
+                return new OpenSeadragon.FlexRenderer.InteractionState();
             }
 
             return this.renderer.clearInteractionState($.extend(true, {

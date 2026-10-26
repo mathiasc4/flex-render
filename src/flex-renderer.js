@@ -27,26 +27,122 @@
      */
 
     /**
-     * Renderer-owned interaction state exposed to generated GPU programs.
+     * Interaction state exposed to generated GPU programs.
      *
      * Position fields use physical renderer framebuffer pixels with bottom-left origin,
      * directly comparable to `gl_FragCoord.xy`.
      *
-     * @typedef {object} InteractionState
-     * @property {boolean} enabled - Whether shader-visible interaction state is enabled.
-     * @property {boolean} pointerInside - Whether the pointer is currently inside the interaction target.
-     * @property {{x: number, y: number}} pointerPositionPx - Current pointer position.
-     * @property {number} activeButtons - Current MouseEvent.buttons-compatible button bitmask.
-     * @property {{x: number, y: number}} lastClickPositionPx - Last accepted click position.
-     * @property {number} lastClickButtons - MouseEvent.buttons-compatible bitmask for the last click.
-     * @property {number} clickSerial - Monotonic serial incremented for each accepted click.
-     * @property {boolean} dragActive - Whether a drag is currently active.
-     * @property {{x: number, y: number}} dragStartPositionPx - Start position of the current or last drag.
-     * @property {{x: number, y: number}} dragCurrentPositionPx - Current drag position.
-     * @property {{x: number, y: number}} dragEndPositionPx - End position of the last completed drag.
-     * @property {number} dragButtons - MouseEvent.buttons-compatible bitmask associated with the drag.
-     * @property {number} dragSerial - Monotonic serial incremented for each completed drag.
+     * @typedef {object} InteractionStateInput
+     * @property {boolean} [enabled] - Whether shader-visible interaction state is enabled.
+     * @property {boolean} [pointerInside] - Whether the pointer is currently inside the interaction target.
+     * @property {{x: number, y: number}} [pointerPositionPx] - Current pointer position.
+     * @property {number} [activeButtons] - Current MouseEvent.buttons-compatible button bitmask.
+     * @property {{x: number, y: number}} [lastClickPositionPx] - Last accepted click position.
+     * @property {number} [lastClickButtons] - MouseEvent.buttons-compatible bitmask for the last click.
+     * @property {number} [clickSerial] - Monotonic serial incremented for each accepted click.
+     * @property {boolean} [dragActive] - Whether a drag is currently active.
+     * @property {{x: number, y: number}} [dragStartPositionPx] - Start position of the current or last drag.
+     * @property {{x: number, y: number}} [dragCurrentPositionPx] - Current drag position.
+     * @property {{x: number, y: number}} [dragEndPositionPx] - End position of the last completed drag.
+     * @property {number} [dragButtons] - MouseEvent.buttons-compatible bitmask associated with the drag.
+     * @property {number} [dragSerial] - Monotonic serial incremented for each completed drag.
      */
+
+    class InteractionState {
+        /**
+         * @param {InteractionStateInput} [input]
+         */
+        constructor(input = undefined) {
+            const defaults = {
+                enabled: false,
+                pointerInside: false,
+                pointerPositionPx: { x: 0, y: 0 },
+                activeButtons: 0,
+                lastClickPositionPx: { x: 0, y: 0 },
+                lastClickButtons: 0,
+                clickSerial: 0,
+                dragActive: false,
+                dragStartPositionPx: { x: 0, y: 0 },
+                dragCurrentPositionPx: { x: 0, y: 0 },
+                dragEndPositionPx: { x: 0, y: 0 },
+                dragButtons: 0,
+                dragSerial: 0,
+            };
+
+            const merged = input && typeof input === "object" ? $.extend(true, {}, defaults, input) : $.extend(true, {}, defaults);
+
+            this.enabled = !!merged.enabled;
+            this.pointerInside = !!merged.pointerInside;
+            this.pointerPositionPx = this.constructor._normalizePosition(merged.pointerPositionPx);
+            this.activeButtons = this.constructor._normalizeNonnegativeInteger(merged.activeButtons);
+            this.lastClickPositionPx = this.constructor._normalizePosition(merged.lastClickPositionPx);
+            this.lastClickButtons = this.constructor._normalizeNonnegativeInteger(merged.lastClickButtons);
+            this.clickSerial = this.constructor._normalizeNonnegativeInteger(merged.clickSerial);
+            this.dragActive = !!merged.dragActive;
+            this.dragStartPositionPx = this.constructor._normalizePosition(merged.dragStartPositionPx);
+            this.dragCurrentPositionPx = this.constructor._normalizePosition(merged.dragCurrentPositionPx);
+            this.dragEndPositionPx = this.constructor._normalizePosition(merged.dragEndPositionPx);
+            this.dragButtons = this.constructor._normalizeNonnegativeInteger(merged.dragButtons);
+            this.dragSerial = this.constructor._normalizeNonnegativeInteger(merged.dragSerial);
+        }
+
+        /**
+         * Check whether two interaction states are equal.
+         *
+         * @param {InteractionState} a
+         * @param {InteractionState} b
+         * @return {boolean}
+         */
+        static equals(a, b) {
+            return a.enabled === b.enabled &&
+                a.pointerInside === b.pointerInside &&
+                this._arePositionsEqual(a.pointerPositionPx, b.pointerPositionPx) &&
+                a.activeButtons === b.activeButtons &&
+                this._arePositionsEqual(a.lastClickPositionPx, b.lastClickPositionPx) &&
+                a.lastClickButtons === b.lastClickButtons &&
+                a.clickSerial === b.clickSerial &&
+                a.dragActive === b.dragActive &&
+                this._arePositionsEqual(a.dragStartPositionPx, b.dragStartPositionPx) &&
+                this._arePositionsEqual(a.dragCurrentPositionPx, b.dragCurrentPositionPx) &&
+                this._arePositionsEqual(a.dragEndPositionPx, b.dragEndPositionPx) &&
+                a.dragButtons === b.dragButtons &&
+                a.dragSerial === b.dragSerial;
+        }
+
+        /**
+         * @private
+         * @param {*} value
+         * @return {number}
+         */
+        static _normalizeNonnegativeInteger(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
+        }
+
+        /**
+         * @private
+         * @param {*} position
+         * @return {{x: number, y: number}}
+         */
+        static _normalizePosition(position) {
+            position = position || {};
+
+            return {
+                x: Number.isFinite(position.x) ? position.x : 0,
+                y: Number.isFinite(position.y) ? position.y : 0,
+            };
+        }
+
+        /**
+         * @private
+         * @param {{x: number, y: number}} a
+         * @param {{x: number, y: number}} b
+         * @return {boolean}
+         */
+        static _arePositionsEqual(a, b) {
+            return a.x === b.x && a.y === b.y;
+        }
+    }
 
     /**
      * @typedef {Object} InteractionStateUpdateOptions
@@ -502,7 +598,7 @@
             this._renderTiledImageCount = 0;
 
             this._inspectorState = this.constructor.normalizeInspectorState();
-            this._interactionState = this.constructor.normalizeInteractionState();
+            this._interactionState = new InteractionState();
 
             this.canvasContextOptions = this.constructor.normalizeCanvasOptions(options.canvasOptions);
             this._sharedContextKey = this.constructor.normalizeSharedContextKey(options.sharedContextKey);
@@ -3381,132 +3477,21 @@
         }
 
         /**
-         * Normalize a non-negative integer value used by interaction state.
-         *
-         * @private
-         * @param {*} value
-         * @return {number}
-         */
-        static _normalizeInteractionInteger(value) {
-            const number = Number(value);
-            return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
-        }
-
-        /**
-         * Normalize an interaction position object.
-         *
-         * @private
-         * @param {*} position
-         * @return {{x: number, y: number}}
-         */
-        static _normalizeInteractionPosition(position) {
-            position = position || {};
-
-            return {
-                x: Number.isFinite(position.x) ? position.x : 0,
-                y: Number.isFinite(position.y) ? position.y : 0,
-            };
-        }
-
-        /**
-         * Check whether two normalized interaction position objects are equal.
-         *
-         * @private
-         * @param {{x: number, y: number}} a
-         * @param {{x: number, y: number}} b
-         * @return {boolean}
-         */
-        static _interactionPositionsEqual(a, b) {
-            return a.x === b.x && a.y === b.y;
-        }
-
-        /**
-         * Check whether two normalized interaction states are equal.
-         *
-         * @private
-         * @param {InteractionState} a
-         * @param {InteractionState} b
-         * @return {boolean}
-         */
-        static _interactionStatesEqual(a, b) {
-            return a.enabled === b.enabled &&
-                a.pointerInside === b.pointerInside &&
-                this._interactionPositionsEqual(a.pointerPositionPx, b.pointerPositionPx) &&
-                a.activeButtons === b.activeButtons &&
-                this._interactionPositionsEqual(a.lastClickPositionPx, b.lastClickPositionPx) &&
-                a.lastClickButtons === b.lastClickButtons &&
-                a.clickSerial === b.clickSerial &&
-                a.dragActive === b.dragActive &&
-                this._interactionPositionsEqual(a.dragStartPositionPx, b.dragStartPositionPx) &&
-                this._interactionPositionsEqual(a.dragCurrentPositionPx, b.dragCurrentPositionPx) &&
-                this._interactionPositionsEqual(a.dragEndPositionPx, b.dragEndPositionPx) &&
-                a.dragButtons === b.dragButtons &&
-                a.dragSerial === b.dragSerial;
-        }
-
-        /**
-         * Normalize interaction state.
-         *
-         * Missing fields are filled with defaults. Position fields preserve floating-point
-         * framebuffer pixels and use bottom-left origin, directly comparable to `gl_FragCoord.xy`.
-         *
-         * @param {Partial<InteractionState>|undefined} state
-         * @return {InteractionState}
-         */
-        static normalizeInteractionState(state = undefined) {
-            const defaults = {
-                enabled: false,
-                pointerInside: false,
-                pointerPositionPx: { x: 0, y: 0 },
-                activeButtons: 0,
-                lastClickPositionPx: { x: 0, y: 0 },
-                lastClickButtons: 0,
-                clickSerial: 0,
-                dragActive: false,
-                dragStartPositionPx: { x: 0, y: 0 },
-                dragCurrentPositionPx: { x: 0, y: 0 },
-                dragEndPositionPx: { x: 0, y: 0 },
-                dragButtons: 0,
-                dragSerial: 0,
-            };
-
-            const merged = state && typeof state === "object" ?
-                $.extend(true, {}, defaults, state) :
-                $.extend(true, {}, defaults);
-
-            return {
-                enabled: !!merged.enabled,
-                pointerInside: !!merged.pointerInside,
-                pointerPositionPx: this._normalizeInteractionPosition(merged.pointerPositionPx),
-                activeButtons: this._normalizeInteractionInteger(merged.activeButtons),
-                lastClickPositionPx: this._normalizeInteractionPosition(merged.lastClickPositionPx),
-                lastClickButtons: this._normalizeInteractionInteger(merged.lastClickButtons),
-                clickSerial: this._normalizeInteractionInteger(merged.clickSerial),
-                dragActive: !!merged.dragActive,
-                dragStartPositionPx: this._normalizeInteractionPosition(merged.dragStartPositionPx),
-                dragCurrentPositionPx: this._normalizeInteractionPosition(merged.dragCurrentPositionPx),
-                dragEndPositionPx: this._normalizeInteractionPosition(merged.dragEndPositionPx),
-                dragButtons: this._normalizeInteractionInteger(merged.dragButtons),
-                dragSerial: this._normalizeInteractionInteger(merged.dragSerial),
-            };
-        }
-
-        /**
          * Patch-update the renderer-owned interaction state.
          *
          * This method stores normalized state, optionally emits `interaction-change`,
          * and optionally requests a redraw so the active backend can consume the new
          * state during the next second pass.
          *
-         * @param {Partial<InteractionState>|undefined} state
+         * @param {Partial<InteractionStateInput>} state
          * @param {InteractionStateUpdateOptions} [options={}]
          * @return {InteractionState}
          */
-        setInteractionState(state = undefined, options = {}) {
+        setInteractionState(state, options = {}) {
             const previous = this.getInteractionState();
             const patch = state && typeof state === "object" ? state : {};
-            const current = this.constructor.normalizeInteractionState($.extend(true, {}, previous, patch));
-            const changed = !this.constructor._interactionStatesEqual(previous, current);
+            const current = new InteractionState($.extend(true, {}, previous, patch));
+            const changed = !InteractionState.equals(previous, current);
 
             if (changed) {
                 this._interactionState = current;
@@ -3535,7 +3520,7 @@
          * @return {InteractionState}
          */
         getInteractionState() {
-            return $.extend(true, {}, this._interactionState || this.constructor.normalizeInteractionState());
+            return new InteractionState(this._interactionState);
         }
 
         /**
@@ -3546,8 +3531,8 @@
          */
         clearInteractionState(options = {}) {
             const previous = this.getInteractionState();
-            const current = this.constructor.normalizeInteractionState();
-            const changed = !this.constructor._interactionStatesEqual(previous, current);
+            const current = new InteractionState();
+            const changed = !InteractionState.equals(previous, current);
 
             if (changed) {
                 this._interactionState = current;
@@ -4532,6 +4517,7 @@
         destroy() {}
     }
 
+    FlexRenderer.InteractionState = InteractionState;
     FlexRenderer.Program = Program;
 
     $.FlexRenderer = FlexRenderer;
