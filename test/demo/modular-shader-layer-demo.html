@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Modular Shader Layer Demo</title>
+
+    <script type="text/javascript" src='../../openseadragon/openseadragon.js'></script>
+    <script type="text/javascript" src='/build/openseadragon/flex-renderer.js'></script>
+    <script type="text/javascript" src='../lib/jquery-1.9.1.min.js'></script>
+    <script type="text/javascript" src='../lib/jquery-ui-1.10.2/js/jquery-ui-1.10.2.min.js'></script>
+    <link rel="stylesheet" href="../lib/jquery-ui-1.10.2/css/smoothness/jquery-ui-1.10.2.min.css">
+
+    <script type="module" src="modular-shader-layer-demo.js"></script>
+
+    <style>
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .content {
+            max-width: 1280px;
+            min-height: 100vh;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        .demo-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+            gap: 20px;
+            align-items: stretch;
+            flex: 0 0 auto;
+            margin-bottom: 12px;
+        }
+
+        .demo-main {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .viewer-section {
+            min-width: 0;
+        }
+
+        .viewer-container {
+            aspect-ratio: 4 / 3;
+            border: thin gray solid;
+            position: relative;
+        }
+
+        .viewer-title {
+            margin: 0 0 8px 0;
+        }
+
+        .configuration-panels {
+            display: flex;
+            align-items: stretch;
+            gap: 12px;
+            margin-top: 12px;
+            flex: 0 0 auto;
+        }
+
+        .shader-controls-panel,
+        .image-source-index-panel,
+        .shader-config-panel {
+            margin: 0;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        .shader-controls-panel {
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .shader-controls-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .image-source-index-panel {
+            flex: 0 0 280px;
+            min-height: 0;
+        }
+
+        .shader-config-panel {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .image-source-index-panel h3,
+        .shader-config-panel h3,
+        .shader-controls-panel h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .image-source-index-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .image-source-index-table th,
+        .image-source-index-table td {
+            border: 1px solid #d1d5db;
+            padding: 5px 6px;
+            vertical-align: top;
+            text-align: left;
+        }
+
+        .image-source-index-table th {
+            background: #eeeeee;
+        }
+
+        .image-source-index-table code {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .shader-config-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .shader-config-list--children {
+            margin-top: 8px;
+            margin-left: 18px;
+            padding-left: 10px;
+            border-left: 3px solid #d1d5db;
+        }
+
+        .shader-config-item {
+            margin: 0;
+            padding: 0;
+        }
+
+        .shader-config-row {
+            display: grid;
+            grid-template-columns: 24px 24px minmax(0, 1fr);
+            align-items: center;
+            gap: 6px 8px;
+            margin-bottom: 6px;
+            padding: 6px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+        }
+
+        .shader-config-row--group {
+            background: #f3f3f3;
+        }
+
+        .shader-config-row__name {
+            grid-column: 3;
+        }
+
+        .shader-config-row__selectors,
+        .shader-config-row__blend {
+            grid-column: 3 / 4;
+            display: grid;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .shader-config-row__selectors {
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        }
+
+        .shader-config-row__blend {
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        }
+
+        .shader-config-row__image,
+        .shader-config-row__type,
+        .shader-config-row__use-mode,
+        .shader-config-row__use-blend {
+            min-width: 0;
+        }
+
+        .shader-config-row__image select,
+        .shader-config-row__type select,
+        .shader-config-row__use-mode select,
+        .shader-config-row__use-blend select {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .shader-config-use-blend-select:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .shader-config-drag-handle {
+            cursor: move;
+            color: #555;
+            text-align: center;
+        }
+
+        .shader-config-field-label {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 11px;
+            color: #666;
+        }
+
+        .shader-config-field-label input,
+        .shader-config-field-label select {
+            font-size: 13px;
+            color: #111;
+        }
+
+        .shader-config-name-input {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .shader-config-field-label {
+            min-width: 0;
+        }
+
+        .shader-config-field-label input,
+        .shader-config-field-label select {
+            max-width: 100%;
+        }
+
+        .shader-config-visible-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+        }
+
+        .shader-config-type-locked {
+            color: #666;
+            font-family: monospace;
+        }
+
+        .shader-config-help {
+            margin: 8px 0 0 0;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .shader-config-preset-panel {
+            margin: 0 0 8px 0;
+            padding: 8px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+        }
+
+        .shader-config-preset-select {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 13px;
+        }
+
+        .shader-config-preset-description {
+            margin: 6px 0 0 0;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
+        .shader-config-row--modular {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .shader-config-row--modular .shader-config-row__name,
+        .shader-config-row--modular .shader-config-row__selectors,
+        .shader-config-row--modular .shader-config-row__module {
+            grid-column: 1;
+        }
+
+        .shader-config-row--modular .shader-config-row__selectors {
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        }
+
+        .shader-config-field-label textarea {
+            font-size: 12px;
+            color: #111;
+            max-width: 100%;
+        }
+
+        .shader-config-module-textarea {
+            width: 100%;
+            min-height: 230px;
+            box-sizing: border-box;
+            font-family: monospace;
+            line-height: 1.35;
+            resize: vertical;
+        }
+
+        .shader-config-error {
+            margin-top: 6px;
+            color: #b91c1c;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+
+        .shader-config-diagnostics {
+            margin-top: 6px;
+            padding: 6px 8px;
+            border: 1px solid #fecaca;
+            background: #fff1f2;
+            color: #7f1d1d;
+            font-size: 12px;
+        }
+
+        .shader-config-diagnostics__title {
+            margin: 0 0 4px 0;
+            font-weight: 600;
+        }
+
+        .shader-config-diagnostics__list {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .shader-config-diagnostics__item {
+            margin: 3px 0;
+        }
+
+        .shader-config-diagnostics__code {
+            font-family: monospace;
+            color: #991b1b;
+        }
+
+        .shader-config-diagnostics__path {
+            font-family: monospace;
+            color: #7c2d12;
+        }
+
+        .module-graph-editor-panel {
+            margin-top: 12px;
+            padding: 10px;
+            border: thin gray solid;
+            background: #f8f8f8;
+            box-sizing: border-box;
+        }
+
+        .module-graph-editor-panel__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .module-graph-editor-panel__header h3 {
+            margin: 0;
+        }
+
+        .module-graph-editor-panel__actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .module-graph-editor-panel__actions button {
+            font-size: 13px;
+        }
+
+        .module-graph-editor-panel__description {
+            margin: 0 0 8px 0;
+            color: #4b5563;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .module-graph-editor-status {
+            margin-bottom: 8px;
+            padding: 6px 8px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            color: #374151;
+            font-size: 12px;
+        }
+
+        .module-graph-editor-status--error {
+            border-color: #fecaca;
+            background: #fff1f2;
+            color: #7f1d1d;
+        }
+
+        .module-graph-editor-status--ok {
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+            color: #14532d;
+        }
+
+        .module-graph-editor-container {
+            height: 560px;
+            min-height: 420px;
+        }
+
+        @media (max-width: 1000px) {
+            .demo-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .configuration-panels {
+                flex-direction: column;
+            }
+
+            .image-source-index-panel {
+                flex-basis: auto;
+            }
+
+            .shader-controls-panel {
+                width: auto;
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="content">
+    <h2>Modular Shader Layer Demo</h2>
+
+    <h3 id="title-w" class="viewer-title">Loading...</h3>
+
+    <div class="demo-layout">
+        <main class="demo-main">
+            <section class="viewer-section">
+                <div id="drawer-canvas" class="viewer-container"></div>
+            </section>
+
+            <div class="configuration-panels">
+                <div id="image-source-index-panel" class="image-source-index-panel">
+                    Loading image source index...
+                </div>
+
+                <div id="shader-config-panel" class="shader-config-panel">
+                    Loading shader layer configuration...
+                </div>
+            </div>
+
+            <section class="module-graph-editor-panel">
+                <div class="module-graph-editor-panel__header">
+                    <h3>Module graph editor</h3>
+                    <div class="module-graph-editor-panel__actions">
+                        <button type="button" id="module-graph-editor-apply">Apply graph editor changes</button>
+                        <button type="button" id="module-graph-editor-reset">Reset editor draft</button>
+                    </div>
+                </div>
+                <p class="module-graph-editor-panel__description">
+                    Visual editor for the selected modular ShaderLayer graph. Edit the draft graph here, then apply it to update the live layer. The JSON editor above remains the exact config view.
+                </p>
+                <div id="module-graph-editor-status" class="module-graph-editor-status">
+                    Loading module graph editor...
+                </div>
+                <div id="module-graph-editor-container" class="module-graph-editor-container"></div>
+            </section>
+        </main>
+
+        <aside class="shader-controls-panel">
+            <h3>Shader layer controls</h3>
+            <div id="my-shader-ui-container" class="shader-controls-list"></div>
+        </aside>
+    </div>
+</div>
+</body>
+</html>
