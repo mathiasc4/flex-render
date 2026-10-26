@@ -3445,7 +3445,7 @@
         }
 
         /**
-         * Normalize interaction state to the canonical backend-agnostic shape.
+         * Normalize interaction state.
          *
          * Missing fields are filled with defaults. Position fields preserve floating-point
          * framebuffer pixels and use bottom-left origin, directly comparable to `gl_FragCoord.xy`.
@@ -3529,7 +3529,7 @@
         }
 
         /**
-         * Return a defensive copy of the current canonical interaction state.
+         * Return a copy of the current canonical interaction state.
          * Backends should read interaction state through this method instead of caching mutable references.
          *
          * @return {InteractionState}
@@ -3540,8 +3540,6 @@
 
         /**
          * Reset interaction state to the normalized disabled state.
-         *
-         * Unlike `setInteractionState(...)`, this is a full reset rather than a patch update.
          *
          * @param {InteractionStateUpdateOptions} [options={}]
          * @return {InteractionState}
