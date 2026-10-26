@@ -1,13 +1,13 @@
 const sources = {
-    // mvt: {
-    //     type: "mvt",
-    //     tiles: [ "http://localhost:3000/data/v3/{z}/{x}/{y}.pbf" ],
-    //     tileSize: 512,
-    //     minzoom: 0,
-    //     maxzoom: 14,
-    //     scheme: "xyz",
-    //     extent: 4096
-    // },
+    mvt: {
+        type: "mvt",
+        tiles: [ "http://localhost:3000/data/v3/{z}/{x}/{y}.pbf" ],
+        tileSize: 512,
+        minzoom: 0,
+        maxzoom: 14,
+        scheme: "xyz",
+        extent: 4096
+    },
     fabric: "../data/fabric.geometry.json",
     geojson: "../data/geojson-sample.geojson",
     geojson_10k: {
