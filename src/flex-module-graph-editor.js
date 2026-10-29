@@ -1097,8 +1097,6 @@
 
             node.title = title;
             node.size = node.size || [220, 90];
-            node.inputs = node.inputs || [];
-            node.outputs = node.outputs || [];
             node.properties = {
                 moduleNodeId: nodeId,
                 moduleType: nodeConfig.type || null,
@@ -1117,25 +1115,23 @@
             const outputs = this._getStaticPortMap(ModuleClass, "outputs");
 
             for (const inputName of Object.keys(inputs)) {
-                node.addInput(inputName, this._getPortType(inputs[inputName]));
-                const input = node.inputs[node.inputs.length - 1];
+                const input = node.addInput(inputName, this._getPortType(inputs[inputName]));
 
                 if (input) {
                     input.single = true;
                     input.label = "";
                     input._frLabel = inputName;
-                    input._frType = this._getPortType(inputs[inputName]);
+                    input._frType = this._getPortTypeName(inputs[inputName]);
                 }
             }
 
             for (const outputName of Object.keys(outputs)) {
-                node.addOutput(outputName, this._getPortType(outputs[outputName]));
-                const output = node.outputs[node.outputs.length - 1];
+                const output = node.addOutput(outputName, this._getPortType(outputs[outputName]));
 
                 if (output) {
                     output.label = "";
                     output._frLabel = outputName;
-                    output._frType = this._getPortType(outputs[outputName]);
+                    output._frType = this._getPortTypeName(outputs[outputName]);
                 }
             }
 
@@ -1261,14 +1257,12 @@
                 this._handleLiteGraphNodeRemoved(this._outputNodeId);
             };
 
-            node.addInput("output", "*");
+            const input = node.addInput("output", "*");
 
-            if (node.inputs && node.inputs[0]) {
-                node.inputs[0].single = true;
-                node.inputs[0].label = "";
-                node.inputs[0]._frLabel = "output";
-                node.inputs[0]._frType = "*";
-            }
+            input.single = true;
+            input.label = "";
+            input._frLabel = "output";
+            input._frType = "*";
 
             node.onDrawForeground = (context) => {
                 this._drawModuleNodeSlots(node, context);
@@ -1321,7 +1315,7 @@
                 const slotX = slotPosition[0] - node.pos[0];
                 const slotY = slotPosition[1] - node.pos[1];
                 const label = input._frLabel || input.name || "";
-                const type = input._frType || this._getPortType(input.type || "*");
+                const type = input._frType || this._getPortTypeName(input.type || "*");
 
                 context.save();
                 context.font = "normal 12px Arial";
@@ -1368,7 +1362,7 @@
                 const slotX = slotPosition[0] - node.pos[0];
                 const slotY = slotPosition[1] - node.pos[1];
                 const label = output._frLabel || output.name || "";
-                const outputType = output._frType || this._getPortType(output.type || "*");
+                const outputType = output._frType || this._getPortTypeName(output.type || "*");
 
                 context.save();
                 context.font = "normal 12px Arial";
@@ -2997,7 +2991,30 @@
             }
 
             if (Array.isArray(port.type)) {
-                return port.type.join("|");
+                return "*";
+            }
+
+            return port.type || "*";
+        }
+
+        /**
+         * Return a port type name to be displayed.
+         *
+         * @private
+         * @param {object | string} port - Port descriptor.
+         * @returns {string} Port type label.
+         */
+        _getPortTypeName(port) {
+            if (!port) {
+                return "*";
+            }
+
+            if (typeof port === "string") {
+                return port;
+            }
+
+            if (Array.isArray(port.type)) {
+                return port.type.join(" | ");
             }
 
             return port.type || "*";
