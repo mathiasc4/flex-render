@@ -685,15 +685,9 @@ let shaderLayerConfig = {
         },
         cache: {},
     },
-    interaction_debug: {
-        name: "Interaction Debug",
-        type: "interaction-debug",
-        visible: 1,
-        tiledImages: [],
-    },
 };
 
-let shaderLayerOrder = [MODULAR_SHADER_ID, "interaction_debug"];
+let shaderLayerOrder = [MODULAR_SHADER_ID];
 
 let pendingGraphText = null;
 let modularConfigDiagnostics = [];
@@ -2121,3 +2115,5 @@ applyShaderLayerGuiConfig();
 renderImageSourceIndexPanel();
 renderShaderConfigPanel();
 mountModuleGraphEditor();
+
+viewer.drawer.setInteractionEnabled(true);

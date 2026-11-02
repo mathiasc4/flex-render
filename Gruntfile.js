@@ -36,6 +36,7 @@ module.exports = function(grunt) {
             "src/flex-modules/colorize.js",
             "src/flex-modules/fisheye-lens.js",
             "src/flex-modules/heatmap.js",
+            "src/flex-modules/invert.js",
             "src/flex-modules/scalar-mask-modules.js",
             "src/flex-modules/classification-colormap-modules.js",
             "src/flex-modules/neighborhood-edge-modules.js",
