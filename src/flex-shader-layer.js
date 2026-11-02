@@ -1168,9 +1168,10 @@
         }
 
         /**
+         * Return a GLSL ivec2 expression that holds the width and height of a source texture.
          *
-         * @param otherDataIndex
-         * @return {never}
+         * @param {number} otherDataIndex
+         * @returns {string} GLSL expression returning ivec2.
          */
         getTextureSize(otherDataIndex = 0) {
             return this.backend.getTextureSize(otherDataIndex);

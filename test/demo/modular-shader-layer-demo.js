@@ -627,6 +627,12 @@ const drawerOptions = {
     "flex-renderer": {
         debug: false,
         webGLPreferredVersion: "2.0",
+        interaction: {
+            enabled: true,
+            preventContextMenu: true,
+            notifyOnMove: false,
+            viewerInputCaptureMode: "none",
+        },
         htmlHandler: renderShaderLayerControls,
         htmlReset: resetShaderLayerControls,
     },
@@ -679,9 +685,15 @@ let shaderLayerConfig = {
         },
         cache: {},
     },
+    interaction_debug: {
+        name: "Interaction Debug",
+        type: "interaction-debug",
+        visible: 1,
+        tiledImages: [],
+    },
 };
 
-let shaderLayerOrder = [MODULAR_SHADER_ID];
+let shaderLayerOrder = [MODULAR_SHADER_ID, "interaction_debug"];
 
 let pendingGraphText = null;
 let modularConfigDiagnostics = [];

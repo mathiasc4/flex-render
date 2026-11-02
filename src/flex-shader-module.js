@@ -658,6 +658,16 @@
 
             return glslExpr;
         }
+
+        /**
+         * Return a GLSL ivec2 expression that holds the width and height of a source texture.
+         *
+         * @param {number} sourceIndex
+         * @returns {string} GLSL expression returning ivec2.
+         */
+        getSourceDimensions(sourceIndex = 0) {
+            return this.node.owner.getTextureSize(sourceIndex);
+        }
     }
 
     /**
