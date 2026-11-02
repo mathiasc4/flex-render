@@ -35,6 +35,7 @@ module.exports = function(grunt) {
             "src/flex-modules/threshold-mask.js",
             "src/flex-modules/colorize.js",
             "src/flex-modules/fisheye-lens.js",
+            "src/flex-modules/gamma.js",
             "src/flex-modules/heatmap.js",
             "src/flex-modules/invert.js",
             "src/flex-modules/scalar-mask-modules.js",
