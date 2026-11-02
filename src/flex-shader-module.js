@@ -591,7 +591,7 @@
          */
         output(name, type) {
             this.graph.validateType(type, `node '${this.node.id}' output '${name}'`);
-            return $.FlexRenderer.sanitizeKey(`${this.graph.owner.uid}_${this.node.id}_${name}`);
+            return $.FlexRenderer.sanitizeKey(`${this.graph.owner.uid}_${this.node.id}_output_${name}`);
         }
 
         /**
