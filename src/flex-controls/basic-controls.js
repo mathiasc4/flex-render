@@ -50,6 +50,82 @@ $.FlexRenderer.UIControls = class {
     }
 
     /**
+     * Return lightweight metadata for a registered UI control type.
+     *
+     * This is used by editor/configurator surfaces to list candidate control
+     * types without constructing live controls. It intentionally exposes only
+     * the fields needed for type selection and basic parameter editing.
+     *
+     * @param {string} type registered control type
+     * @returns {{
+     *   type: string,
+     *   kind: "simple"|"class",
+     *   glType: string,
+     *   defaults: object,
+     *   docs: object|null
+     * }|null}
+     */
+    static describeType(type) {
+        const simple = this._items[type];
+
+        if (simple) {
+            const docs = typeof simple.docs === "function" ?
+                simple.docs() :
+                (simple.docs || null);
+
+            return {
+                type: type,
+                kind: "simple",
+                glType: simple.glType || (docs && docs.glType) || "void",
+                defaults: typeof simple.defaults === "function" ?
+                    $.extend(true, {}, simple.defaults()) :
+                    {},
+                docs: docs ? $.extend(true, {}, docs) : null
+            };
+        }
+
+        const ControlClass = this._impls[type];
+
+        if (ControlClass) {
+            const docs = typeof ControlClass.docs === "function" ?
+                ControlClass.docs() :
+                (ControlClass.docs || null);
+
+            const defaults = {};
+
+            if (docs && Array.isArray(docs.parameters)) {
+                for (const param of docs.parameters) {
+                    if (param && typeof param.name === "string" && Object.prototype.hasOwnProperty.call(param, "default")) {
+                        defaults[param.name] = $.extend(true, {}, {value: param.default}).value;
+                    }
+                }
+            }
+
+            return {
+                type: type,
+                kind: "class",
+                glType: (docs && docs.glType) || ControlClass.glType || "void",
+                defaults: defaults,
+                docs: docs ? $.extend(true, {}, docs) : null
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Return lightweight metadata for all registered UI control types.
+     *
+     * @returns {object[]}
+     */
+    static describeTypes() {
+        return this.types()
+            .map(type => this.describeType(type))
+            .filter(Boolean)
+            .sort((a, b) => a.type.localeCompare(b.type));
+    }
+
+    /**
      * Build UI control object based on given parameters
      * @param {OpenSeadragon.FlexRenderer.ShaderLayer} owner owner of the control, shaderLayer
      * @param {string} controlName name used for the control (eg.: opacity)
