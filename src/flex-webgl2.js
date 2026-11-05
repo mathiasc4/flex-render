@@ -362,7 +362,7 @@ ${this.getShaderLayerStencilPassCode(remainingBlendShader)}
 
             try {
                 shaderLayerConfig = shaderLayer.getConfig();
-                isClipLayer = shaderLayer._mode === "clip";
+                isClipLayer = shaderLayer.mode === "clip";
 
                 const slot = shaderLayer.__renderSlot;
                 const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
@@ -791,27 +791,6 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     }
 
     getBlendingFunction(name) {
-        const h = `
-float blendLum(vec3 c){return dot(c,vec3(.3,.59,.11));}
-float blendSat(vec3 c){return max(max(c.r,c.g),c.b)-min(min(c.r,c.g),c.b);}
-vec3 clipColor(vec3 c){
-    float l=blendLum(c),n=min(min(c.r,c.g),c.b),x=max(max(c.r,c.g),c.b);
-    if(n<0.) c=l+((c-l)*l)/(l-n);
-    if(x>1.) c=l+((c-l)*(1.-l))/(x-l);
-    return c;
-}
-vec3 setLum(vec3 c,float l){return clipColor(c+vec3(l-blendLum(c)));}
-vec3 setSat(vec3 c,float s){
-    float mn=min(min(c.r,c.g),c.b),mx=max(max(c.r,c.g),c.b);
-    if(mx<=mn) return vec3(0.);
-    if(c.r<=c.g&&c.g<=c.b) return vec3(0.,((c.g-mn)*s)/(mx-mn),s);
-    if(c.r<=c.b&&c.b<=c.g) return vec3(0.,s,((c.b-mn)*s)/(mx-mn));
-    if(c.g<=c.r&&c.r<=c.b) return vec3(((c.r-mn)*s)/(mx-mn),0.,s);
-    if(c.g<=c.b&&c.b<=c.r) return vec3(s,0.,((c.b-mn)*s)/(mx-mn));
-    if(c.b<=c.r&&c.r<=c.g) return vec3(((c.r-mn)*s)/(mx-mn),s,0.);
-    return vec3(s,((c.g-mn)*s)/(mx-mn),0.);
-}`;
-
         return {
             mask: `
 if (close(fg.a, 0.0)) return vec4(.0);
@@ -919,22 +898,18 @@ if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, bg.rgb + fg.rgb - 2.0 * bg.rgb * fg.rgb);`,
 
             hue: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(setSat(fg.rgb, blendSat(bg.rgb)), blendLum(bg.rgb)), 0.0, 1.0));`,
 
             saturation: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(setSat(bg.rgb, blendSat(fg.rgb)), blendLum(bg.rgb)), 0.0, 1.0));`,
 
             color: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(fg.rgb, blendLum(bg.rgb)), 0.0, 1.0));`,
 
             luminosity: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }[name];
@@ -2157,6 +2132,27 @@ vec4 blend_source_over(vec4 fg, vec4 bg) {
     if (!stencilPasses) return bg;
     vec4 pre_fg = vec4(fg.rgb * fg.a, fg.a);
     return pre_fg + bg * (1.0 - pre_fg.a);
+}
+
+// Non-separable blend mode helpers (hue, saturation, color, luminosity)
+float blendLum(vec3 c){return dot(c,vec3(.3,.59,.11));}
+float blendSat(vec3 c){return max(max(c.r,c.g),c.b)-min(min(c.r,c.g),c.b);}
+vec3 clipColor(vec3 c){
+    float l=blendLum(c),n=min(min(c.r,c.g),c.b),x=max(max(c.r,c.g),c.b);
+    if(n<0.) c=l+((c-l)*l)/(l-n);
+    if(x>1.) c=l+((c-l)*(1.-l))/(x-l);
+    return c;
+}
+vec3 setLum(vec3 c,float l){return clipColor(c+vec3(l-blendLum(c)));}
+vec3 setSat(vec3 c,float s){
+    float mn=min(min(c.r,c.g),c.b),mx=max(max(c.r,c.g),c.b);
+    if(mx<=mn) return vec3(0.);
+    if(c.r<=c.g&&c.g<=c.b) return vec3(0.,((c.g-mn)*s)/(mx-mn),s);
+    if(c.r<=c.b&&c.b<=c.g) return vec3(0.,s,((c.b-mn)*s)/(mx-mn));
+    if(c.g<=c.r&&c.r<=c.b) return vec3(((c.r-mn)*s)/(mx-mn),0.,s);
+    if(c.g<=c.b&&c.b<=c.r) return vec3(s,0.,((c.b-mn)*s)/(mx-mn));
+    if(c.b<=c.r&&c.r<=c.g) return vec3(((c.r-mn)*s)/(mx-mn),s,0.);
+    return vec3(s,((c.g-mn)*s)/(mx-mn),0.);
 }
 
 // CUSTOM BLEND FUNCTIONS

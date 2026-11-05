@@ -440,7 +440,8 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
     }
 
     glDrawing(program, gl) {
-        if (this._lutDirty) {
+        // Without init() the bake stays dirty forever and the colormap never shows.
+        if (this._lutDirty && this._ensureInitialized()) {
             this._bakeAndUploadLut();
         }
         gl.uniform1i(this.textureIdGluint, this.textureId);
@@ -1150,7 +1151,15 @@ return masked * bigger / actualLength;
         }
     }
 
+    _isInitialized() {
+        return Array.isArray(this.value) && Array.isArray(this.mask);
+    }
+
     glDrawing(program, gl) {
+        // _packVec4 reads .length, so drawing before init() would throw out of the render loop.
+        if (!this._ensureInitialized()) {
+            return;
+        }
         gl.uniform4fv(this.breaksGluint, this._packVec4(this.value, this.BREAK_VEC4S));
         gl.uniform4fv(this.maskGluint, this._packVec4(this.mask, this.MASK_VEC4S));
     }

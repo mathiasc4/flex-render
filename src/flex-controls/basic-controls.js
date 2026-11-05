@@ -610,6 +610,43 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * @param {string} className control class name used in the message
      * @param {string} [detail] what the absent node costs
      */
+    /**
+     * Whether the control holds state glDrawing can upload. Controls whose drawable state lives
+     * somewhere other than 'value' override this.
+     * @return {boolean}
+     */
+    _isInitialized() {
+        return this.value !== undefined;
+    }
+
+    /**
+     * Lazy fallback for a control drawn before init() ran: the shader missed the one-shot init in
+     * useProgram, or its own init() threw before reaching the control. Uploading the missing state
+     * either throws out of the render loop (vector uniform setters reject undefined) or silently
+     * feeds NaN. Try init() once per draw; if it still leaves the control uninitialized, warn once
+     * and let the caller skip the upload, keeping its dirty flag so a later set()/init() lands.
+     * @return {boolean} true when glDrawing may upload
+     */
+    _ensureInitialized() {
+        if (this._isInitialized()) {
+            return true;
+        }
+        try {
+            this.init();
+        } catch (e) {
+            // reported below
+        }
+        if (this._isInitialized()) {
+            return true;
+        }
+        if (!this._warnedUninitialized) {
+            this._warnedUninitialized = true;
+            $.console.warn(`FlexRenderer: control '${this.webGLVariableName}' of shader ` +
+                `'${this.owner && this.owner.id}' has no value at draw time; uniform upload skipped.`);
+        }
+        return false;
+    }
+
     _warnMissingNode(className, detail = "Cannot set event listener for the control.") {
         const renderer = this.owner && this.owner._renderer;
         if (!renderer || !renderer.htmlHandler) {
@@ -1122,6 +1159,11 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
             // debugging purposes
             // console.debug('Setting', this.component.glUniformFunName(), 'corresponding to', this.webGLVariableName, 'to value', this.value);
 
+            // Keeps _needsLoad on failure, so a later set()/init() still reaches the GPU.
+            if (!this._ensureInitialized()) {
+                return;
+            }
+
             // A uniform upload is only valid while its own program is the current one. Under a
             // shared WebGL context CURRENT_PROGRAM is context-global, so a stale binding shows up
             // here as "location is not from the associated program" with no clue which control is
@@ -1254,7 +1296,15 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         this._c1.set(encodedValue);
     }
 
+    _isInitialized() {
+        return this._c1.value !== undefined;
+    }
+
     glDrawing(program, gl) {
+        // _c1 would self-heal alone, but only this init() wires the _c1/_c2 mirroring.
+        if (!this._ensureInitialized()) {
+            return;
+        }
         this._c1.glDrawing(program, gl);
     }
 

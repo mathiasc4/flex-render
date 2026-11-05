@@ -308,6 +308,55 @@
         });
     });
 
+    // UIControls.build accepts a bare primitive as the control's default (`threshold: 65`, the v2
+    // shape). Every control whose envelope default is primitive must publish that shorthand too,
+    // otherwise a config that renders fine is reported as `params/<name>: must be object`.
+    QUnit.test("every primitive-default control param admits its primitive shorthand", function(assert) {
+        const model = ShaderConfigurator.compileConfigSchemaModel();
+        const envelopes = model.$defs.uiControlEnvelopes || {};
+        const shaderLayers = model.$defs.shaderLayers || {};
+        const primitiveOf = (type) => (type === "integer" ? "number" : type);
+
+        for (const [shaderType, shaderSchema] of Object.entries(shaderLayers)) {
+            const params = (shaderSchema.properties.params && shaderSchema.properties.params.properties) || {};
+            for (const [paramName, paramSchema] of Object.entries(params)) {
+                const refs = [paramSchema].concat(branches(paramSchema)).filter(s => s && s.$ref);
+                for (const ref of refs) {
+                    const envelope = envelopes[ref.$ref.split("/").pop()];
+                    const defaultSchema = envelope && envelope.properties && envelope.properties.default;
+                    const type = defaultSchema && (Array.isArray(defaultSchema.type) ? defaultSchema.type[0] : defaultSchema.type);
+                    if (!["string", "number", "integer", "boolean"].includes(type)) {
+                        continue;
+                    }
+                    assert.ok(
+                        schemaAllowsPrimitive(paramSchema, primitiveOf(type)),
+                        `${shaderType}.params.${paramName} accepts ${primitiveOf(type)} shorthand`
+                    );
+                }
+            }
+        }
+    });
+
+    QUnit.test("use_mode schema admits the legacy names the runtime aliases", function(assert) {
+        const model = ShaderConfigurator.compileConfigSchemaModel();
+        const validate = compileLayerValidator(createAjv(), model, "heatmap");
+
+        for (const mode of ["show", "blend", "clip", "mask", "mask_clip", "clip_mask"]) {
+            assert.ok(
+                validate({ id: "hm", type: "heatmap", params: { use_mode: mode } }), // eslint-disable-line camelcase
+                `use_mode: ${mode} validates`
+            );
+        }
+        assert.ok(
+            validate({ id: "hm_v2", type: "heatmap", params: { threshold: 65, use_mode: "mask_clip" } }), // eslint-disable-line camelcase
+            `v2-shaped heatmap layer validates: ${JSON.stringify(validate.errors)}`
+        );
+        assert.notOk(
+            validate({ id: "hm_typo", type: "heatmap", params: { use_mode: "clipp" } }), // eslint-disable-line camelcase
+            "an unknown use_mode is still rejected"
+        );
+    });
+
     QUnit.test("published control envelopes use type discriminator only", function(assert) {
         const model = ShaderConfigurator.compileConfigSchemaModel();
         const envelopes = model.$defs.uiControlEnvelopes || {};

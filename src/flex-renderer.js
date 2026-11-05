@@ -491,9 +491,9 @@
      * @property {Function} redrawCallback          function called when user input changed; triggers re-render of the viewport
      * @property {Function} refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
      *
-     * @property {object} canvasOptions
-     * @property {boolean} canvasOptions.alpha
-     * @property {boolean} canvasOptions.premultipliedAlpha
+     * @property {object} canvasOptions extra WebGL context attributes. `alpha`, `premultipliedAlpha`
+     *      and `preserveDrawingBuffer` are always forced to `true` (the pipeline outputs premultiplied
+     *      colour); passing other values for them has no effect.
      * @property {boolean} canvasOptions.stencil
      */
 
@@ -852,15 +852,22 @@
         /**
          * Normalize WebGL context creation options.
          *
-         * These defaults mirror WebGLImplementation.createWebglContext(...), but are
-         * normalized before shared-context comparison so omitted default values compare
-         * consistently.
+         * Forces alpha, premultipliedAlpha and preserveDrawingBuffer to true, mirroring
+         * WebGLImplementation.createWebglContext(...): rendering writes premultiplied colour
+         * and the presentation canvas is composited as such. Forced before shared-context
+         * comparison so renderers sharing a context compare consistently.
          *
          * @param {object|undefined} options
          * @return {object}
          */
         static normalizeCanvasOptions(options = undefined) {
             const normalized = $.extend(true, {}, options || {});
+
+            for (const key of ["alpha", "premultipliedAlpha", "preserveDrawingBuffer"]) {
+                if (normalized[key] === false) {
+                    $.console.warn(`FlexRenderer: canvasOptions.${key}=false is not supported and is overridden to true.`);
+                }
+            }
 
             normalized.alpha = true;
             normalized.premultipliedAlpha = true;
@@ -2393,16 +2400,19 @@
                                 shaderLayers: this._shaders,
                             });
                         }
-
-                        for (const shaderId in this._shaders) {
-                            try {
-                                this._shaders[shaderId].init();
-                            } catch (e) {
-                                $.console.warn(`Shader ${shaderId} init(). The shader control will not work.`, e);
-                            }
-                        }
                     } catch (e) {
-                        $.console.warn(`Second pass re-initialization error: the visualization might not render.`, e);
+                        $.console.warn(`Second pass HTML controls error: shader controls might not be interactive.`, e);
+                    }
+
+                    // Must run even when the HTML step threw: requiresLoad is already consumed, so this
+                    // is the only init the controls get, and an uninitialized control uploads an
+                    // undefined uniform value on every draw.
+                    for (const shaderId in this._shaders) {
+                        try {
+                            this._shaders[shaderId].init();
+                        } catch (e) {
+                            $.console.warn(`Shader ${shaderId} init(). The shader control will not work.`, e);
+                        }
                     }
                 }
             }

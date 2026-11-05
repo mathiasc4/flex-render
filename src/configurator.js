@@ -2285,7 +2285,7 @@
                 kind: "built-in",
                 type: "string",
                 usage: "Rendering mode resolved by resetMode(). Supported values come from renderer WebGL context.",
-                allowedValues: ["show", "blend", "clip", "mask", "clip_mask"],
+                allowedValues: ["show", "blend", "clip", "mask", "mask_clip", "clip_mask"],
                 default: firstDefined(spec.required, spec.default, "show"),
                 required: firstDefined(spec.required, null)
             };

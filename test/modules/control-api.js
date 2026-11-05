@@ -145,6 +145,70 @@
         });
     });
 
+    QUnit.test('glDrawing before init() uploads a defined value instead of throwing', function(assert) {
+        // A shader that missed the one-shot init in useProgram used to reach glDrawing with
+        // value === undefined; uniform3fv(loc, undefined) throws out of the render loop.
+        const control = buildControl("color");
+        const uploads = [];
+        const gl = {
+            uniform3fv: (location, value) => {
+                if (!value || typeof value[Symbol.iterator] !== "function") {
+                    throw new TypeError("The provided value cannot be converted to a sequence.");
+                }
+                uploads.push(Array.from(value));
+            }
+        };
+
+        control.glDrawing(null, gl);
+
+        assert.strictEqual(uploads.length, 1, "uniform was uploaded once");
+        assert.strictEqual(uploads[0].length, 3, "uploaded value is a vec3");
+    });
+
+    QUnit.test('every control type survives glDrawing before init()', function(assert) {
+        // Same failure for controls with their own glDrawing: AdvancedSlider packed an undefined
+        // array, ColorMap never baked its LUT. Vector setters reject non-sequences like WebGL
+        // does; scalar setters also reject NaN, which WebGL would swallow silently.
+        const types = Object.keys(UIControls._items).concat(Object.keys(UIControls._impls));
+        const bad = [];
+        let current;
+        const gl = new Proxy({}, {
+            get: (target, fn) => (location, value) => {
+                if (typeof fn !== "string" || !fn.startsWith("uniform")) {
+                    return undefined;
+                }
+                const ok = fn.endsWith("v") ?
+                    value && typeof value[Symbol.iterator] === "function" &&
+                        Array.from(value).every(Number.isFinite) :
+                    Number.isFinite(value);
+                if (!ok) {
+                    bad.push(`${current}: ${fn}(${value})`);
+                }
+                return undefined;
+            }
+        });
+
+        types.forEach(type => {
+            current = type;
+            const control = buildControl(type);
+            if (!control) {
+                assert.ok(false, `${type}: control was built`);
+                return;
+            }
+            try {
+                control.glDrawing(null, gl);
+                assert.ok(true, `${type}: glDrawing did not throw`);
+                if (control instanceof UIControls.ColorMap) {
+                    assert.notOk(control._lutDirty, `${type}: LUT was baked on the first draw`);
+                }
+            } catch (e) {
+                assert.ok(false, `${type}: glDrawing threw ${e}`);
+            }
+        });
+
+        assert.deepEqual(bad, [], "no uniform received an undefined or NaN value");
+    });
+
     QUnit.test('cache object round-trips through loadCacheObject', function(assert) {
         const cases = fixtures();
 

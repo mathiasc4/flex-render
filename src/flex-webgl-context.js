@@ -262,7 +262,7 @@
          * @return {string[]}
          */
         get supportedUseModes() {
-            return ["show", "blend", "clip", "mask", "clip_mask"];
+            return ["show", "blend", "clip", "mask", "mask_clip", "clip_mask"];
         }
 
         /**

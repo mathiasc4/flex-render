@@ -70,6 +70,9 @@
             this._destroyed = false;
             this._imageSmoothingEnabled = false; // will be updated by setImageSmoothingEnabled
             this._configuredExternally = false;
+            // set when a navigator mirror was skipped because the navigator drawer did not exist yet;
+            // consumed by _onNavigatorDrawerReady()
+            this._navigatorSyncPending = false;
             this._managedShaderSourceSlots = new Map();
             this._managedShaderSourceNextIndex = null;
             // We have 'undefined' extra format for blank tiles
@@ -193,8 +196,9 @@
             // todo reset also when reordering tiled images!
             // or we could change order only
 
-            if (this.options.handleNavigator && this.viewer.navigator) {
-                this.viewer.navigator.drawer.overrideConfigureAll(shaders, shaderOrder, options);
+            const navDrawer = this._getNavigatorDrawer();
+            if (navDrawer) {
+                navDrawer.overrideConfigureAll(shaders, shaderOrder, options);
             }
 
             const willBeConfigured = !!shaders;
@@ -266,7 +270,8 @@
                 this.tiledImageCreated(tiledImage);
             }
 
-            if (this.options.handleNavigator && this.viewer.navigator) {
+            const navDrawer = this._getNavigatorDrawer();
+            if (navDrawer) {
                 const nav = this.viewer.navigator;
                 let tiledImageNavigator = null;
                 for (let i = 0; i < nav.world.getItemCount(); i++) {
@@ -277,7 +282,7 @@
                 }
 
                 if (tiledImageNavigator) {
-                    this.viewer.navigator.drawer.configureTiledImage(tiledImageNavigator, shader);
+                    navDrawer.configureTiledImage(tiledImageNavigator, shader);
                 } else {
                     $.console.warn("Could not find corresponding tiled image for the navigator!");
                 }
@@ -403,14 +408,18 @@
          * @return {Promise}
          */
         rebuild() {
-            if (this.options.handleNavigator) {
+            // The navigator (and its drawer) is created asynchronously, so a rebuild can fire
+            // before it exists. _getNavigatorDrawer() returns null then and marks the mirror
+            // pending; _onNavigatorDrawerReady() replays it once the navigator drawer appears.
+            const navDrawer = this._getNavigatorDrawer();
+            if (navDrawer) {
                 // Callers like UTILITIES.changeModeOfLayer, setFilterOfLayer, the
                 // shaderSideMenu visibility toggle, and shader-order reorders mutate
                 // only the main shader's config/params and then call rebuild().
                 // Mirror that state into the navigator's shader instances first so
                 // its rebuild doesn't re-emit the previous (stale) configuration.
                 this._syncNavigatorShaderState();
-                this.viewer.navigator.drawer.rebuild();
+                navDrawer.rebuild();
             }
             return this._requestRebuild();
         }
@@ -461,14 +470,11 @@
                 shaderType: shader.constructor.type()
             });
 
-            if (
-                syncNavigator &&
-                !request.drawerLocalWorldIndex &&
-                this.options.handleNavigator &&
-                this.viewer.navigator &&
-                this.viewer.navigator.drawer
-            ) {
-                this.viewer.navigator.drawer._applyShaderConfigMutationRequest(request, false);
+            if (syncNavigator && !request.drawerLocalWorldIndex) {
+                const navDrawer = this._getNavigatorDrawer();
+                if (navDrawer) {
+                    navDrawer._applyShaderConfigMutationRequest(request, false);
+                }
             }
 
             if (resetItems && this.viewer.world && typeof this.viewer.world.resetItems === "function") {
@@ -480,6 +486,55 @@
             }
             this.viewer.forceRedraw();
             return $.Promise.resolve();
+        }
+
+        /**
+         * Navigator drawer to mirror into, or null when mirroring is off or the navigator
+         * drawer does not exist yet. In the latter case the mirror is marked pending so
+         * _onNavigatorDrawerReady() can catch the navigator up later.
+         * @private
+         * @return {OpenSeadragon.FlexDrawer|null}
+         */
+        _getNavigatorDrawer() {
+            if (!this.options.handleNavigator) {
+                return null;
+            }
+            const nav = this.viewer && this.viewer.navigator;
+            const navDrawer = nav && nav.drawer;
+            if (!navDrawer || navDrawer._destroyed) {
+                this._navigatorSyncPending = true;
+                return null;
+            }
+            return navDrawer;
+        }
+
+        /**
+         * Called by a navigator drawer once it exists. Replays navigator mirroring that was
+         * skipped while the navigator drawer was missing.
+         * @private
+         * @param {OpenSeadragon.FlexDrawer} navDrawer
+         */
+        _onNavigatorDrawerReady(navDrawer) {
+            if (this._destroyed || !this._navigatorSyncPending || this._getNavigatorDrawer() !== navDrawer) {
+                return;
+            }
+            this._navigatorSyncPending = false;
+
+            if (this._configuredExternally) {
+                // Pass the main drawer's own config objects, as the original overrideConfigureAll()
+                // call would have, so both drawers share shader IDs (and thus control wiring).
+                const shaders = {};
+                const allShaders = this.renderer.getAllShaders();
+                for (const id in allShaders) {
+                    shaders[id] = allShaders[id].getConfig();
+                }
+                navDrawer.overrideConfigureAll(shaders, this.renderer.getShaderLayerOrder().slice());
+            }
+            // Internally managed configs are picked up by the navigator's own tiledImageCreated(),
+            // which copies the parent's shader IDs.
+
+            this._syncNavigatorShaderState();
+            navDrawer.rebuild();
         }
 
         /**
@@ -2867,6 +2922,17 @@
                 });
             this.renderer = new $.FlexRenderer(rendererOptions);
             this.renderer.drawer = this;
+
+            if (this._isNavigatorDrawer) {
+                // Let the parent drawer replay mirroring it skipped while this drawer did not exist.
+                // Deferred: OSD assigns viewer.navigator only after the Navigator constructor returns.
+                setTimeout(() => {
+                    const parent = this.viewer.viewer && this.viewer.viewer.drawer;
+                    if (!this._destroyed && parent && typeof parent._onNavigatorDrawerReady === "function") {
+                        parent._onNavigatorDrawerReady(this);
+                    }
+                }, 0);
+            }
 
             this.renderer.setDataBlendingEnabled(true); // enable alpha blending
             this.webGLVersion = this.renderer.webglVersion;

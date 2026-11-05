@@ -1306,19 +1306,7 @@
             result = predefined && predefined.required;
 
             if (!result) {
-                let dynamicValue = options[name];
-                if (name === "use_mode") {
-                    // Supporting legacy names
-                    if (dynamicValue === "mask") {
-                        dynamicValue = "blend";
-                        $.console.warn("OpenSeadragon.FlexRenderer.ShaderLayer: use_mode 'mask' is deprecated, use 'blend' instead.");
-                    }
-                    if (dynamicValue === "mask_clip") {
-                        dynamicValue = "clip";
-                        $.console.warn("OpenSeadragon.FlexRenderer.ShaderLayer: use_mode 'mask_clip' is deprecated, use 'clip' instead.");
-                    }
-                }
-
+                const dynamicValue = options[name];
                 if (dynamicValue) {
                     // firstly try to load from cache, if not in cache, use options.use_mode
                     result = force ? dynamicValue : this.loadProperty(name, dynamicValue);
@@ -1329,6 +1317,23 @@
                     }
                 } else {
                     result = (predefined && predefined.default) || supportedValueList[0];
+                }
+            }
+
+            if (name === "use_mode") {
+                // Supporting legacy names. Resolved after the cache lookup: a persisted cache may
+                // still hold a legacy name stored verbatim by an older build.
+                const legacy = result;
+                if (legacy === "mask") {
+                    result = "blend";
+                } else if (legacy === "mask_clip" || legacy === "clip_mask") {
+                    result = "clip";
+                }
+                if (result !== legacy) {
+                    $.console.warn(`OpenSeadragon.FlexRenderer.ShaderLayer: use_mode '${legacy}' is deprecated, use '${result}' instead.`);
+                    if (this.cache[name] === legacy) {
+                        this.storeProperty(name, result);
+                    }
                 }
             }
 
