@@ -520,8 +520,7 @@
                     shaderModules,
                     shaderModuleGraph
                 },
-                "x-schemaVersion": 3,
-                "x-generatedAt": new Date().toISOString()
+                "x-schemaVersion": 3
             };
 
             return schema;

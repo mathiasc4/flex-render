@@ -547,9 +547,14 @@
          * Initialize the ShaderLayer's controls.
          */
         init() {
+            // Per-control: one throwing control must not leave the ones after it uninitialized.
             for (const controlName in this._controls) {
                 const control = this[controlName];
-                control.init();
+                try {
+                    control.init();
+                } catch (e) {
+                    $.console.warn(`Shader ${this.id} control '${controlName}' init() failed. The control will not work.`, e);
+                }
             }
         }
 
@@ -1295,6 +1300,28 @@
             return `vec4(${comps.slice(0, 4).join(", ")})`;
         }
 
+        /**
+         * Map a legacy use_mode name to its current one, warning once per layer and name.
+         * @param {string} mode
+         * @return {string}
+         */
+        _resolveLegacyUseMode(mode) {
+            let resolved = mode;
+            if (mode === "mask") {
+                resolved = "blend";
+            } else if (mode === "mask_clip" || mode === "clip_mask") {
+                resolved = "clip";
+            }
+            if (resolved !== mode) {
+                this._warnedLegacyUseModes = this._warnedLegacyUseModes || {};
+                if (!this._warnedLegacyUseModes[mode]) {
+                    this._warnedLegacyUseModes[mode] = true;
+                    $.console.warn(`OpenSeadragon.FlexRenderer.ShaderLayer: use_mode '${mode}' is deprecated, use '${resolved}' instead.`);
+                }
+            }
+            return resolved;
+        }
+
         _resetOption(name, supportedValueList, options = {}, force = true) {
             let result;
             if (!options) {
@@ -1306,7 +1333,12 @@
             result = predefined && predefined.required;
 
             if (!result) {
-                const dynamicValue = options[name];
+                let dynamicValue = options[name];
+                if (name === "use_mode") {
+                    // Remapped before caching: the cache then never receives a legacy name, so
+                    // forced resets (every rebuild, every navigator sync) do not churn it.
+                    dynamicValue = this._resolveLegacyUseMode(dynamicValue);
+                }
                 if (dynamicValue) {
                     // firstly try to load from cache, if not in cache, use options.use_mode
                     result = force ? dynamicValue : this.loadProperty(name, dynamicValue);
@@ -1321,19 +1353,12 @@
             }
 
             if (name === "use_mode") {
-                // Supporting legacy names. Resolved after the cache lookup: a persisted cache may
-                // still hold a legacy name stored verbatim by an older build.
+                // Also resolved after the cache lookup: a persisted cache may still hold a legacy
+                // name stored verbatim by an older build.
                 const legacy = result;
-                if (legacy === "mask") {
-                    result = "blend";
-                } else if (legacy === "mask_clip" || legacy === "clip_mask") {
-                    result = "clip";
-                }
-                if (result !== legacy) {
-                    $.console.warn(`OpenSeadragon.FlexRenderer.ShaderLayer: use_mode '${legacy}' is deprecated, use '${result}' instead.`);
-                    if (this.cache[name] === legacy) {
-                        this.storeProperty(name, result);
-                    }
+                result = this._resolveLegacyUseMode(legacy);
+                if (result !== legacy && this.cache[name] === legacy) {
+                    this.storeProperty(name, result);
                 }
             }
 

@@ -209,6 +209,45 @@
         assert.deepEqual(bad, [], "no uniform received an undefined or NaN value");
     });
 
+    /**
+     * Build a control declared like ShaderLayer opacity (range 0..1) but configured with another type.
+     */
+    function buildOverridden(customParams) {
+        const definition = {
+            default: { type: "range", default: 1, min: 0, max: 1, step: 0.1 },
+            accepts: () => true,
+            required: {}
+        };
+        return UIControls.build(makeOwner(), "opacity", definition, "control_api_override", customParams);
+    }
+
+    QUnit.test('type override with the same glType keeps the value domain', function(assert) {
+        ["range_input", "number"].forEach(type => {
+            const control = buildOverridden({ type: type, default: 0.5 });
+            control.init();
+            assert.strictEqual(control.params.min, 0, `${type}: min carried over`);
+            assert.strictEqual(control.params.max, 1, `${type}: max carried over`);
+            assert.strictEqual(control.params.step, 0.1, `${type}: step carried over`);
+            assert.strictEqual(control.raw, 0.5, `${type}: 0.5 reaches the shader as 0.5`);
+        });
+
+        const custom = buildOverridden({ type: "number", default: 5, max: 10 });
+        assert.strictEqual(custom.params.max, 10, "explicit max wins over the carried domain");
+    });
+
+    QUnit.test('type override with a different glType warns that the domain is dropped', function(assert) {
+        const warn = console.warn;
+        const warnings = [];
+        console.warn = (...args) => warnings.push(args.join(" "));
+        try {
+            buildOverridden({ type: "bool", default: true });
+        } finally {
+            console.warn = warn;
+        }
+        assert.ok(warnings.some(w => w.includes("opacity") && w.includes("dropped")),
+            "warning names the control and the dropped domain");
+    });
+
     QUnit.test('cache object round-trips through loadCacheObject', function(assert) {
         const cases = fixtures();
 

@@ -262,7 +262,8 @@
          * @return {string[]}
          */
         get supportedUseModes() {
-            return ["show", "blend", "clip", "mask", "mask_clip", "clip_mask"];
+            // Legacy aliases (mask, mask_clip, clip_mask) are remapped by ShaderLayer._resetOption first.
+            return ["show", "blend", "clip"];
         }
 
         /**

@@ -439,6 +439,15 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
         this.changed("default", this.pallete, this.value, this);
     }
 
+    /**
+     * init() assigns 'value' before the palette lookup that can throw, so 'value' alone would
+     * report a half-run init() as done and the bake would stay dirty forever.
+     * @return {boolean}
+     */
+    _isInitialized() {
+        return this.value !== undefined && !!this.pallete;
+    }
+
     glDrawing(program, gl) {
         // Without init() the bake stays dirty forever and the colormap never shows.
         if (this._lutDirty && this._ensureInitialized()) {

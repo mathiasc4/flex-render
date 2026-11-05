@@ -46,6 +46,12 @@ MVT vector tiles, world not a multiple of tileSize:
  * FIX worker `config` handler did STYLE = msg.style || STYLE - replaced whole object. TileJSON
    style declares `layers` only -> STYLE.fallback undefined -> unknown layer name dereferenced
    undefined.type -> worker throw instead of default style. Now merged.
+ * NEW MVTTileSource.configure honours TileJSON `width`/`height` (non-standard extension, both
+   required, image anchored at tile 0,0). Before: always square 2^maxLevel * tileSize -> slide layer
+   covered top 47% only, consumers needed a factory. Missing maxzoom with declared size -> smallest
+   level that fits. `bounds` ignored on purpose: lon/lat, non-origin needs tile offset OSD lacks.
+ * FIX getTileUrl TMS / {-y} flip used 1 << z rows. Now getNumTiles(level).y. Square: identical.
+   Test mvt-tilejson-world.js.
 
 Shader coordinate units on HiDPI displays:
  * FIX grid + gridheatmap drew cells 1/devicePixelRatio of configured size when devicePixelRatio
@@ -113,6 +119,10 @@ Shared-context correctness:
    is not from the associated program", forever, nothing re-links on its own.
  * Now: builds + links into scratch program, swaps only after link succeeds. Failure leaves previous
    program bound and rendering. Throws like the validation path instead of returning undefined.
+ * Failed build/link also restores registry entry. Fresh implementation handed in for occupied key
+   was assigned into _programImplementations before build (setBackground needs it) and left there
+   on throw -> map named unlinked instance, live program of previous unreferenced. Unoccupied key
+   left unregistered.
  * Reachable whenever SecondPassProgram widens uniform arrays (world past _uTiInfoSlots, or past
    instance/texture-index sizes) on a device where that crosses MAX_FRAGMENT_UNIFORM_VECTORS.
  * Every registerProgram() caller that could not see a failure now handles the throw and reports it:
@@ -221,6 +231,11 @@ FlexRenderer:
  * render() binds default framebuffer before clearing in private mode. Frame whose second pass was
    empty left first-pass offscreen framebuffer bound -> next frame clear landed there, not on the
    canvas.
+
+Config schema:
+ * FIX compileConfigSchemaModel() deterministic again. "x-generatedAt" timestamp, removed in
+   52bc6a3, came back via modular-shader-layers merge a226445 -> two dumps never byte-equal, schema
+   not content-hashable. Docs model generatedAt (shown as "Generated at") unaffected.
 
 ShaderLayer interaction requirement:
  * NEW static ShaderLayer.requiresInteraction(), default false. True on fisheye-lens +

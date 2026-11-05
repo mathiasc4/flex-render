@@ -158,10 +158,14 @@ $.FlexRenderer.UIControls = class {
         // hints, titles) are not transferable to a different control type and would corrupt the new control's
         // expected param shape. Drop defaultParams in that case and let the chosen control's own `supports`
         // fill in defaults via getParams(). requiredParams is layer-enforced and stays.
+        // Exception: the value domain (min/max/step) is the layer's statement about what the parameter
+        // means, not type-specific config. It is carried over when the new control has the same glType,
+        // otherwise normalize() would silently change units (e.g. opacity 0.5 in a 0..100 range = 0.005).
         const userType = customParams && customParams.type;
         const typeOverridden = userType && originalType && userType !== originalType;
         const params = typeOverridden
-            ? $.extend(true, {}, customParams, requiredParams)
+            ? $.extend(true, {}, this._carriedDomain(controlName, originalType, userType, defaultParams),
+                customParams, requiredParams)
             : $.extend(true, {}, defaultParams, customParams, requiredParams);
 
         if (!this._items[params.type]) {
@@ -193,6 +197,40 @@ $.FlexRenderer.UIControls = class {
             return this._buildFallback(intristicComponent.glType, originalType,
                 owner, controlName, controlObject, controlId, params);
         }
+    }
+
+    /**
+     * Pick the value domain (min/max/step) of the original control to keep when its type is overridden.
+     * Carried only between controls of the same glType; otherwise warns that the domain is dropped.
+     * @param {string} controlName
+     * @param {string} originalType
+     * @param {string} newType
+     * @param {object} defaultParams
+     * @return {object}
+     */
+    static _carriedDomain(controlName, originalType, newType, defaultParams) {
+        const domain = {};
+        for (const key of ["min", "max", "step"]) {
+            if (defaultParams[key] !== undefined) {
+                domain[key] = defaultParams[key];
+            }
+        }
+        if (!Object.keys(domain).length) {
+            return domain;
+        }
+
+        const original = this.describeType(originalType),
+            replacement = this.describeType(newType);
+        if (!original || !replacement) {
+            // unknown type: build() falls back to the original type, which merges defaultParams again
+            return {};
+        }
+        if (original.glType === replacement.glType) {
+            return domain;
+        }
+        console.warn(`Control '${controlName}': type '${originalType}' overridden by '${newType}' with a different ` +
+            `GL type, the value domain ${JSON.stringify(domain)} is dropped and the new control's defaults apply.`);
+        return {};
     }
 
     static _buildFallback(newType, originalType, owner, controlName, controlObject, controlId, customParams) {
@@ -596,21 +634,6 @@ $.FlexRenderer.UIControls.IControl = class IControl {
     }
 
     /**
-     * Report a control whose HTML mount is not present in the DOM.
-     *
-     * Control init() runs inside FlexRenderer's per-shader try/catch, which reduces any throw to a
-     * generic "the shader control will not work" and drops the reason. A missing mount is a host
-     * integration problem (markup not inserted, or inserted after init), so it is reported here
-     * where the control identity is still known and the caller skips the interactive wiring.
-     *
-     * Silent when the renderer has no htmlHandler: such a configuration renders without control
-     * markup on purpose (navigator drawer, standalone/offscreen rendering), so an absent node is
-     * expected rather than a fault.
-     *
-     * @param {string} className control class name used in the message
-     * @param {string} [detail] what the absent node costs
-     */
-    /**
      * Whether the control holds state glDrawing can upload. Controls whose drawable state lives
      * somewhere other than 'value' override this.
      * @return {boolean}
@@ -647,6 +670,21 @@ $.FlexRenderer.UIControls.IControl = class IControl {
         return false;
     }
 
+    /**
+     * Report a control whose HTML mount is not present in the DOM.
+     *
+     * Control init() runs inside ShaderLayer.init()'s per-control try/catch, which reduces any throw
+     * to a generic "init() failed" and drops the reason. A missing mount is a host
+     * integration problem (markup not inserted, or inserted after init), so it is reported here
+     * where the control identity is still known and the caller skips the interactive wiring.
+     *
+     * Silent when the renderer has no htmlHandler: such a configuration renders without control
+     * markup on purpose (navigator drawer, standalone/offscreen rendering), so an absent node is
+     * expected rather than a fault.
+     *
+     * @param {string} className control class name used in the message
+     * @param {string} [detail] what the absent node costs
+     */
     _warnMissingNode(className, detail = "Cannot set event listener for the control.") {
         const renderer = this.owner && this.owner._renderer;
         if (!renderer || !renderer.htmlHandler) {
@@ -1265,7 +1303,8 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         const _this = this;
         this._c2._params = this._c1._params;
         this._c1.init();
-        this._c2.init();
+        // Wire the mirroring before _c2.init(): _isInitialized() only tracks _c1, so a throw
+        // from _c2 must not leave a drawable control without its _c1/_c2 sync.
         this._c1.on("default", function(value, encoded, owner) {
             const c2 = document.getElementById(_this._c2.id);
             if (c2) {
@@ -1286,6 +1325,7 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
             _this._c1._needsLoad = true;
             _this.changed("default", value, encoded, owner);
         }, true); //silently fail if registered
+        this._c2.init();
     }
 
     /**

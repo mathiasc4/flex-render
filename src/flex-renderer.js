@@ -2182,65 +2182,79 @@
             for (let shaderId in this._shaders) {
                 reinstantiateIfTypeChanged(shaderId, this._shaders[shaderId], null);
             }
-            // Needs reference early
+            // Needs reference early: setBackground() writes _bgColor onto the registered instance,
+            // which build() then bakes into the GLSL.
             this._programImplementations[key] = program;
-            this.backend.setBackground(this._background);
+            let webglProgram;
+            try {
+                this.backend.setBackground(this._background);
 
-            // Building with an empty order over a non-empty shader set is always a bug, and it used
-            // to present as a white canvas with no diagnostic at all: the program links, the layer
-            // list looks right, and only a per-frame GL_INVALID_OPERATION hints at it. Say it here,
-            // where both halves of the contradiction are in scope.
-            const buildOrder = this.getShaderLayerOrder();
-            const registeredIds = Object.keys(this._shaders);
-            if (!buildOrder.length && registeredIds.length) {
-                $.console.error(`$.FlexRenderer: program '${key}' is being built with an EMPTY ` +
-                    `render order while ${registeredIds.length} shader layer(s) are registered ` +
-                    `(${registeredIds.join(", ")}). Nothing will be composed and the output will ` +
-                    `be the background colour. Check what last called setShaderLayerOrder().`);
-            }
-
-            program.build(this._shaders, buildOrder);
-
-            // Check the fragment uniform budget before the driver does. Left to the driver this
-            // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
-            // MAX_FRAGMENT_UNIFORM_VECTORS(256)" with no indication of which declarations are
-            // responsible — and only on the devices that are too small, which are rarely the ones
-            // being developed on.
-            const uniformBudget = this.backend && this.backend.maxFragmentUniformVectors;
-            if (uniformBudget && typeof program.fragmentShader === "string") {
-                const estimate = $.FlexRenderer.WebGLImplementation
-                    .estimateFragmentUniformVectors(program.fragmentShader);
-                program.__uniformVectorEstimate = estimate;
-
-                if (estimate.total > uniformBudget) {
-                    const worst = estimate.items.slice(0, 8)
-                        .map(item => `    ${String(item.vectors).padStart(4)}  ${item.type} ${item.name}` +
-                            `${item.length > 1 ? `[${item.length}]` : ""}`)
-                        .join("\n");
-                    $.console.error(
-                        `[FlexRenderer] Program "${key}" declares ~${estimate.total} fragment uniform ` +
-                        `vectors but this device allows ${uniformBudget}; the link is expected to fail.\n` +
-                        `Largest consumers:\n${worst}\n` +
-                        `Reduce the number of shader layers, or the number of colormap / ` +
-                        `advanced_slider controls — those are the largest per-control consumers.`
-                    );
+                // Building with an empty order over a non-empty shader set is always a bug, and it used
+                // to present as a white canvas with no diagnostic at all: the program links, the layer
+                // list looks right, and only a per-frame GL_INVALID_OPERATION hints at it. Say it here,
+                // where both halves of the contradiction are in scope.
+                const buildOrder = this.getShaderLayerOrder();
+                const registeredIds = Object.keys(this._shaders);
+                if (!buildOrder.length && registeredIds.length) {
+                    $.console.error(`$.FlexRenderer: program '${key}' is being built with an EMPTY ` +
+                        `render order while ${registeredIds.length} shader layer(s) are registered ` +
+                        `(${registeredIds.join(", ")}). Nothing will be composed and the output will ` +
+                        `be the background colour. Check what last called setShaderLayerOrder().`);
                 }
-            }
 
-            const errMsg = program.getValidateErrorMessage();
-            if (errMsg) {
-                // Nothing has been created yet and the previously linked program is untouched;
-                // it keeps rendering while the caller decides what to do.
-                throw new Error(errMsg);
-            }
+                program.build(this._shaders, buildOrder);
 
-            const webglProgram = this.gl.createProgram();
-            if (!$.FlexRenderer.WebGLImplementation._compileProgram(
-                webglProgram, this.gl, program, $.console.error, this.debug
-            )) {
-                this.gl.deleteProgram(webglProgram);
-                throw new Error(`$.FlexRenderer::registerProgram: program "${key}" failed to compile or ` +
-                    `link; the previously linked program is kept. See the COMPILE/LINK log above.`);
+                // Check the fragment uniform budget before the driver does. Left to the driver this
+                // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
+                // MAX_FRAGMENT_UNIFORM_VECTORS(256)" with no indication of which declarations are
+                // responsible — and only on the devices that are too small, which are rarely the ones
+                // being developed on.
+                const uniformBudget = this.backend && this.backend.maxFragmentUniformVectors;
+                if (uniformBudget && typeof program.fragmentShader === "string") {
+                    const estimate = $.FlexRenderer.WebGLImplementation
+                        .estimateFragmentUniformVectors(program.fragmentShader);
+                    program.__uniformVectorEstimate = estimate;
+
+                    if (estimate.total > uniformBudget) {
+                        const worst = estimate.items.slice(0, 8)
+                            .map(item => `    ${String(item.vectors).padStart(4)}  ${item.type} ${item.name}` +
+                                `${item.length > 1 ? `[${item.length}]` : ""}`)
+                            .join("\n");
+                        $.console.error(
+                            `[FlexRenderer] Program "${key}" declares ~${estimate.total} fragment uniform ` +
+                            `vectors but this device allows ${uniformBudget}; the link is expected to fail.\n` +
+                            `Largest consumers:\n${worst}\n` +
+                            `Reduce the number of shader layers, or the number of colormap / ` +
+                            `advanced_slider controls — those are the largest per-control consumers.`
+                        );
+                    }
+                }
+
+                const errMsg = program.getValidateErrorMessage();
+                if (errMsg) {
+                    // Nothing has been created yet and the previously linked program is untouched;
+                    // it keeps rendering while the caller decides what to do.
+                    throw new Error(errMsg);
+                }
+
+                webglProgram = this.gl.createProgram();
+                if (!$.FlexRenderer.WebGLImplementation._compileProgram(
+                    webglProgram, this.gl, program, $.console.error, this.debug
+                )) {
+                    this.gl.deleteProgram(webglProgram);
+                    throw new Error(`$.FlexRenderer::registerProgram: program "${key}" failed to compile or ` +
+                        `link; the previously linked program is kept. See the COMPILE/LINK log above.`);
+                }
+            } catch (e) {
+                // A failed build changes nothing: when a fresh instance was handed in for an
+                // occupied key, the map must keep naming the one whose program is still linked,
+                // not the unlinked replacement.
+                if (previous === undefined) {
+                    delete this._programImplementations[key];
+                } else {
+                    this._programImplementations[key] = previous;
+                }
+                throw e;
             }
 
             // Linked: only now is the old implementation expendable. deleteProgram() looks the

@@ -2902,7 +2902,9 @@
                         // on the nav controls and the _needsLoad=true left by .set() never flushes.
                         // Gated on the (opt-in, default-true) handleNavigator option; skipped on
                         // the navigator drawer itself which has handleNavigator forced to false.
-                        if (this.options.handleNavigator && this.viewer.navigator) {
+                        // _getNavigatorDrawer() also marks the mirror pending while the navigator
+                        // drawer is missing, so _onNavigatorDrawerReady() catches up the control state.
+                        if (this._getNavigatorDrawer()) {
                             this._syncNavigatorShaderState();
                             this.viewer.navigator.forceRedraw();
                         }
