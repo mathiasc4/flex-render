@@ -230,7 +230,9 @@
                     invalidate: this.invalidate,
                     rebuild: this._rebuild,
                     refresh: this._refresh,
-                    refetch: this._refetch
+                    refetch: this._refetch,
+                    // same namespace as this wrapper, so wrappers in different groups stay distinct
+                    uidPrefix: this._uidPrefix
                 });
                 this._delegateShader.construct();
 
@@ -255,6 +257,7 @@
                     this._delegateShader.destroy();
                     this._delegateShader = null;
                 }
+                super.destroy();
             }
 
             glLoaded(program, gl) {
@@ -277,10 +280,10 @@ ${this._delegateShader.getFragmentShaderDefinition()}`;
                 return this._delegateShader.getFragmentShaderExecution();
             }
 
-            htmlControls(wrapper = null, classes = "", css = "") {
+            htmlControls(...args) {
                 return `
-${super.htmlControls(wrapper, classes, css)}
-${this._delegateShader.htmlControls(wrapper, classes, css)}`;
+${super.htmlControls(...args)}
+${this._delegateShader.htmlControls(...args)}`;
             }
         }
     );

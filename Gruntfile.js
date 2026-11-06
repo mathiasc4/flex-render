@@ -51,7 +51,7 @@ module.exports = function(grunt) {
             "src/flex-webgl2.js",
             "src/flex-webgl2-atlas.js",
             "src/flex-drawer.js",
-            "src/workers/http-bridge.main.js",
+            "src/tile-sources/workers/http-bridge.main.js",
             "src/flex-standalone.js",
             "src/flex-layers/adaptive-threshold.js",
             "src/flex-layers/bipolar-heatmap.js",
@@ -118,7 +118,7 @@ module.exports = function(grunt) {
     }
 
     // --port lets the suite run when something else already holds the default (docker, WSL, ...)
-    const testPort = grunt.option('port') || 8888;
+    const testPort = Number(grunt.option('port')) || 8888;
 
     // ----------
     // Project configuration.

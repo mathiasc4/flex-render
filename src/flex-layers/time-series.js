@@ -261,7 +261,9 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
             invalidate: this.invalidate,
             rebuild: this._rebuild,
             refresh: this._refresh,
-            refetch: this._refetch
+            refetch: this._refetch,
+            // same namespace as this wrapper, so wrappers in different groups stay distinct
+            uidPrefix: this._uidPrefix
         });
         this._renderer.construct();
         this._renderer.removeControl("opacity");
@@ -311,6 +313,7 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
             this._renderer.destroy();
             this._renderer = null;
         }
+        super.destroy();
     }
 
     getFragmentShaderDefinition() {
@@ -333,11 +336,11 @@ ${this._renderer.getFragmentShaderDefinition()}`;
         this._renderer.glDrawing(program, gl);
     }
 
-    htmlControls(wrapper = null, classes = "", css = "") {
+    htmlControls(...args) {
         return `
-${super.htmlControls(wrapper, classes, css)}
+${super.htmlControls(...args)}
 <h4>Rendering as ${this._renderer.constructor.name()}</h4>
-${this._renderer.htmlControls(wrapper, classes, css)}`;
+${this._renderer.htmlControls(...args)}`;
     }
 });
 

@@ -251,7 +251,8 @@ $.FlexRenderer.UIControls = class {
      * Register simple UI element by providing necessary object
      * implementation:
      *  { defaults: function() {...}, // object with all default values for all supported parameters
-         html: function(uniqueId, params, classes="", css="") {...}, //how the HTML UI controls look like
+         html: function(uniqueId, params, classes="", css="", options={}) {...}, //how the HTML UI controls look like,
+                                                options.inputClasses: see UIControls.resolveInputClasses
         glUniformFunName: function() {...}, //what function webGL uses to pass this attribute to GPU
         decode: function(fromValue) {...}, //parse value obtained from HTML controls into something
                                                 gl[glUniformFunName()](...) can pass to GPU
@@ -315,6 +316,123 @@ $.FlexRenderer.UIControls = class {
         return values.filter(value => typeof value === "string" && value.trim()).join(" ").trim();
     }
 
+    /**
+     * Escape a string for safe insertion into HTML text or a quoted attribute.
+     * @param {*} value
+     * @return {string}
+     */
+    static escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return "";
+        }
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    /**
+     * Copy of the per-role default classes appended to the BEM classes of emitted inputs and
+     * buttons. Roles: number, range, color, bool, select, colormap, textarea, button,
+     * image-number, image-file, image-upload, icon-trigger, icon-close, icon-query.
+     * Defaults target DaisyUI; call setInputClassDefaults(null) on hosts that do not use it.
+     * @return {Object<string, string>}
+     */
+    static get inputClassDefaults() {
+        return Object.assign({}, this._inputClassDefaults);
+    }
+
+    /**
+     * Replace or merge the per-role default input classes.
+     * @param {Object<string, string>|null} map role -> class string; null clears every role to ""
+     * @param {object} [options]
+     * @param {boolean} [options.merge=true] merge into the current map rather than replacing it
+     */
+    static setInputClassDefaults(map, { merge = true } = {}) {
+        if (map === null) {
+            const cleared = {};
+            Object.keys(this._inputClassDefaults || {}).forEach(role => {
+                cleared[role] = "";
+            });
+            this._inputClassDefaults = cleared;
+            return;
+        }
+        const next = merge ? Object.assign({}, this._inputClassDefaults) : {};
+        Object.keys(map || {}).forEach(role => {
+            const value = map[role];
+            next[role] = typeof value === "string" ? value : "";
+        });
+        this._inputClassDefaults = next;
+    }
+
+    /**
+     * Resolve the classes for an input of the given role.
+     * @param {string} role input role (see inputClassDefaults)
+     * @param {string|Object<string, string|null>} [inputClasses] per-call override:
+     *   a string is appended to the role default; an object with an own key for the role
+     *   replaces the default (null or "" clears it); anything else keeps the default
+     * @return {string}
+     */
+    static resolveInputClasses(role, inputClasses = undefined) {
+        const defaults = this._inputClassDefaults || {};
+        const base = typeof defaults[role] === "string" ? defaults[role] : "";
+        if (typeof inputClasses === "string") {
+            return this.joinClasses(base, inputClasses);
+        }
+        if (inputClasses && typeof inputClasses === "object" &&
+                Object.prototype.hasOwnProperty.call(inputClasses, role)) {
+            const value = inputClasses[role];
+            return typeof value === "string" ? value.trim() : "";
+        }
+        return base;
+    }
+
+    /**
+     * Set the translator used for the human-readable strings controls emit.
+     * @param {function(string, string, object):string|null} fn called as fn(key, fallback, vars);
+     *   a non-string result falls back to the English default. null removes the translator.
+     */
+    static setTranslator(fn) {
+        this._translator = typeof fn === "function" ? fn : null;
+    }
+
+    /**
+     * Translate a control string. Precedence: overrides[key] (per-control params.strings),
+     * then the translator, then fallback. `{name}` placeholders are substituted from vars.
+     * The result is plain text: escape it before inserting it into HTML.
+     * @param {string} key
+     * @param {string} fallback English default
+     * @param {object} [vars]
+     * @param {object} [overrides]
+     * @return {string}
+     */
+    static t(key, fallback, vars = undefined, overrides = undefined) {
+        let text;
+        if (overrides && typeof overrides === "object" &&
+                Object.prototype.hasOwnProperty.call(overrides, key) && typeof overrides[key] === "string") {
+            text = overrides[key];
+        } else if (this._translator) {
+            try {
+                const translated = this._translator(key, fallback, vars || {});
+                if (typeof translated === "string") {
+                    text = translated;
+                }
+            } catch (e) {
+                console.warn(`FlexRenderer.UIControls: translator failed for '${key}', using the default text.`, e);
+            }
+        }
+        if (text === undefined) {
+            text = fallback === undefined || fallback === null ? "" : String(fallback);
+        }
+        if (vars && typeof vars === "object") {
+            text = text.replace(/\{(\w+)\}/g, (match, name) =>
+                (Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match));
+        }
+        return text;
+    }
+
     static styleAttr(css = "") {
         return css && String(css).trim() ? ` style="${css}"` : "";
     }
@@ -328,14 +446,45 @@ $.FlexRenderer.UIControls = class {
 
     static renderControl(type, title, bodyHtml, classes = "", columns = undefined, extraAttrs = "") {
         const resolvedColumns = Number(columns) || (title ? 2 : 1);
-        return `<div class="${this.joinClasses("er-control", `er-control--${type}`, classes)}" data-columns="${resolvedColumns}" ${extraAttrs}>${this.renderTitle(title, type)}<div class="er-control__body
-  er-control__body--${type}">${bodyHtml}</div></div>`;
+        const attrs = extraAttrs && String(extraAttrs).trim() ? ` ${String(extraAttrs).trim()}` : "";
+        return `<div class="${this.joinClasses("er-control", `er-control--${type}`, classes)}" data-columns="${resolvedColumns}"${attrs}>${this.renderTitle(title, type)}<div class="er-control__body er-control__body--${type}">${bodyHtml}</div></div>`;
     }
 
-    static renderInput(inputTag, type, uniqueId, attrs = "", css = "") {
-        return `<${inputTag} id="${uniqueId}" class="er-control__input er-control__input--${type}"${attrs}${this.styleAttr(css)}>`;
+    /**
+     * Render an input opening tag with the BEM classes plus any extra classes.
+     * @param {string} inputTag tag name (input, select, textarea)
+     * @param {string} type BEM modifier (er-control__input--<type>)
+     * @param {string} uniqueId DOM id
+     * @param {string} [attrs] extra attributes, each with a leading space
+     * @param {string} [css] inline style
+     * @param {string} [extraClasses] classes appended after the BEM classes (role defaults)
+     * @return {string}
+     */
+    static renderInput(inputTag, type, uniqueId, attrs = "", css = "", extraClasses = "") {
+        const cls = this.joinClasses("er-control__input", `er-control__input--${type}`, extraClasses);
+        return `<${inputTag} id="${uniqueId}" class="${cls}"${attrs}${this.styleAttr(css)}>`;
     }
 };
+
+// Per-role default classes appended to emitted inputs/buttons (DaisyUI flavoured). Assigned
+// after the class body: the toolchain targets ES2018, which has no static class fields.
+$.FlexRenderer.UIControls._inputClassDefaults = {
+    number: "input input-bordered input-sm",
+    range: "range range-sm",
+    color: "",
+    bool: "checkbox checkbox-sm",
+    select: "select select-bordered select-sm",
+    colormap: "select select-bordered select-sm",
+    textarea: "textarea textarea-bordered textarea-sm",
+    button: "btn btn-sm btn-outline",
+    "image-number": "input input-bordered input-sm",
+    "image-file": "file-input file-input-bordered file-input-sm",
+    "image-upload": "btn btn-sm btn-outline",
+    "icon-trigger": "btn btn-square btn-outline",
+    "icon-close": "btn btn-ghost btn-xs btn-circle",
+    "icon-query": "input input-bordered input-sm"
+};
+$.FlexRenderer.UIControls._translator = null;
 
 // Definitions of possible controls' types, simple functionalities:
 $.FlexRenderer.UIControls._items = {
@@ -344,10 +493,12 @@ $.FlexRenderer.UIControls._items = {
             return {title: "Number", interactive: true, default: 0, min: 0, max: 100, step: 1};
         },
         // returns string corresponding to html code for injection
-        html: function(uniqueId, params, classes = "", css = "") {
-            const input = `<input class="er-control__input er-control__input--number" min="${params.min}" max="${params.max}"
-step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("number", params.title, input, classes, params.title ? 2 : 1);
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const input = UI.renderInput("input", "number", uniqueId,
+                ` type="number" min="${params.min}" max="${params.max}" step="${params.step}"`,
+                css, UI.resolveInputClasses("number", options && options.inputClasses));
+            return UI.renderControl("number", params.title, input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1f";
@@ -383,9 +534,12 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
         defaults: function() {
             return {title: "Range", interactive: true, default: 0, min: 0, max: 100, step: 1};
         },
-        html: function(uniqueId, params, classes = "", css = "") {
-            const input = `<input type="range" class="er-control__input er-control__input--range" min="${params.min}" max="${params.max}" step="${params.step}" id="${uniqueId}"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("range", params.title, input, classes, params.title ? 2 : 1);
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const input = UI.renderInput("input", "range", uniqueId,
+                ` type="range" min="${params.min}" max="${params.max}" step="${params.step}"`,
+                css, UI.resolveInputClasses("range", options && options.inputClasses));
+            return UI.renderControl("range", params.title, input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1f";
@@ -421,9 +575,11 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
         defaults: function() {
             return { title: "Color", interactive: true, default: "#fff900" };
         },
-        html: function(uniqueId, params, classes = "", css = "") {
-            const input = `<input type="color" id="${uniqueId}" class="er-control__input er-control__input--color"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("color", params.title, input, classes, params.title ? 2 : 1);
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const input = UI.renderInput("input", "color", uniqueId, ` type="color"`,
+                css, UI.resolveInputClasses("color", options && options.inputClasses));
+            return UI.renderControl("color", params.title, input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform3fv";
@@ -465,12 +621,14 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
         defaults: function() {
             return { title: "Checkbox", interactive: true, default: true };
         },
-        html: function(uniqueId, params, classes = "", css = "") {
-            let value = this.decode(params.default) ? "checked" : "";
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const checked = this.decode(params.default) ? " checked" : "";
             //note a bit dirty, but works :) - we want uniform access to 'value' property of all inputs
-            const input = `<input type="checkbox" id="${uniqueId}" ${value}
-class="er-control__input er-control__input--bool" onchange="this.value=this.checked; return true;"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("bool", params.title, input, classes, params.title ? 2 : 1);
+            const input = UI.renderInput("input", "bool", uniqueId,
+                ` type="checkbox"${checked} onchange="this.value=this.checked; return true;"`,
+                css, UI.resolveInputClasses("bool", options && options.inputClasses));
+            return UI.renderControl("bool", params.title, input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1i";
@@ -516,7 +674,8 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
                 options: [{ value: 0, label: "Off" }, { value: 1, label: "On" }]
             };
         },
-        html: function(uniqueId, params, classes = "", css = "") {
+        html: function(uniqueId, params, classes = "", css = "", renderOptions = {}) {
+            const UI = $.FlexRenderer.UIControls;
             let options = [];
             if (Array.isArray(params.options)) {
                 options = params.options.map(opt => {
@@ -541,8 +700,9 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
                 return `<option value="${opt.value}"${selected}>${opt.label}</option>`;
             }).join("");
 
-            const input = `<select id="${uniqueId}" class="er-control__input er-control__input--select"${$.FlexRenderer.UIControls.styleAttr(css)}>${optionHtml}</select>`;
-            return $.FlexRenderer.UIControls.renderControl("select", params.title, input, classes, params.title ? 2 : 1);
+            const input = UI.renderInput("select", "select", uniqueId, "", css,
+                UI.resolveInputClasses("select", renderOptions && renderOptions.inputClasses)) + `${optionHtml}</select>`;
+            return UI.renderControl("select", params.title, input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1i";
@@ -856,13 +1016,35 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      *  - these can be referenced in this.init(...)
      *  - should respect this.params.interactive attribute and return non-interactive output if interactive=false
      *      - don't forget to no to work with DOM elements in init(...) in this case
+     *  - classes: extra classes for the control root, css: inline style of the main widget,
+     *    options.inputClasses: per-role input classes (see UIControls.resolveInputClasses)
      *
      * todo: when overrided value before 'init' call on params, toHtml was already called, changes might not get propagated
      *  - either: delay toHtml to trigger insertion later (not nice)
      *  - do not allow changes before init call, these changes must happen at constructor
      */
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         throw "FlexRenderer.UIControls.IControl::toHtml() must be implemented.";
+    }
+
+    /**
+     * Release resources held outside the control (DOM widgets, document listeners, timers).
+     * Must be idempotent and safe to call before init(). No-op by default.
+     */
+    destroy() {
+    }
+
+    /**
+     * Translate a human-readable string of this control, honoring per-control
+     * overrides in params.strings. See UIControls.t().
+     * @param {string} key
+     * @param {string} fallback
+     * @param {object} [vars]
+     * @return {string} plain text, escape before inserting into HTML
+     */
+    t(key, fallback, vars = undefined) {
+        const params = this.params;
+        return $.FlexRenderer.UIControls.t(key, fallback, vars, params && params.strings);
     }
 
     /**
@@ -1227,11 +1409,11 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
         this._needsLoad = true;
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         if (!this.params.interactive) {
             return "";
         }
-        return this.component.html(this.id, this.params, classes, css);
+        return this.component.html(this.id, this.params, classes, css, options || {});
     }
 
     define() {
@@ -1352,7 +1534,7 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         this._c1.glLoaded(program, gl);
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         if (!this._c1.params.interactive) {
             return "";
         }
@@ -1364,19 +1546,21 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         const rangeHtml = $.FlexRenderer.UIControls.getUiElement("range").html(
             this._c1.id,
             { ...this._c1.params, title: "" },
-            classes,
-            `${css}width:100%;`
+            "",
+            `${css}width:100%;`,
+            options || {}
         );
 
         const numberHtml = $.FlexRenderer.UIControls.getUiElement("number").html(
             this._c2.id,
             { ...this._c2.params, title: "" },
-            classes,
-            css
+            "",
+            css,
+            options || {}
         );
 
         return [
-            `<div class="er-control er-control--slider-with-input" data-columns="${this.layoutColumns}">`,
+            `<div class="${$.FlexRenderer.UIControls.joinClasses("er-control", "er-control--slider-with-input", classes)}" data-columns="${this.layoutColumns}">`,
             titleHtml,
             `<div class="er-control__body er-control__body--slider-with-input">`,
             rangeHtml,

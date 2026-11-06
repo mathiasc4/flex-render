@@ -2,6 +2,68 @@ OPENSEADRAGON FLEX RENDERER
 ===========================
 
 0.0.2
+Shared-context presentation (sharedContextKey):
+ * NEW frame moves on GPU: blitFramebuffer final target -> shared default framebuffer, drawImage
+   region -> 2D presentation canvas ("copy" composite). Was unconditional readPixels + CPU row flip +
+   putImageData; profiled at ~18% of wall clock in a multi-viewer session.
+ * NEW renderer option presentationTransfer: "auto" (default) | "blit" | "read-pixels". auto probes
+   once per shared context (orientation + alpha via three 1x1 blits); failure -> read-pixels for good.
+   Multisampled default framebuffer -> read-pixels. renderer.presentationTransferMode reports route
+   ("blit-draw-image" | "read-pixels" | "none"); getSharedContextStatus()[i].presentationTransfer
+   reports probe. Backend presentColorTargetToCanvas(target, canvas, {transfer, sourceCanvas}).
+ * Shared contexts force canvasOptions.antialias=false (blit into MSAA framebuffer is illegal).
+ * Dropped gl.finish() after shared render() presentation.
+ * FIX translucent shared output darkened: putImageData took premultiplied target as straight alpha
+   (green a=64 read [0,64,0,64], private path [0,255,0,64]). read-pixels route now unpremultiplies.
+   Test shared-presentation.js.
+
+Teardown (FlexDrawer/FlexRenderer):
+ * FIX deferred work after viewer.destroy() threw "Cannot set properties of undefined (setting
+   'forceRedraw')": redrawCallback, shader invalidate (control listeners, slider debounce),
+   resumeRendering, shader-config mutation, refetch. All guarded by _canRedraw()
+   (drawer torn down / viewer.isDestroyed()); renderer._requestRedraw() no-op once destroyed.
+ * _requestRebuild/rebuild/overrideConfigureAll/... return early once destroy() started; destroyed
+   wins over suspended; destroy drops pending rebuild request.
+ * world remove-item handler detached in destroy() (drawer swap left it reaching a null renderer).
+ * Relink microtask skips a destroyed renderer.
+ * ShaderLayer.destroy() destroys owned controls (control.destroy()); group/time-series/
+   channel-series call super.destroy(). IControl.destroy() base no-op; AdvancedSlider destroy()
+   clears debounce timer + its noUiSlider. Host forceRedraw monkey-patches unnecessary.
+   Test destroy-deferred.js.
+
+Hidden layers / program assembly:
+ * FIX all-hidden program failed to compile when two groups (or a group and the root) held a child
+   with the same id and type: child uid unprefixed -> duplicate fr_compute_* placeholders and
+   uniforms. Child uid now prefixed with group uid (GLSL names only; DOM ids and config lookups use
+   id). Delegates of time-series/channel-series inherit prefix.
+ * FIX stack function fr_compute_<uid>_stack collided with layer uid "<uid>_stack" (group 'g' +
+   group 'g_stack'). Renamed fr_stack_<uid> / fr_stack_root.
+ * FIX visible:"0" / "false" rendered the layer (truthy string). FlexRenderer.isShaderConfigActive()
+   single rule for both assembly sides; normalizeShaderConfig coerces string visible in place.
+ * FIX group order naming a missing child threw in init/glLoaded/glDrawing; ids dropped with warning.
+ * One unbalanced layer no longer fails whole program: definition checked with
+   FlexRenderer.findGlslImbalance(), layer becomes error placeholder. includeGlobalCode refuses
+   unbalanced code (global includes go into every program, hidden layers or not). Compile failure
+   log names first imbalance line. Test hidden-stack-compile.js.
+
+Control markup:
+ * Tags and class attributes single-line. toHtml(classes, css, options) and
+   ShaderLayer.htmlControls(wrapper, classes, css, options) / htmlControls({wrapper, classes, css,
+   inputClasses}) thread per-role input classes. NEW UIControls.inputClassDefaults /
+   setInputClassDefaults() / resolveInputClasses(): DaisyUI classes by default
+   (setInputClassDefaults(null) for other hosts). SliderWithInput classes now on its root.
+ * UI strings localizable: UIControls.setTranslator(fn), UIControls.t(), IControl.t(), per-control
+   params.strings for image and icon; translated text HTML-escaped.
+ * Button: escaped title is the button label (no title span, type="button", no inline float).
+   Button and Icon honor layoutColumns (data-columns="1").
+ * Colormap gradient published as --er-colormap CSS variable (+ .er-control__colormap-preview)
+   instead of inline background on the select. Removed init overwrite painting gradient from float
+   uniform buffer.
+ * advanced_slider active intervals: .er-slider__connect--active class (color
+   --er-slider-connect-active, fallback --er) instead of inline oklch(var(--er)) (broke with hex --er).
+ * assets/ui.controls.css now needed for colormap preview, slider active state, button alignment.
+   Test control-markup.js.
+
 Standalone drawer construction options:
  * NEW makeStandaloneFlexDrawer(viewer, optionOverrides). Deep-merged over copy of
    viewer.drawerOptions['flex-renderer'].

@@ -129,4 +129,93 @@
         });
     });
 
+    QUnit.test('replayed external configuration keeps shader ids for ids that need sanitizing', function(assert) {
+        this.assert = assert;
+        assert.expect(3);
+
+        openViewer(this, true, async viewer => {
+            const drawer = viewer.drawer;
+            const navigator = viewer.navigator;
+            const navDrawer = navigator.drawer;
+
+            const shaders = identityConfig(["layer 1", "a.b"]);
+            viewer.navigator = undefined;
+            try {
+                await drawer.overrideConfigureAll(shaders, ["a.b", "layer 1"], { immediate: true });
+            } finally {
+                viewer.navigator = navigator;
+            }
+            drawer._onNavigatorDrawerReady(navDrawer);
+
+            const mainIds = Object.keys(drawer.renderer.getAllShaders()).sort();
+            assert.deepEqual(mainIds, ["ab", "layer1"], "the main drawer sanitized the ids");
+            assert.deepEqual(Object.keys(navDrawer.renderer.getAllShaders()).sort(), mainIds,
+                "the navigator holds the same shader ids");
+            assert.deepEqual(navDrawer.renderer.getShaderLayerOrder(), drawer.renderer.getShaderLayerOrder(),
+                "and the same order");
+        });
+    });
+
+    /**
+     * The navigator's tiled image loads after the main one, so wait for it before inspecting
+     * the navigator drawer.
+     */
+    function navigatorItemLoaded(navigator) {
+        if (navigator.world.getItemCount()) {
+            return Promise.resolve(navigator.world.getItemAt(0));
+        }
+        return new Promise(resolve => {
+            navigator.world.addOnceHandler('add-item', e => resolve(e.item));
+        });
+    }
+
+    function heatmapConfig() {
+        return { name: "heatmap", type: "heatmap", visible: 1, params: {}, cache: {} };
+    }
+
+    async function navigatorShaderFor(navigator, shaderId) {
+        await navigatorItemLoaded(navigator);
+        await navigator.drawer.rebuild();
+        return navigator.drawer.renderer.getShaderLayer(shaderId);
+    }
+
+    QUnit.test('configureTiledImage on open reaches the navigator item that loads later', function(assert) {
+        this.assert = assert;
+        assert.expect(2);
+
+        openViewer(this, true, async viewer => {
+            const shader = viewer.drawer.configureTiledImage(viewer.world.getItemAt(0), heatmapConfig());
+
+            const navShader = await navigatorShaderFor(viewer.navigator, shader.id);
+            assert.ok(navShader, "the navigator has a shader under the configured id");
+            assert.strictEqual(navShader && navShader.constructor.type(), "heatmap",
+                "and it is the configured type, not the identity fallback");
+        });
+    });
+
+    QUnit.test('configureTiledImage before the navigator drawer exists reaches the navigator', function(assert) {
+        this.assert = assert;
+        assert.expect(3);
+
+        openViewer(this, true, async viewer => {
+            const drawer = viewer.drawer;
+            const navigator = viewer.navigator;
+
+            viewer.navigator = undefined;
+            let shader;
+            try {
+                shader = drawer.configureTiledImage(viewer.world.getItemAt(0), heatmapConfig());
+            } finally {
+                viewer.navigator = navigator;
+            }
+            assert.ok(drawer._navigatorSyncPending, "the skipped mirror is marked pending");
+            drawer._onNavigatorDrawerReady(navigator.drawer);
+
+            const navShader = await navigatorShaderFor(navigator, shader.id);
+            assert.ok(navShader, "the navigator has a shader under the configured id");
+            assert.strictEqual(navShader && navShader.constructor.type(), "heatmap",
+                "and it is the configured type, not the identity fallback");
+        });
+    });
+
 })();

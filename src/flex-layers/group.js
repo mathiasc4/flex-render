@@ -78,6 +78,7 @@
                         invalidate: this.invalidate,
                         rebuild: this._rebuild,
                         refetch: this._refetch,
+                        uidPrefix: this.uid,
                     }
                 );
 
@@ -99,7 +100,14 @@
                     this.shaderLayers[id] = this.createShaderLayer(id, config);
                 }
 
-                this.shaderLayerOrder = this.__shaderConfig["order"] || Object.keys(shaderLayerConfigs);
+                const order = this.__shaderConfig["order"] || Object.keys(shaderLayerConfigs);
+                // Stack assembly skips ids without a child, but init/glLoaded/glDrawing would throw
+                // on them; keep one consistent view.
+                this.shaderLayerOrder = order.filter(id => this.shaderLayers[id]);
+                if (this.shaderLayerOrder.length !== order.length) {
+                    $.console.warn(`[flex-renderer] group '${this.id}' order lists ids with no child shader; ` +
+                        `ignored: ${order.filter(id => !this.shaderLayers[id]).join(", ")}`);
+                }
             }
 
             init() {
@@ -121,6 +129,7 @@
 
                 this.shaderLayers = {};
                 this.shaderLayerOrder = [];
+                super.destroy();
             }
 
             glLoaded(program, gl) {

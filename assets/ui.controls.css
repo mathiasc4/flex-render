@@ -94,3 +94,28 @@
 .er-slider--vertical-pips.noUi-horizontal {
     margin-bottom: 4.5rem;
 }
+
+/* Button: the title is the button label; right-align it inside the body. */
+.er-control--button > .er-control__body {
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* Colormap gradients are published by the control as --er-colormap on the .er-control root. */
+.er-control__colormap-preview {
+    display: block;
+    height: .5rem;
+    margin-top: .25rem;
+    border-radius: .25rem;
+    background-image: var(--er-colormap, none);
+}
+
+.er-control__display--colormap,
+.er-control__display--custom-colormap {
+    background-image: var(--er-colormap, none);
+}
+
+/* advanced_slider intervals toggled on by the mask (themable via --er-slider-connect-active). */
+.noUi-connect.er-slider__connect--active {
+    background: var(--er-slider-connect-active, var(--er, #c62828));
+}

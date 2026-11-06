@@ -106,9 +106,14 @@
             // reject listening for the tile-drawing and tile-drawn events, which this drawer does not fire
             this.viewer.rejectEventHandler("tile-drawn", "The WebGLDrawer does not raise the tile-drawn event");
             this.viewer.rejectEventHandler("tile-drawing", "The WebGLDrawer does not raise the tile-drawing event");
-            this.viewer.world.addHandler("remove-item", (e) => {
+            // Kept as a reference so destroy() can detach it: the world outlives a drawer swapped
+            // out by viewer.requestDrawer(), and a stale handler would reach a null renderer.
+            this._onWorldRemoveItem = (e) => {
                 const tiledImage = e.item;
-                if (tiledImage && tiledImage.__flexManagedShaderSourceSlotKey) {
+                if (!tiledImage || this._isTornDown()) {
+                    return;
+                }
+                if (tiledImage.__flexManagedShaderSourceSlotKey) {
                     const slot = this._managedShaderSourceSlots.get(tiledImage.__flexManagedShaderSourceSlotKey);
                     if (slot && slot.item === tiledImage) {
                         slot.item = null;
@@ -131,7 +136,8 @@
                     // Update keys
                     this._requestRebuild();
                 }
-            });
+            };
+            this.viewer.world.addHandler("remove-item", this._onWorldRemoveItem);
         } // end of constructor
 
         /**
@@ -193,6 +199,9 @@
          * @return {OpenSeadragon.Promise} promise resolved when the renderer gets rebuilt
          */
         overrideConfigureAll(shaders, shaderOrder = undefined, options = {}) {
+            if (this._isTornDown()) {
+                return $.Promise.resolve();
+            }
             // todo reset also when reordering tiled images!
             // or we could change order only
 
@@ -272,15 +281,7 @@
 
             const navDrawer = this._getNavigatorDrawer();
             if (navDrawer) {
-                const nav = this.viewer.navigator;
-                let tiledImageNavigator = null;
-                for (let i = 0; i < nav.world.getItemCount(); i++) {
-                    if (nav.world.getItemAt(i).source === tiledImage.source) {
-                        tiledImageNavigator = nav.world.getItemAt(i);
-                        break;
-                    }
-                }
-
+                const tiledImageNavigator = this._findNavigatorTiledImage(tiledImage);
                 if (tiledImageNavigator) {
                     navDrawer.configureTiledImage(tiledImageNavigator, shader);
                 } else {
@@ -294,6 +295,44 @@
             });
 
             return shader;
+        }
+
+        /**
+         * Navigator counterpart of a main-viewer tiled image, matched by tile source.
+         * @private
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @return {OpenSeadragon.TiledImage|null}
+         */
+        _findNavigatorTiledImage(tiledImage) {
+            const nav = this.viewer.navigator;
+            if (!nav || !nav.world) {
+                return null;
+            }
+            for (let i = 0; i < nav.world.getItemCount(); i++) {
+                if (nav.world.getItemAt(i).source === tiledImage.source) {
+                    return nav.world.getItemAt(i);
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Main-viewer counterpart of a navigator tiled image, matched by tile source.
+         * @private
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @return {OpenSeadragon.TiledImage|null}
+         */
+        _findParentTiledImage(tiledImage) {
+            const parent = this.viewer.viewer;
+            if (!parent || !parent.world) {
+                return null;
+            }
+            for (let i = 0; i < parent.world.getItemCount(); i++) {
+                if (parent.world.getItemAt(i).source === tiledImage.source) {
+                    return parent.world.getItemAt(i);
+                }
+            }
+            return null;
         }
 
         /**
@@ -321,6 +360,18 @@
             }
 
             let config = tiledImage.__shaderConfig;
+            if (!config && this._isNavigatorDrawer) {
+                // Navigator items load after the parent's, so a configureTiledImage() on the parent
+                // usually finds no navigator counterpart to mirror into. Inherit the parent's whole
+                // config (type, params, cache), not just its ID.
+                const parentTiledImage = this._findParentTiledImage(tiledImage);
+                const parentConfig = parentTiledImage && parentTiledImage.__shaderConfig;
+                if (parentConfig) {
+                    config = tiledImage.__shaderConfig = $.extend(true, {}, parentConfig);
+                    // the copy holds the parent's world index as a plain value; redefined below
+                    delete config.tiledImages;
+                }
+            }
             if (!config) {
                 config = tiledImage.__shaderConfig = {
                     name: "Identity shader",
@@ -336,18 +387,12 @@
                 // potentially problematic, relies on the fact that navigator is always initialized second
                 // shared ID are required for controls, which have only 1 present HTML but potentially two listeners
                 if (this._isNavigatorDrawer) {
-                    const parent = this.viewer.viewer;
-                    for (let i = 0; i < parent.world.getItemCount(); i++) {
-                        const tiledImageParent = parent.world.getItemAt(i);
-                        if (tiledImageParent.source === tiledImage.source) {
-                            // Parent's __shaderConfig may be missing during a reset window
-                            // (tiledImageCreated deletes it when _configuredExternally is true).
-                            // Fall through to idGenerator in that case.
-                            if (tiledImageParent.__shaderConfig) {
-                                config.id = tiledImageParent.__shaderConfig.id;
-                            }
-                            break;
-                        }
+                    // Parent's __shaderConfig may be missing during a reset window
+                    // (tiledImageCreated deletes it when _configuredExternally is true).
+                    // Fall through to idGenerator in that case.
+                    const tiledImageParent = this._findParentTiledImage(tiledImage);
+                    if (tiledImageParent && tiledImageParent.__shaderConfig) {
+                        config.id = tiledImageParent.__shaderConfig.id;
                     }
                 }
                 if (!config.id) {
@@ -408,6 +453,9 @@
          * @return {Promise}
          */
         rebuild() {
+            if (this._isTornDown()) {
+                return $.Promise.resolve();
+            }
             // The navigator (and its drawer) is created asynchronously, so a rebuild can fire
             // before it exists. _getNavigatorDrawer() returns null then and marks the mirror
             // pending; _onNavigatorDrawerReady() replays it once the navigator drawer appears.
@@ -435,7 +483,7 @@
                 reason = "shader-config-mutation"
             } = request;
 
-            if (!shaderId) {
+            if (!shaderId || this._isTornDown()) {
                 return $.Promise.resolve();
             }
 
@@ -484,7 +532,7 @@
             if (rebuildDrawer) {
                 return this._requestRebuild(0, true);
             }
-            this.viewer.forceRedraw();
+            this._safeForceRedraw();
             return $.Promise.resolve();
         }
 
@@ -529,9 +577,18 @@
                     shaders[id] = allShaders[id].getConfig();
                 }
                 navDrawer.overrideConfigureAll(shaders, this.renderer.getShaderLayerOrder().slice());
+            } else {
+                // A skipped configureTiledImage() mirror: the navigator's tiledImageCreated() copies
+                // only the parent's shader ID, not its type/params, so re-apply the parent config.
+                const world = this.viewer.world;
+                for (let i = 0; i < world.getItemCount(); i++) {
+                    const tiledImage = world.getItemAt(i);
+                    const navTiledImage = tiledImage.__shaderConfig && this._findNavigatorTiledImage(tiledImage);
+                    if (navTiledImage) {
+                        navDrawer.configureTiledImage(navTiledImage, tiledImage.__shaderConfig);
+                    }
+                }
             }
-            // Internally managed configs are picked up by the navigator's own tiledImageCreated(),
-            // which copies the parent's shader IDs.
 
             this._syncNavigatorShaderState();
             navDrawer.rebuild();
@@ -551,7 +608,7 @@
          */
         _syncNavigatorShaderState() {
             const nav = this.viewer.navigator;
-            if (!nav || !nav.drawer || !nav.drawer.renderer) {
+            if (this._isTornDown() || !nav || !nav.drawer || !nav.drawer.renderer) {
                 return;
             }
 
@@ -683,6 +740,10 @@
         }
 
         _handleRefetchRequest(request = undefined) {
+            // Refetch requests arrive from promise continuations that can settle after teardown.
+            if (this._isTornDown()) {
+                return $.Promise.resolve();
+            }
             if (!request) {
                 return this.viewer.world.resetItems();
             }
@@ -1016,6 +1077,9 @@
         }
 
         resumeRendering(reason = "manual") {
+            if (this._isTornDown()) {
+                return;
+            }
             if (this._suspendRenderingDepth > 0) {
                 this._suspendRenderingDepth--;
             }
@@ -1030,12 +1094,43 @@
                 this._requestRebuild(pending.timeout, pending.force, true);
             } else {
                 this._refreshDrawReadyState();
-                this.viewer.forceRedraw();
+                this._safeForceRedraw();
             }
         }
 
         _isRenderingSuspended() {
             return this._suspendRenderingDepth > 0;
+        }
+
+        /**
+         * True once destroy() has started. Deferred work (timers, promise continuations, control
+         * listeners that outlive the drawer) must check this before touching the renderer or viewer.
+         * @returns {boolean}
+         */
+        _isTornDown() {
+            return !!(this._destroyed || this._destroying);
+        }
+
+        /**
+         * Whether `viewer.forceRedraw()` is safe to call. OpenSeadragon's Viewer#destroy() nulls its
+         * private per-viewer state slot, after which forceRedraw() throws; a timer or listener armed
+         * before the teardown may still fire after it.
+         * @param {OpenSeadragon.Viewer} [viewer=this.viewer] viewer or navigator to redraw
+         * @returns {boolean}
+         */
+        _canRedraw(viewer = this.viewer) {
+            return !this._isTornDown() && !!viewer &&
+                !(typeof viewer.isDestroyed === "function" && viewer.isDestroyed());
+        }
+
+        /**
+         * `viewer.forceRedraw()` guarded by {@link _canRedraw}.
+         * @param {OpenSeadragon.Viewer} [viewer=this.viewer]
+         */
+        _safeForceRedraw(viewer = this.viewer) {
+            if (this._canRedraw(viewer)) {
+                viewer.forceRedraw();
+            }
         }
 
         _refreshDrawReadyState() {
@@ -1053,9 +1148,11 @@
          * Clean up the FlexDrawer, removing all resources.
          */
         destroy() {
-            if (this._destroyed) {
+            if (this._isTornDown()) {
                 return;
             }
+            // Set first: renderer.destroy() below resets control HTML and may fire redraw callbacks.
+            this._destroying = true;
 
             if (this._interactionEnabled) {
                 this.setInteractionOptions({
@@ -1075,6 +1172,9 @@
 
             // unbind our event listeners from the viewer
             this.viewer.removeHandler("resize", this._resizeHandler);
+            if (this.viewer.world && this._onWorldRemoveItem) {
+                this.viewer.world.removeHandler("remove-item", this._onWorldRemoveItem);
+            }
 
             if (!this.options.offScreen) {
                 this.container.removeChild(this.canvas);
@@ -1093,11 +1193,14 @@
                 this._deferredRedrawHandle = null;
             }
 
+            this._pendingRebuildRequest = null;
+
             this.renderer.destroy();
             this.renderer = null;
 
             // set our destroyed flag to true
             this._destroyed = true;
+            this._destroying = false;
         }
 
         // todo documment
@@ -1169,6 +1272,9 @@
         }
 
         _requestRebuild(timeout = 30, force = false, bypassSuspend = false, immediate = false) {
+            if (this._isTornDown()) {
+                return $.Promise.resolve();
+            }
             this._requestBuildStamp = Date.now();
             this._drawReady = false;
 
@@ -1189,15 +1295,17 @@
             }
 
             const runRebuild = () => {
+                // Destroyed wins over suspended: a suspended-then-destroyed drawer must not record
+                // a pending rebuild that a later resumeRendering() would try to run.
+                if (this._isTornDown()) {
+                    this._rebuildHandle = null;
+                    return;
+                }
+
                 if (this._isRenderingSuspended()) {
                     this._pendingRebuildRequest = { timeout: 0, force: true };
                     this._rebuildHandle = null;
                     this._drawReady = false;
-                    return;
-                }
-
-                if (this._destroyed) {
-                    this._rebuildHandle = null;
                     return;
                 }
 
@@ -1257,16 +1365,8 @@
                 if (!immediate) {
                     this._deferredRedrawHandle = setTimeout(() => {
                         this._deferredRedrawHandle = null;
-                        if (this._destroyed) {
-                            return;
-                        }
                         if (!this._isRenderingSuspended()) {
-                            try {
-                                this.viewer.forceRedraw();
-                            } catch (_) {
-                                // viewer destroyed between schedule and fire — OSD's private
-                                // state slot is gone; post-teardown redraw is a no-op.
-                            }
+                            this._safeForceRedraw();
                         }
                     });
                 }
@@ -1384,6 +1484,9 @@
          * @return {InspectorState}
          */
         setInspectorState(state) {
+            if (!this.renderer) {
+                return undefined;
+            }
             return this.renderer.setInspectorState(state, {
                 reason: "drawer-set-inspector-state"
             });
@@ -2894,6 +2997,11 @@
                 // Required
                 {
                     redrawCallback: () => {
+                        // Control listeners and timers can outlive the drawer (host keeps the
+                        // control DOM, debounced slider updates); never redraw a torn-down viewer.
+                        if (!this._canRedraw()) {
+                            return;
+                        }
                         // Shader-internal UI controls (color picker, sliders, opacity, etc.)
                         // mutate this drawer's shader instances directly and route the redraw
                         // through here. The navigator's drawer has its own shader instances
@@ -2906,9 +3014,9 @@
                         // drawer is missing, so _onNavigatorDrawerReady() catches up the control state.
                         if (this._getNavigatorDrawer()) {
                             this._syncNavigatorShaderState();
-                            this.viewer.navigator.forceRedraw();
+                            this._safeForceRedraw(this.viewer.navigator);
                         }
-                        this.viewer.forceRedraw();
+                        this._safeForceRedraw();
                     },
                     refetchCallback: (request) => this._handleRefetchRequest(request),
                     uniqueId: "osd_" + this._id,

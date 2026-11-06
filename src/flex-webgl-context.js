@@ -181,6 +181,11 @@
                     "Attaching of shaders to WebGLProgram failed. For more information, see logs in the $.console.");
                 $.console.warn("VERTEX SHADER\n", numberLines( options.vertexShader ));
                 $.console.warn("FRAGMENT SHADER\n", numberLines( options.fragmentShader ));
+                const imbalance = $.FlexRenderer.findGlslImbalance &&
+                    $.FlexRenderer.findGlslImbalance(options.fragmentShader);
+                if (imbalance) {
+                    $.console.warn(`FRAGMENT SHADER is unbalanced at line ${imbalance.line}: ${imbalance.reason}`);
+                }
                 return false;
             } else { // Shaders attached
                 gl.linkProgram(program);
@@ -326,14 +331,45 @@
          * Copy a backend-owned color target into a presentation canvas.
          *
          * The presentation canvas size is owned by FlexRenderer#setDimensions().
-         * Implementations must not resize it.
+         * Implementations must not resize it, and must overwrite (not composite onto) it.
          *
          * @param {object} target
          * @param {HTMLCanvasElement} canvas
-         * @returns {string} Transfer mode used.
+         * @param {object} [options={}]
+         * @param {"blit"|"read-pixels"} [options.transfer] requested route; an implementation
+         *      without a GPU route ignores it and reads pixels
+         * @param {HTMLCanvasElement} [options.sourceCanvas] the shared WebGL canvas
+         * @returns {"blit-draw-image"|"read-pixels"|"none"} Transfer route that ran.
          */
-        presentColorTargetToCanvas(target, canvas) {
+        presentColorTargetToCanvas(target, canvas, options = {}) {
             throw("$.FlexRenderer.WebGLImplementation::presentColorTargetToCanvas() must be implemented!");
+        }
+
+        /**
+         * Sample count of the default framebuffer; non-zero rules out the blit presentation
+         * route. Backends without that route keep this default, which forces read-pixels.
+         * @returns {number}
+         */
+        getDefaultFramebufferSamples() {
+            return 1;
+        }
+
+        /**
+         * Whether the blit presentation probe can run against this canvas now.
+         * @param {HTMLCanvasElement} src
+         * @returns {boolean}
+         */
+        canProbePresentationBlit(src) {
+            return false;
+        }
+
+        /**
+         * One-time verification of the blit presentation route.
+         * @param {HTMLCanvasElement} src
+         * @returns {{ok: boolean, reason: string|null}}
+         */
+        probePresentationBlit(src) {
+            return { ok: false, reason: "unsupported" };
         }
 
         /**

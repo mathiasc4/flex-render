@@ -273,4 +273,60 @@
             assert.deepEqual(control.encoded, cached, `${type}: cache restored the encoded value`);
         });
     });
+
+    QUnit.test('a half-run ColorMap init() is retried at draw time', function(assert) {
+        // init() assigns 'value' before the palette lookup that can throw; 'value' alone must not
+        // count as initialized, or the LUT stays dirty forever.
+        const control = buildControl("colormap");
+        control.value = control.params.default;
+        control._lutDirty = true;
+
+        control.glDrawing(null, { uniform1i: () => {} });
+
+        assert.ok(control.pallete, "init() ran and produced a palette");
+        assert.notOk(control._lutDirty, "the LUT was baked");
+    });
+
+    QUnit.test('SliderWithInput keeps its range/number sync when the number half fails to init', function(assert) {
+        const control = buildControl("range_input");
+        const c2Init = control._c2.init;
+        control._c2.init = () => {
+            throw new Error("number half failed");
+        };
+        assert.throws(() => control.init(), /number half failed/, "init() surfaced the failure");
+        control._c2.init = c2Init;
+
+        control._c2.set(0.3);
+
+        assert.strictEqual(control._c1.encodedValue, 0.3, "the number half still mirrors into the range half");
+        assert.ok(control._c1._needsLoad, "and requests the range uniform upload");
+    });
+
+    QUnit.test('a control whose init() keeps failing retries per draw, warns once and never throws', function(assert) {
+        const control = buildControl("color");
+        let calls = 0;
+        control.init = () => {
+            calls++;
+            throw new Error("always fails");
+        };
+        const warn = OpenSeadragon.console.warn;
+        let warnings = 0;
+        OpenSeadragon.console.warn = () => {
+            warnings++;
+        };
+        const uploads = [];
+        control._needsLoad = true;
+        try {
+            for (let i = 0; i < 5; i++) {
+                control.glDrawing(null, { uniform3fv: (location, value) => uploads.push(value) });
+            }
+        } finally {
+            OpenSeadragon.console.warn = warn;
+        }
+
+        assert.strictEqual(calls, 5, "init() is retried once per draw");
+        assert.strictEqual(warnings, 1, "the failure is reported once");
+        assert.strictEqual(uploads.length, 0, "nothing undefined was uploaded");
+        assert.ok(control._needsLoad, "the upload stays pending for a later set()/init()");
+    });
 })();

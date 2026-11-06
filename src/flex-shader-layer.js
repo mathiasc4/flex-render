@@ -80,7 +80,13 @@
              *
              * @type {string}
              */
-            this.uid = this.constructor.type().replaceAll('-', '_') + '_' + layerId;
+            // A child of a group is prefixed with the group's uid: two groups (or a group and the
+            // root) may each hold a child 'a' of the same type, and an unprefixed uid would emit
+            // duplicate GLSL functions and uniforms. Only GLSL names derive from uid; DOM ids and
+            // config lookups use `id`.
+            this._uidPrefix = options.uidPrefix || null;
+            this.uid = (options.uidPrefix ? options.uidPrefix + '_' : '') +
+                this.constructor.type().replaceAll('-', '_') + '_' + layerId;
 
             if (!$.FlexRenderer.idPattern.test(this.uid)) {
                 console.error(`Invalid ID for the shader: ${layerId} does not match to the pattern`, $.FlexRenderer.idPattern);
@@ -702,13 +708,35 @@
 
         /**
          * Get HTML code of the ShaderLayer's controls.
+         *
+         * Accepts either positional arguments or a single options object:
+         * `htmlControls({wrapper, classes, css, inputClasses})`.
+         *
+         * @param {function(string):string|object|null} [wrapper] applied to each control's markup,
+         *   or the options object form
+         * @param {string} [classes] extra classes for each control root
+         * @param {string} [css] inline style for each control's main widget
+         * @param {object} [options] render options passed to every control's toHtml()
+         * @param {string|Object<string, string|null>} [options.inputClasses] per-role input classes,
+         *   see OpenSeadragon.FlexRenderer.UIControls.resolveInputClasses
          * @returns {String} HTML code
          */
-        htmlControls(wrapper = null, classes = "", css = "") {
+        htmlControls(wrapper = null, classes = "", css = "", options = {}) {
+            if (wrapper && typeof wrapper === "object") {
+                const opts = wrapper;
+                wrapper = typeof opts.wrapper === "function" ? opts.wrapper : null;
+                classes = typeof opts.classes === "string" ? opts.classes : "";
+                css = typeof opts.css === "string" ? opts.css : "";
+                options = {};
+                if (opts.inputClasses !== undefined) {
+                    options.inputClasses = opts.inputClasses;
+                }
+            }
+            options = options && typeof options === "object" ? options : {};
             let controlsHtmls = [];
             for (const controlName in this._controls) {
                 const control = this[controlName];
-                controlsHtmls.push(control.toHtml(classes, css));
+                controlsHtmls.push(control.toHtml(classes || "", css || "", options));
             }
             if (wrapper) {
                 controlsHtmls = controlsHtmls.map(wrapper);
@@ -778,6 +806,15 @@
          * @param {String} code GLSL code to add to the WebGL shader
          */
         includeGlobalCode(key, code) {
+            // Global includes are emitted into every program on the page, hidden layers or not,
+            // so one malformed include would break every renderer. Refuse it here instead.
+            const imbalance = $.FlexRenderer.findGlslImbalance(code);
+            if (imbalance) {
+                $.console.error(`$.FlexRenderer.ShaderLayer::includeGlobalCode: global code '${key}' from ` +
+                    `layer type '${this.constructor.type()}' is unbalanced (line ${imbalance.line}: ` +
+                    `${imbalance.reason}); it is not included.`);
+                return;
+            }
             const container = this.constructor.__globalIncludes;
             if (container[key]) {
                 if (container[key] === code) {
@@ -791,7 +828,23 @@
         /**
          * Called when shader is destructed
          */
+        /**
+         * Release resources held by this layer. The base implementation destroys every owned
+         * control that implements destroy() (debounce timers, document listeners, slider widgets);
+         * subclasses that override this must call super.destroy().
+         */
         destroy() {
+            for (const controlName in this._controls) {
+                const control = this[controlName];
+                if (control && typeof control.destroy === "function") {
+                    try {
+                        control.destroy();
+                    } catch (e) {
+                        $.console.warn(`[flex-renderer] control '${controlName}' of layer '${this.id}' ` +
+                            `failed to destroy.`, e);
+                    }
+                }
+            }
         }
 
         /**
