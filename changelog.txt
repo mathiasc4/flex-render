@@ -2,6 +2,21 @@ OPENSEADRAGON FLEX RENDERER
 ===========================
 
 0.0.2
+Control cache scoped per shader type:
+ * config.cache is { [type]: { [controlKey]: value } } again (as in xOpat 2.x). Flat 3.x caches
+   share one key space across types: a former heatmap's cache.color "#2962ff" was loaded by a
+   colormap's custom_colormap and fell back to grayscale. ShaderLayer.cache returns the bucket of
+   config.type; switching back to a type restores its values. Flat caches migrate to config.type
+   (ShaderLayer.normalizeCacheRoot). storeProperty(name, undefined) deletes; hasProperty(name).
+ * IControl.acceptsStoredValue(value, paramName) hook: a rejected cached value is dropped and the
+   default used. custom_colormap rejects non-palettes.
+ * custom_colormap invalid palette falls back to normalized params.default, then supports.default,
+   and stores the result.
+ * NEW UIControls.setReporter((level, code, details) => ...) / UIControls.report(), IControl.report(),
+   renderer event 'shader-warning' {layerId, shaderType, control, code, level, message, ...}. Codes:
+   cache-value-rejected, palette-invalid, control-build-failed, control-init-failed,
+   layer-assembly-failed (raised when a layer gets config.error). Test cache-scope.js.
+
 Shared-context presentation (sharedContextKey):
  * NEW frame moves on GPU: blitFramebuffer final target -> shared default framebuffer, drawImage
    region -> 2D presentation canvas ("copy" composite). Was unconditional readPixels + CPU row flip +

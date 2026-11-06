@@ -559,7 +559,9 @@
                 try {
                     control.init();
                 } catch (e) {
-                    $.console.warn(`Shader ${this.id} control '${controlName}' init() failed. The control will not work.`, e);
+                    this._report("warn", "control-init-failed",
+                        `Shader ${this.id} control '${controlName}' init() failed. The control will not work.`,
+                        { control: controlName, error: e });
                 }
             }
         }
@@ -603,9 +605,11 @@
                 // every consumer iterates `for (name in this._controls)`.
                 if (!control) {
                     const requestedType = this._params[controlName] && this._params[controlName].type;
-                    $.console.error(`ShaderLayer '${this.id}' (${this.constructor.type()}): control ` +
+                    this._report("error", "control-build-failed",
+                        `ShaderLayer '${this.id}' (${this.constructor.type()}): control ` +
                         `'${controlName}'${requestedType ? ` of type '${requestedType}'` : ""} could not ` +
-                        `be built and is omitted. GLSL referencing it will fail to assemble.`);
+                        `be built and is omitted. GLSL referencing it will fail to assemble.`,
+                        { control: controlName });
                     continue;
                 }
 
@@ -849,10 +853,62 @@
 
         /**
          * Proxy cache to the config object. The config object stores the cached values, which keeps consistent state.
+         *
+         * `config.cache` is a root of per-shader-type buckets, `{[type]: {[name]: value}}`, and this
+         * returns the bucket of the config's *current* type. Control names repeat across types with
+         * different value shapes (heatmap's `color` is a hex string, a colormap's is a palette), so a
+         * shared key space let one type's value poison another after a type change. The type is read
+         * on every access: switching a layer's type selects a fresh bucket, switching back restores
+         * the old values. A time-series delegate shares its parent's root under its own type.
          * @return {Object}
          */
         get cache() {
-            return this.__shaderConfig.cache;
+            const config = this.__shaderConfig;
+            if (!config.cache || typeof config.cache !== "object" || Array.isArray(config.cache)) {
+                config.cache = {};
+            }
+            const root = config.cache;
+            if (this.__normalizedCacheRoot !== root) {
+                this.constructor.normalizeCacheRoot(config);
+                this.__normalizedCacheRoot = root;
+            }
+            const type = config.type || this.constructor.type();
+            let bucket = root[type];
+            if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) {
+                bucket = root[type] = {};
+            }
+            return bucket;
+        }
+
+        /**
+         * Migrate a flat cache written by 3.x builds (`{[name]: value}`) to the per-type root
+         * (`{[type]: {[name]: value}}`). A root is taken as already bucketed when every own value
+         * is a plain object; otherwise all its entries belong to `config.type` and are moved there
+         * in place, keeping the root's identity (drawers share configs by reference).
+         *
+         * A flat cache whose every entry is a plain object would be misread as bucketed; no
+         * built-in control stores plain objects (values are primitives, arrays or JSON strings).
+         *
+         * @param {ShaderLayerConfig} config
+         * @return {Object} the cache root
+         */
+        static normalizeCacheRoot(config) {
+            const root = config.cache;
+            if (!root || typeof root !== "object") {
+                return root;
+            }
+            const isBucket = value => !!value && typeof value === "object" && !Array.isArray(value);
+            const keys = Object.keys(root);
+            if (keys.every(key => isBucket(root[key]))) {
+                return root;
+            }
+            const bucket = {};
+            for (const key of keys) {
+                bucket[key] = root[key];
+                delete root[key];
+            }
+            root[config.type || this.type()] = bucket;
+            return root;
         }
 
         // CACHE LOGIC
@@ -869,12 +925,56 @@
         }
 
         /**
-         * Store value in the cache.
+         * Whether the cache holds a value for the name.
+         * @param {String} name
+         * @return {boolean}
+         */
+        hasProperty(name) {
+            return this.cache[name] !== undefined;
+        }
+
+        /**
+         * Store value in the cache. Storing `undefined` removes the entry.
          * @param {String} name
          * @param {String} value
          */
         storeProperty(name, value) {
+            if (value === undefined) {
+                delete this.cache[name];
+                return;
+            }
             this.cache[name] = value;
+        }
+
+        /**
+         * Report a layer-level fallback to the host: UIControls.report() (reporter or console)
+         * and the renderer's `shader-warning` event.
+         * @param {String} level "warn" | "error"
+         * @param {String} code stable identifier, e.g. "control-build-failed"
+         * @param {String} message
+         * @param {Object} [extra] merged into the details
+         * @private
+         */
+        _report(level, code, message, extra = {}) {
+            let shaderType;
+            try {
+                shaderType = this.constructor.type();
+            } catch (e) {
+                shaderType = undefined;
+            }
+            const details = Object.assign({
+                layerId: this.id,
+                shaderType: shaderType,
+                control: null,
+                code: code,
+                level: level,
+                message: message
+            }, extra);
+            $.FlexRenderer.UIControls.report(level, code, details);
+            const renderer = this.backend && this.backend.renderer;
+            if (renderer && typeof renderer.notifyShaderWarning === "function") {
+                renderer.notifyShaderWarning(details);
+            }
         }
 
         // TEXTURE SAMPLING LOGIC

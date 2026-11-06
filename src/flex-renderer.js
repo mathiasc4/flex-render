@@ -3621,6 +3621,30 @@
         }
 
         /**
+         * Notify observers of a control- or layer-level fallback: a cached value dropped for not
+         * fitting its control, an invalid palette, a control that failed to build or init, or a
+         * layer hidden for an assembly error (`config.error`). The same details also reach
+         * `UIControls.setReporter()`'s reporter.
+         *
+         * @param {object} details
+         * @param {String} details.layerId
+         * @param {String|null} details.control control name, null for layer-level reports
+         * @param {String} details.code e.g. "palette-invalid", "cache-value-rejected",
+         *   "control-build-failed", "control-init-failed", "layer-assembly-failed"
+         * @param {String} details.level "warn" | "error"
+         * @param {String} details.message
+         */
+        notifyShaderWarning(details = {}) {
+            this.raiseEvent('shader-warning', Object.assign({
+                layerId: null,
+                control: null,
+                code: "unknown",
+                level: "warn",
+                message: ""
+            }, details));
+        }
+
+        /**
          * Normalize inspector state to the canonical backend-agnostic shape.
          *
          * Backends must consume this logical state, not an implementation-specific variant.

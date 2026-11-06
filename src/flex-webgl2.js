@@ -221,8 +221,10 @@ ${shaderLayer.getFragmentShaderExecution()}
             }
             return definition;
         } catch (e) {
-            $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderConfig.type}). Emitting placeholder.`, e);
             shaderConfig.error = true;
+            shaderLayer._report("error", "layer-assembly-failed",
+                `Failed to assemble shader '${shaderLayer.id}' (${shaderConfig.type}). Emitting placeholder.`,
+                { error: e });
             return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Assembly error placeholder");
         }
     }
@@ -434,14 +436,12 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
 `;
                 }
             } catch (e) {
-                $.console.error(
-                    `Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig ? shaderLayerConfig.type : "unknown"}). Hiding layer.`,
-                    e
-                );
-
                 if (shaderLayerConfig) {
                     shaderLayerConfig.error = true;
                 }
+                shaderLayer._report("error", "layer-assembly-failed",
+                    `Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig ? shaderLayerConfig.type : "unknown"}). Hiding layer.`,
+                    { error: e });
 
                 execution = executionSnapshot;
                 remainingBlendShader = remainingBlendSnapshot;

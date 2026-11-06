@@ -312,6 +312,21 @@ OpenSeadragon.FlexRenderer.UIControls.setTranslator((key, fallback, vars) => {
 - `UIControls.t(key, fallback, vars, overrides)` and `control.t(key, fallback, vars)` are available
   to custom controls
 
+Fallbacks (a dropped cache value, an invalid palette, a control that failed to build) go through a
+sibling hook instead of the console:
+
+```js
+OpenSeadragon.FlexRenderer.UIControls.setReporter((level, code, details) => {
+    myToasts.push(level, myI18n.t(`flex.${code}`, details) || details.message);
+});
+```
+
+- called as `fn(level, code, details)`, `level` is `"warn"` or `"error"`; see `shader-warning` in
+  `src/EVENTS.md` for the codes and the `details` shape
+- `setReporter(null)` restores console output; a reporter that throws falls back to it
+- custom controls report through `control.report(code, message, extra, level)` and can reject
+  stale cached values by overriding `acceptsStoredValue(value, paramName)`
+
 | Key | English default |
 | --- | --- |
 | `image.hint` | The atlas starts empty. Upload an image to create a new atlas entry. |

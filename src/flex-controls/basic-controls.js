@@ -399,6 +399,46 @@ $.FlexRenderer.UIControls = class {
     }
 
     /**
+     * Set the reporter that receives control- and layer-level fallbacks (a rejected cache value,
+     * an invalid palette, a control that failed to build or init, a layer hidden for an assembly
+     * error). Installed, it replaces the console output; a reporter that throws falls back to it.
+     * Renderers additionally raise `shader-warning` with the same details.
+     * @param {function(string, string, object):void|null} fn called as fn(level, code, details),
+     *   level "warn" | "error"; details carry {layerId, shaderType, control, code, level, message, ...}.
+     *   null removes the reporter.
+     */
+    static setReporter(fn) {
+        this._reporter = typeof fn === "function" ? fn : null;
+    }
+
+    /**
+     * Report a fallback through the reporter, or the console when none is set.
+     * @param {string} level "warn" | "error"
+     * @param {string} code stable identifier, e.g. "palette-invalid"
+     * @param {object} [details]
+     */
+    static report(level, code, details = {}) {
+        if (this._reporter) {
+            try {
+                this._reporter(level, code, details);
+                return;
+            } catch (e) {
+                console.warn(`FlexRenderer.UIControls: reporter failed for '${code}'.`, e);
+            }
+        }
+        const out = $.console || console;
+        const log = level === "error" ? out.error : out.warn;
+        const args = [`[FlexRenderer] ${details.message || code}`];
+        if (details.value !== undefined) {
+            args.push(details.value);
+        }
+        if (details.error !== undefined) {
+            args.push(details.error);
+        }
+        log.apply(out, args);
+    }
+
+    /**
      * Translate a control string. Precedence: overrides[key] (per-control params.strings),
      * then the translator, then fallback. `{name}` placeholders are substituted from vars.
      * The result is plain text: escape it before inserting it into HTML.
@@ -1172,9 +1212,65 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * @return {*} cached or default value
      */
     load(defaultValue, paramName = "") {
-        return this.owner.loadProperty(this.name + (paramName === "default" ? "" : paramName),
-            defaultValue === undefined ? this.supports[paramName] : defaultValue,
-        );
+        const key = this.name + (paramName === "default" ? "" : paramName);
+        const fallback = defaultValue === undefined ? this.supports[paramName] : defaultValue;
+        const owner = this.owner;
+        if (typeof owner.hasProperty === "function" && owner.hasProperty(key)) {
+            const cached = owner.loadProperty(key, fallback);
+            if (this.acceptsStoredValue(cached, paramName)) {
+                return cached;
+            }
+            owner.storeProperty(key, undefined);
+            this.report("cache-value-rejected",
+                `Control '${this.name}' of layer '${owner.id}': saved value does not fit the ` +
+                `control and is dropped; using the configured default.`, { value: cached, key: key });
+            return fallback;
+        }
+        return owner.loadProperty(key, fallback);
+    }
+
+    /**
+     * Whether a value read from the cache fits this control. A rejected value is removed from the
+     * cache and load() returns the default instead. Override where a stale or foreign value would
+     * otherwise be misused (e.g. a hex string where a palette array is expected).
+     * @param {*} value cached value
+     * @param {string} paramName as passed to load()
+     * @return {boolean}
+     */
+    acceptsStoredValue(value, paramName = "") {
+        return true;
+    }
+
+    /**
+     * Report a control-level fallback: UIControls.report() (host reporter or console) and the
+     * renderer's `shader-warning` event.
+     * @param {string} code stable identifier
+     * @param {string} message
+     * @param {object} [extra] merged into the details
+     * @param {string} [level="warn"]
+     */
+    report(code, message, extra = {}, level = "warn") {
+        const owner = this.owner || {};
+        let shaderType;
+        try {
+            shaderType = owner.constructor && typeof owner.constructor.type === "function" ?
+                owner.constructor.type() : undefined;
+        } catch (e) {
+            shaderType = undefined;
+        }
+        const details = Object.assign({
+            layerId: owner.id,
+            shaderType: shaderType,
+            control: this.name,
+            code: code,
+            level: level,
+            message: message
+        }, extra);
+        $.FlexRenderer.UIControls.report(level, code, details);
+        const renderer = owner.backend && owner.backend.renderer;
+        if (renderer && typeof renderer.notifyShaderWarning === "function") {
+            renderer.notifyShaderWarning(details);
+        }
     }
 
     /**

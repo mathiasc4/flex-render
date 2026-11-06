@@ -577,9 +577,29 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
      * Tolerated inputs:
      *   - array of hex strings (canonical)              → returned as-is
      *   - array of [r, g, b] or [r, g, b, a] in 0..1   → converted to hex (alpha dropped — GLSL is vec3)
-     *   - anything else                                  → warn, fall back to supports().default
+     *   - anything else                                  → report, fall back to the normalized
+     *                                                      params.default, then supports.default
+     *
+     * Sets `this._paletteFellBack` so callers can persist the replacement over the bad value.
      */
     _normalizePalette(value) {
+        const palette = this._coercePalette(value);
+        this._paletteFellBack = !palette;
+        if (palette) {
+            return palette;
+        }
+        this.report("palette-invalid",
+            `custom_colormap '${this.name}' of layer '${this.owner.id}': palette has unsupported ` +
+            `shape; expected an array of "#rrggbb" hex strings (or [r,g,b] tuples in 0..1). ` +
+            `Falling back to the configured default.`, { value: value });
+        return this._coercePalette(this.params.default) || this.supports.default;
+    }
+
+    /**
+     * Shape logic of _normalizePalette without the fallback.
+     * @return {string[]|null} canonical palette, or null when the value is not a palette
+     */
+    _coercePalette(value) {
         if (Array.isArray(value) && value.length > 0) {
             if (value.every(item => typeof item === "string")) {
                 return value;
@@ -588,13 +608,18 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
                 return value.map(rgb => this._rgbTupleToHex(rgb));
             }
         }
-        console.warn(
-            `[FlexRenderer.UIControls.custom_colormap] palette has unsupported shape; ` +
-            `expected an array of "#rrggbb" hex strings (or [r,g,b] tuples in 0..1). ` +
-            `Falling back to default.`,
-            value
-        );
-        return this.supports.default;
+        return null;
+    }
+
+    /**
+     * A cached value that is not a palette (e.g. heatmap's hex `color` from a flat 3.x cache)
+     * is dropped on load rather than replaced by supports.default.
+     */
+    acceptsStoredValue(value, paramName = "") {
+        if (paramName && paramName !== "default") {
+            return true;
+        }
+        return this._coercePalette(value) !== null;
     }
 
     _rgbTupleToHex(tuple) {
@@ -628,6 +653,10 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         // user-supplied default in any tolerated input shape, or a stale cache entry from an
         // earlier (possibly buggy) run — normalize once here so internal methods can trust it.
         this.value = this._normalizePalette(this.load(this.params.default));
+        if (this._paletteFellBack) {
+            // Overwrite the bad entry so it does not persist with the session.
+            this.store(this.value);
+        }
 
         if (!Array.isArray(this.steps)) {
             this.setSteps();
