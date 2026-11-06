@@ -2759,7 +2759,8 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
 
         node.title = `${resolved.label} (${resolved.set})`;
 
-        const previewSize = Math.max(18, Number.parseInt(this.params.previewSize, 10) || 27);
+        // The trigger is a compact btn-sm square; previewSize governs the search results.
+        const previewSize = Math.min(20, Math.max(16, Number.parseInt(this.params.previewSize, 10) || 27));
         const result = this._buildIconVisual(query, resolved.set, resolved, previewSize);
         if (result && result.node) {
             node.appendChild(result.node);
@@ -2899,7 +2900,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         // single Tailwind classes. Visual styling delegates to daisyUI tokens
         // so the popover follows the host theme.
         const body = [
-            `<div id="${this.id}_root" class="er-control__widget er-control__widget--icon relative"${UI.styleAttr(css)}>`,
+            `<div id="${this.id}_root" class="er-control__widget er-control__widget--icon"${UI.styleAttr(css)}>`,
             `<div class="er-control__toolbar er-control__toolbar--icon flex items-center justify-between gap-2">`,
             `<button id="${this.id}_trigger" type="button" class="${triggerCls}"${disabled}>`,
             `<span id="${this.id}_preview" class="er-control__preview er-control__preview--icon inline-flex items-center justify-center w-full h-full">?</span>`,
@@ -2923,11 +2924,13 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
             `</div>`,
             `</div>`
         ].join("");
-        return UI.renderControl("icon", this.params.title, body, classes, this.layoutColumns);
+        // Title and trigger share one row; the control root anchors the popup so it
+        // spans the full control width instead of only the narrow body column.
+        return UI.renderControl("icon", this.params.title, body, classes, this.layoutColumns, `style="position: relative;"`);
     }
 
     get layoutColumns() {
-        return 1;
+        return this.params.title ? 2 : 1;
     }
 
     get supports() {

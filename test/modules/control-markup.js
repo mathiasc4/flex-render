@@ -226,11 +226,13 @@
     });
 
     QUnit.test("titled Button and Icon use their layoutColumns", function(assert) {
-        ["button", "icon"].forEach(type => {
+        [["button", "1"], ["icon", "2"]].forEach(([type, columns]) => {
             const host = mount(buildControl(type, { title: "Titled" }).toHtml());
             const root = host.querySelector(".er-control");
-            assert.equal(root.getAttribute("data-columns"), "1", `${type}: data-columns=1`);
+            assert.equal(root.getAttribute("data-columns"), columns, `${type}: data-columns=${columns}`);
         });
+        const untitled = mount(buildControl("icon", { title: "" }).toHtml()).querySelector(".er-control");
+        assert.equal(untitled.getAttribute("data-columns"), "1", "untitled icon: data-columns=1");
     });
 
     QUnit.test("Button markup and behaviour", function(assert) {

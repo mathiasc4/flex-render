@@ -136,7 +136,7 @@ Every emitted input and button carries its BEM classes (`er-control__input er-co
 | `image-number` | image id input | `input input-bordered input-sm` |
 | `image-file` | image file input | `file-input file-input-bordered file-input-sm` |
 | `image-upload` | image upload button | `btn btn-sm btn-outline` |
-| `icon-trigger` | icon picker trigger | `btn btn-square btn-outline` |
+| `icon-trigger` | icon picker trigger | `btn btn-sm btn-square btn-outline` |
 | `icon-close` | icon popup close | `btn btn-ghost btn-xs btn-circle` |
 | `icon-query` | icon search input | `input input-bordered input-sm` |
 

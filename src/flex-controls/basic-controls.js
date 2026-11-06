@@ -520,7 +520,7 @@ $.FlexRenderer.UIControls._inputClassDefaults = {
     "image-number": "input input-bordered input-sm",
     "image-file": "file-input file-input-bordered file-input-sm",
     "image-upload": "btn btn-sm btn-outline",
-    "icon-trigger": "btn btn-square btn-outline",
+    "icon-trigger": "btn btn-sm btn-square btn-outline",
     "icon-close": "btn btn-ghost btn-xs btn-circle",
     "icon-query": "input input-bordered input-sm"
 };

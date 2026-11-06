@@ -70,7 +70,8 @@ Control markup:
  * UI strings localizable: UIControls.setTranslator(fn), UIControls.t(), IControl.t(), per-control
    params.strings for image and icon; translated text HTML-escaped.
  * Button: escaped title is the button label (no title span, type="button", no inline float).
-   Button and Icon honor layoutColumns (data-columns="1").
+   Button and Icon honor layoutColumns (Button data-columns="1"; titled Icon data-columns="2",
+   title and compact btn-sm trigger on one row, popup anchored to the control root).
  * Colormap gradient published as --er-colormap CSS variable (+ .er-control__colormap-preview)
    instead of inline background on the select. Removed init overwrite painting gradient from float
    uniform buffer.
