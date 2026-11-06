@@ -305,15 +305,7 @@
          */
         _findNavigatorTiledImage(tiledImage) {
             const nav = this.viewer.navigator;
-            if (!nav || !nav.world) {
-                return null;
-            }
-            for (let i = 0; i < nav.world.getItemCount(); i++) {
-                if (nav.world.getItemAt(i).source === tiledImage.source) {
-                    return nav.world.getItemAt(i);
-                }
-            }
-            return null;
+            return this._findTiledImageInWorld(nav && nav.world, tiledImage);
         }
 
         /**
@@ -324,12 +316,23 @@
          */
         _findParentTiledImage(tiledImage) {
             const parent = this.viewer.viewer;
-            if (!parent || !parent.world) {
+            return this._findTiledImageInWorld(parent && parent.world, tiledImage);
+        }
+
+        /**
+         * Tiled image in `world` whose tile source matches `tiledImage.source`.
+         * @private
+         * @param {OpenSeadragon.World|null|undefined} world
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @return {OpenSeadragon.TiledImage|null}
+         */
+        _findTiledImageInWorld(world, tiledImage) {
+            if (!world) {
                 return null;
             }
-            for (let i = 0; i < parent.world.getItemCount(); i++) {
-                if (parent.world.getItemAt(i).source === tiledImage.source) {
-                    return parent.world.getItemAt(i);
+            for (let i = 0; i < world.getItemCount(); i++) {
+                if (world.getItemAt(i).source === tiledImage.source) {
+                    return world.getItemAt(i);
                 }
             }
             return null;
@@ -578,8 +581,9 @@
                 }
                 navDrawer.overrideConfigureAll(shaders, this.renderer.getShaderLayerOrder().slice());
             } else {
-                // A skipped configureTiledImage() mirror: the navigator's tiledImageCreated() copies
-                // only the parent's shader ID, not its type/params, so re-apply the parent config.
+                // A skipped configureTiledImage() mirror (navigator drawer did not exist yet): re-apply
+                // the parent config. Note this shares the parent's config object, like the live mirror
+                // in configureTiledImage(), whereas tiledImageCreated() deep-copies it.
                 const world = this.viewer.world;
                 for (let i = 0; i < world.getItemCount(); i++) {
                     const tiledImage = world.getItemAt(i);
@@ -1154,53 +1158,85 @@
             // Set first: renderer.destroy() below resets control HTML and may fire redraw callbacks.
             this._destroying = true;
 
-            if (this._interactionEnabled) {
-                this.setInteractionOptions({
-                    enabled: false
-                }, {
-                    notify: false,
-                    redraw: false,
-                    reason: "drawer-destroy"
-                });
-            } else {
-                this._detachInteractionListeners();
-                this._resetInteractionTracking();
-                this._releaseInteractionViewerInputCapture();
-            }
-
-            // WebGL resource cleanup is owned by FlexRenderer and the active backend.
-
-            // unbind our event listeners from the viewer
-            this.viewer.removeHandler("resize", this._resizeHandler);
-            if (this.viewer.world && this._onWorldRemoveItem) {
-                this.viewer.world.removeHandler("remove-item", this._onWorldRemoveItem);
-            }
-
-            if (!this.options.offScreen) {
-                this.container.removeChild(this.canvas);
-                if (this.viewer.drawer === this){
-                    this.viewer.drawer = null;
+            // Best-effort teardown: a failing step must not skip the rest (the renderer owns the
+            // WebGL context), so each step runs on its own and the first error is rethrown at the end.
+            let firstError = null;
+            const step = (fn) => {
+                try {
+                    fn();
+                } catch (e) {
+                    firstError = firstError || e;
                 }
+            };
+
+            try {
+                step(() => {
+                    if (this._interactionEnabled) {
+                        this.setInteractionOptions({
+                            enabled: false
+                        }, {
+                            notify: false,
+                            redraw: false,
+                            reason: "drawer-destroy"
+                        });
+                    } else {
+                        this._detachInteractionListeners();
+                        this._resetInteractionTracking();
+                        this._releaseInteractionViewerInputCapture();
+                    }
+                });
+
+                // WebGL resource cleanup is owned by FlexRenderer and the active backend.
+
+                // unbind our event listeners from the viewer
+                step(() => this.viewer.removeHandler("resize", this._resizeHandler));
+                step(() => {
+                    if (this.viewer.world && this._onWorldRemoveItem) {
+                        this.viewer.world.removeHandler("remove-item", this._onWorldRemoveItem);
+                    }
+                });
+
+                if (!this.options.offScreen) {
+                    step(() => {
+                        // The host may have detached the canvas already (e.g. cleared the container).
+                        if (this.canvas && this.canvas.parentNode === this.container) {
+                            this.container.removeChild(this.canvas);
+                        }
+                    });
+                    step(() => {
+                        if (this.viewer.drawer === this){
+                            this.viewer.drawer = null;
+                        }
+                    });
+                }
+
+                if (this._rebuildHandle) {
+                    clearTimeout(this._rebuildHandle);
+                    this._rebuildHandle = null;
+                }
+
+                if (this._deferredRedrawHandle) {
+                    clearTimeout(this._deferredRedrawHandle);
+                    this._deferredRedrawHandle = null;
+                }
+
+                this._pendingRebuildRequest = null;
+
+                step(() => {
+                    if (this.renderer) {
+                        this.renderer.destroy();
+                    }
+                });
+            } finally {
+                this.renderer = null;
+                // set our destroyed flag to true
+                this._destroyed = true;
+                this._destroying = false;
             }
 
-            if (this._rebuildHandle) {
-                clearTimeout(this._rebuildHandle);
-                this._rebuildHandle = null;
+            if (firstError) {
+                throw firstError;
             }
-
-            if (this._deferredRedrawHandle) {
-                clearTimeout(this._deferredRedrawHandle);
-                this._deferredRedrawHandle = null;
-            }
-
-            this._pendingRebuildRequest = null;
-
-            this.renderer.destroy();
-            this.renderer = null;
-
-            // set our destroyed flag to true
-            this._destroyed = true;
-            this._destroying = false;
         }
 
         // todo documment

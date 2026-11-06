@@ -60,7 +60,8 @@ Control markup:
    instead of inline background on the select. Removed init overwrite painting gradient from float
    uniform buffer.
  * advanced_slider active intervals: .er-slider__connect--active class (color
-   --er-slider-connect-active, fallback --er) instead of inline oklch(var(--er)) (broke with hex --er).
+   --er-slider-connect-active, fallback #c62828) instead of inline oklch(var(--er)) (broke with hex --er);
+   --er is no longer read, since DaisyUI 4 defines it as raw oklch channels.
  * assets/ui.controls.css now needed for colormap preview, slider active state, button alignment.
    Test control-markup.js.
 

@@ -818,6 +818,16 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         const scratch = this._presentationTransferScratch;
         const colors = [[1, 0, 0, 1], [0.5, 0, 0, 0.5], [0, 0, 1, 1]];
         const targets = [];
+        // The probe runs mid-frame on a context other code may share: target creation and clears
+        // change the clear color and the active unit's TEXTURE_2D binding, so restore them, and keep
+        // an outside scissor rect from clipping the 1x1 clears.
+        const savedClearColor = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+        const savedActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
+        const savedTexture2D = gl.getParameter(gl.TEXTURE_BINDING_2D);
+        const savedScissor = gl.isEnabled(gl.SCISSOR_TEST);
+        if (savedScissor) {
+            gl.disable(gl.SCISSOR_TEST);
+        }
         try {
             if (!scratch.probeCtx) {
                 scratch.probeCanvas = document.createElement("canvas");
@@ -863,6 +873,12 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         } finally {
             targets.forEach(target => this._destroyColorTarget(target));
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.activeTexture(savedActiveTexture);
+            gl.bindTexture(gl.TEXTURE_2D, savedTexture2D);
+            gl.clearColor(savedClearColor[0], savedClearColor[1], savedClearColor[2], savedClearColor[3]);
+            if (savedScissor) {
+                gl.enable(gl.SCISSOR_TEST);
+            }
         }
     }
 
@@ -926,6 +942,18 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         for (let y = 0; y < height; y++) {
             const srcStart = (height - 1 - y) * rowLength;
             const dstStart = y * rowLength;
+            // Rows with only opaque/transparent pixels need no unpremultiply: copy them whole.
+            let translucent = false;
+            for (let i = srcStart + 3; i < srcStart + rowLength; i += 4) {
+                if (src[i] !== 0 && src[i] !== 255) {
+                    translucent = true;
+                    break;
+                }
+            }
+            if (!translucent) {
+                dst.set(src.subarray(srcStart, srcStart + rowLength), dstStart);
+                continue;
+            }
             for (let i = 0; i < rowLength; i += 4) {
                 const s = srcStart + i;
                 const d = dstStart + i;

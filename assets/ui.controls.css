@@ -115,7 +115,9 @@
     background-image: var(--er-colormap, none);
 }
 
-/* advanced_slider intervals toggled on by the mask (themable via --er-slider-connect-active). */
+/* advanced_slider intervals toggled on by the mask (themable via --er-slider-connect-active).
+   --er is deliberately not read here: DaisyUI 4 themes define it as raw oklch channels, which is
+   not a valid color on its own. */
 .noUi-connect.er-slider__connect--active {
-    background: var(--er-slider-connect-active, var(--er, #c62828));
+    background: var(--er-slider-connect-active, #c62828);
 }

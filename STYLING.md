@@ -275,7 +275,7 @@ those as inline styles:
 | --- | --- | --- |
 | `--er-colormap` (custom property) | `colormap` / `custom_colormap`, on the `.er-control` root (or the display node when mounted without one) | read as `background-image` by `.er-control__colormap-preview`, `.er-control__display--colormap`, `.er-control__display--custom-colormap` |
 | `.er-control__colormap-preview` | interactive `colormap` (sibling of the select) | thin gradient strip under the select |
-| `.er-slider__connect--active` | `advanced_slider`, on each `.noUi-connect` interval whose mask is on (off, when `inverted`) | `background: var(--er-slider-connect-active, var(--er, #c62828))` |
+| `.er-slider__connect--active` | `advanced_slider`, on each `.noUi-connect` interval whose mask is on (off, when `inverted`) | `background: var(--er-slider-connect-active, #c62828)` |
 | `--er-slider-connect-active` (custom property) | host | color of active slider intervals |
 | `.er-control--button > .er-control__body` | — | right-aligns the button |
 
@@ -285,6 +285,9 @@ To restyle them, override these rules, e.g.:
 ```css
 #shader-ui .er-control__colormap-preview { height: .75rem; }
 #shader-ui { --er-slider-connect-active: #1565c0; }
+/* follow a DaisyUI theme: v4 stores raw oklch channels, v5 a full color */
+#shader-ui { --er-slider-connect-active: oklch(var(--er)); }       /* DaisyUI 4 */
+#shader-ui { --er-slider-connect-active: var(--color-error); }     /* DaisyUI 5 */
 ```
 
 The `button` control renders its title as the button label: there is no
@@ -383,9 +386,9 @@ There is no special renderer-wide CSS variable contract here.
 
 `--er` is just a host-side variable you use to tint UI red. It is not a formal FlexRenderer API and it is not meant to describe the entire control theme.
 
-`--er` holds a complete CSS color (`#c62828`, `oklch(55% .2 27)`, ...). The renderer no longer
-wraps it in `oklch(...)`: its only use inside `ui.controls.css` is as the fallback color of active
-`advanced_slider` intervals (`var(--er-slider-connect-active, var(--er, #c62828))`).
+`ui.controls.css` does not read `--er` at all: its format depends on the host (DaisyUI 4 themes
+define it as raw oklch channels, not a complete color). Active `advanced_slider` intervals use
+`var(--er-slider-connect-active, #c62828)`; map that variable to your theme color if needed.
 
 Example:
 
