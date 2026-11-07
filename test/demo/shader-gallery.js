@@ -386,6 +386,23 @@
             }
         },
         {
+            id: "bipolar-heatmap",
+            title: "Bipolar heatmap",
+            types: ["bipolar-heatmap"],
+            blurb: "Unlike heatmap, both extremes are observations: values below 0.5 take one colour, values " +
+                "above take the other, and the midpoint stays transparent. Drag the threshold to widen the gap.",
+            sources: [SLIDE, scalar("expression-delta")],
+            config: {
+                delta: {
+                    name: "Both extremes in different colours", type: "bipolar-heatmap", tiledImages: [1],
+                    params: {
+                        colorHigh: "#d32f2f", colorLow: "#1565c0", threshold: 12,
+                        use_mode: "show", use_blend: "source-over", opacity: 1
+                    }
+                }
+            }
+        },
+        {
             id: "colormap-discrete",
             title: "Four-class grade map (discrete)",
             types: ["colormap"],

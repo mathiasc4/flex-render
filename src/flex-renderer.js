@@ -169,6 +169,7 @@
      * @property {WebGLTexture[]} texture           [TEXTURE_2D]
      * @property {Float32Array} textureCoords
      * @property {Float32Array} transformMatrix
+     * @property {"default"|"max"} [minificationFilter] per-tile override; unset inherits {@link FlexRenderer#getMinificationFilter}
      * //todo provide also opacity per tile?
      */
 
@@ -450,6 +451,14 @@
      *
      * @property {string} [sharedContextKey] optional page-global key used to share one WebGL context across renderer instances
      *
+     * @property {"auto"|"blit"|"read-pixels"} [presentationTransfer="auto"] shared-context only (ignored for
+     *      private renderers): how each frame moves from the shared WebGL canvas onto this renderer's 2D
+     *      presentation canvas. "blit" keeps it on the GPU (blitFramebuffer into the shared default
+     *      framebuffer + drawImage); "read-pixels" is the old synchronous CPU readback. "auto" probes the
+     *      blit route once per shared context and falls back to read-pixels for good if the probe fails.
+     *      "blit" skips the probe but still falls back when the route's preconditions do not hold.
+     *      The route that ran is readable from `renderer.presentationTransferMode`.
+     *
      * @property {"warn-skip"|"throw"} [sharedContextBusyPolicy="warn-skip"] internal policy used when a shared context is already rendering
      *
      * @property {boolean} debug                   debug mode on/off
@@ -472,6 +481,7 @@
      *      which is why the default is off and enabling `auto` is a deployment decision.
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
+     * @property {string} [minificationFilter="default"] `default` or `max`; see {@link FlexRenderer#setMinificationFilter}
      *
      * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
      * @property {number[]} [presentationClearColor=[1,1,1,1]] RGBA in [0,1] the presentation
@@ -491,9 +501,11 @@
      * @property {Function} redrawCallback          function called when user input changed; triggers re-render of the viewport
      * @property {Function} refetchCallback        function called when underlying data changed; triggers re-initialization of the whole WebGLDrawer
      *
-     * @property {object} canvasOptions
-     * @property {boolean} canvasOptions.alpha
-     * @property {boolean} canvasOptions.premultipliedAlpha
+     * @property {object} canvasOptions extra WebGL context attributes. `alpha`, `premultipliedAlpha`
+     *      and `preserveDrawingBuffer` are always forced to `true` (the pipeline outputs premultiplied
+     *      colour); passing other values for them has no effect. Shared contexts also force
+     *      `antialias: false`: nothing draws geometry into the shared default framebuffer, and a
+     *      multisampled one cannot receive the presentation blit.
      * @property {boolean} canvasOptions.stencil
      */
 
@@ -549,6 +561,8 @@
 
             this._renderDiagnostics = options.renderDiagnostics !== false;
 
+            this._minificationFilter = options.minificationFilter === "max" ? "max" : "default";
+
             this._background = options.backgroundColor || "#00000000";
 
             // The colour the presentation canvas is cleared to before every frame:
@@ -601,8 +615,12 @@
             this._inspectorState = this.constructor.normalizeInspectorState();
             this._interactionState = new InteractionState();
 
-            this.canvasContextOptions = this.constructor.normalizeCanvasOptions(options.canvasOptions);
             this._sharedContextKey = this.constructor.normalizeSharedContextKey(options.sharedContextKey);
+            this.canvasContextOptions = this.constructor.normalizeCanvasOptions(options.canvasOptions, {
+                shared: !!this._sharedContextKey
+            });
+            this._presentationTransfer = this.constructor.normalizePresentationTransfer(options.presentationTransfer);
+            this._presentationTransferMode = null;
             this._sharedContextEntry = null;
             this._contextLost = false;
 
@@ -677,7 +695,9 @@
                             activeRenderer: null,
                             ignoredReconfigurationCount: 0,
                             busySkipCount: 0,
-                            contextLostSkipCount: 0
+                            contextLostSkipCount: 0,
+                            // Per-context outcome of the presentation blit probe; see _presentFinalColorTarget().
+                            presentationTransferState: null
                         };
 
                         entry.handleContextLost = (event) => {
@@ -688,6 +708,7 @@
                             entry.lost = true;
                             entry.restored = false;
                             entry.__currentGLProgram = null;
+                            entry.presentationTransferState = null;
 
                             for (const renderer of entry.renderers) {
                                 renderer._contextLost = true;
@@ -709,6 +730,7 @@
 
                         entry.handleContextRestored = () => {
                             entry.restored = true;
+                            entry.presentationTransferState = null;
 
                             for (const renderer of entry.renderers) {
                                 renderer._warningCounts["shared-context-restored"] =
@@ -850,17 +872,51 @@
         }
 
         /**
+         * @param {*} value
+         * @return {"auto"|"blit"|"read-pixels"}
+         */
+        static normalizePresentationTransfer(value) {
+            if (value === "auto" || value === "blit" || value === "read-pixels") {
+                return value;
+            }
+
+            if (value !== undefined && value !== null && value !== "") {
+                $.console.warn(`FlexRenderer: unknown presentationTransfer '${value}', using "auto".`);
+            }
+
+            return "auto";
+        }
+
+        /**
          * Normalize WebGL context creation options.
          *
-         * These defaults mirror WebGLImplementation.createWebglContext(...), but are
-         * normalized before shared-context comparison so omitted default values compare
-         * consistently.
+         * Forces alpha, premultipliedAlpha and preserveDrawingBuffer to true, mirroring
+         * WebGLImplementation.createWebglContext(...): rendering writes premultiplied colour
+         * and the presentation canvas is composited as such. For a shared context also forces
+         * antialias to false: the shared default framebuffer only ever receives the presentation
+         * blit, which is illegal into a multisampled framebuffer. Forced before shared-context
+         * comparison so renderers sharing a context compare consistently.
          *
          * @param {object|undefined} options
+         * @param {object} [context]
+         * @param {boolean} [context.shared=false] whether the options are for a shared context
          * @return {object}
          */
-        static normalizeCanvasOptions(options = undefined) {
+        static normalizeCanvasOptions(options = undefined, { shared = false } = {}) {
             const normalized = $.extend(true, {}, options || {});
+
+            if (shared) {
+                if (normalized.antialias === true) {
+                    $.console.warn("FlexRenderer: canvasOptions.antialias is forced to false in shared-context mode.");
+                }
+                normalized.antialias = false;
+            }
+
+            for (const key of ["alpha", "premultipliedAlpha", "preserveDrawingBuffer"]) {
+                if (normalized[key] === false) {
+                    $.console.warn(`FlexRenderer: canvasOptions.${key}=false is not supported and is overridden to true.`);
+                }
+            }
 
             normalized.alpha = true;
             normalized.premultipliedAlpha = true;
@@ -892,6 +948,12 @@
                 ignoredReconfigurationCount: entry.ignoredReconfigurationCount || 0,
                 busySkipCount: entry.busySkipCount || 0,
                 contextLostSkipCount: entry.contextLostSkipCount || 0,
+                presentationTransfer: entry.presentationTransferState ? {
+                    probed: !!entry.presentationTransferState.probed,
+                    blitAvailable: entry.presentationTransferState.blitAvailable,
+                    samples: entry.presentationTransferState.samples,
+                    reason: entry.presentationTransferState.reason
+                } : null,
                 renderers: Array.from(entry.renderers || []).map(renderer => {
                     const viewer = renderer.viewer;
                     const viewerId = viewer && viewer.element && viewer.element.id ? viewer.element.id : null;
@@ -911,9 +973,99 @@
          * @param {NormalizationContext} context
          * @return {ShaderLayerConfig}
          */
+        /**
+         * Whether a shader layer config takes part in rendering. The single rule both shader
+         * assembly sides (compute definitions and stack execution) use, so they cannot disagree.
+         *
+         * `visible` is documented as number|boolean, but values reach it from URLs, form fields and
+         * persisted sessions; the string "0" is truthy in JS and used to render a hidden layer.
+         * @param {ShaderLayerConfig|null|undefined} config
+         * @returns {boolean}
+         */
+        static isShaderConfigActive(config) {
+            if (!config || config.type === "none" || config.error) {
+                return false;
+            }
+            return !FlexRenderer._isFalsyVisibility(config.visible);
+        }
+
+        static _isFalsyVisibility(visible) {
+            if (visible === undefined) {
+                return false;
+            }
+            if (typeof visible === "string") {
+                const value = visible.trim().toLowerCase();
+                return value === "" || value === "0" || value === "false";
+            }
+            return !visible;
+        }
+
+        /**
+         * Find the first unbalanced brace or parenthesis in GLSL source, ignoring comments.
+         * Used to reject a malformed layer or global include before it reaches the compiler, where
+         * one stray brace fails the whole program (e.g. "'{' : syntax error" when a function
+         * definition ends up nested inside another).
+         * @param {string} source
+         * @returns {{line: number, char: string, reason: string}|null} null when balanced
+         */
+        static findGlslImbalance(source) {
+            if (typeof source !== "string") {
+                return null;
+            }
+            const stack = [];
+            const pairs = { "}": "{", ")": "(" };
+            let line = 1;
+            for (let i = 0; i < source.length; i++) {
+                const c = source[i];
+                if (c === "\n") {
+                    line++;
+                } else if (c === "/" && source[i + 1] === "/") {
+                    while (i < source.length && source[i] !== "\n") {
+                        i++;
+                    }
+                    line++;
+                } else if (c === "/" && source[i + 1] === "*") {
+                    i += 2;
+                    while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) {
+                        if (source[i] === "\n") {
+                            line++;
+                        }
+                        i++;
+                    }
+                    i++;
+                } else if (c === "{" || c === "(") {
+                    stack.push({ c, line });
+                } else if (c === "}" || c === ")") {
+                    const open = stack.pop();
+                    if (!open || open.c !== pairs[c]) {
+                        return { line, char: c, reason: open ?
+                            `'${c}' closes '${open.c}' opened on line ${open.line}` : `unmatched '${c}'` };
+                    }
+                }
+            }
+            if (stack.length) {
+                const open = stack[stack.length - 1];
+                return { line: open.line, char: open.c, reason: `'${open.c}' is never closed` };
+            }
+            return null;
+        }
+
         static normalizeShaderConfig(config, context = {}) {
             if (!config || typeof config !== "object") {
                 return config;
+            }
+
+            // Coerce string visibility in place: the config object is shared between the main
+            // and navigator drawers, and both must see the same value.
+            if (typeof config.visible === "string") {
+                const coerced = FlexRenderer._isFalsyVisibility(config.visible) ? 0 : 1;
+                if (!FlexRenderer.__warnedStringVisible) {
+                    FlexRenderer.__warnedStringVisible = true;
+                    $.console.warn(`[flex-renderer] shader config 'visible' must be a number or boolean, ` +
+                        `got the string '${config.visible}' (id '${config.id || context.shaderId}'); ` +
+                        `treated as ${coerced}.`);
+                }
+                config.visible = coerced;
             }
 
             let normalized = config;
@@ -1500,8 +1652,8 @@
 
             this._renderDiagnostics = current;
 
-            if (options.redraw !== false && typeof this.redrawCallback === "function") {
-                this.redrawCallback();
+            if (options.redraw !== false) {
+                this._requestRedraw();
             }
 
             return this.getRenderDiagnostics();
@@ -1514,6 +1666,44 @@
          */
         getRenderDiagnostics() {
             return this._renderDiagnostics !== false;
+        }
+
+        /**
+         * Set how the first pass samples tiles drawn smaller than their texture resolution.
+         *
+         * `default` takes a single tap. `max` takes the per-channel maximum over the screen
+         * pixel's texel footprint (up to 4x4 taps), so small bright features on a dark
+         * background do not vanish when zoomed out. Only minified tiles pay the extra taps.
+         * The value is a uniform, so changing it neither rebuilds programs nor re-uploads tiles.
+         *
+         * @param {"default"|"max"} mode
+         * @param {object} [options={}]
+         * @param {boolean} [options.redraw=true] request a redraw after changing the setting
+         * @return {"default"|"max"} Current minification filter.
+         */
+        setMinificationFilter(mode, options = {}) {
+            const current = mode === "max" ? "max" : "default";
+
+            if (this._minificationFilter === current) {
+                return current;
+            }
+
+            this._minificationFilter = current;
+
+            if (options.redraw !== false) {
+                this._requestRedraw();
+            }
+
+            return current;
+        }
+
+        /**
+         * Return the first-pass minification filter.
+         *
+         * @return {"default"|"max"}
+         */
+        getMinificationFilter() {
+            return this._minificationFilter === "max" ? "max" : "default";
         }
 
         /**
@@ -1790,14 +1980,91 @@
 
             // Runs on the empty path too: the transfer is what makes the cleared target
             // visible on the presentation canvas.
-            this.backend.presentColorTargetToCanvas(
-                this._finalColorTarget,
-                this.getPresentationCanvas(),
-            );
+            this._presentFinalColorTarget();
 
             this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
 
             return result;
+        }
+
+        /**
+         * Present `_finalColorTarget` on this renderer's 2D presentation canvas (shared-context
+         * mode), choosing the transfer route per `presentationTransfer` and the per-context probe.
+         *
+         * @private
+         * @returns {"blit-draw-image"|"read-pixels"|"none"}
+         */
+        _presentFinalColorTarget() {
+            const entry = this._sharedContextEntry;
+            const gl = this.gl;
+            if (!entry || entry.lost || !gl || gl.isContextLost()) {
+                this._presentationTransferMode = "none";
+                return "none";
+            }
+
+            const backend = this.backend;
+            const source = this.getWebGLCanvas();
+            const requested = this._presentationTransfer;
+            const state = entry.presentationTransferState ||
+                (entry.presentationTransferState = { probed: false, blitAvailable: null, samples: null, reason: null });
+
+            let transfer = "read-pixels";
+            if (requested !== "read-pixels") {
+                if (state.samples === null) {
+                    state.samples = typeof backend.getDefaultFramebufferSamples === "function" ?
+                        backend.getDefaultFramebufferSamples() : 1;
+                }
+
+                if (state.samples > 0) {
+                    state.reason = "multisampled-default-framebuffer";
+                    this._warnOnce("shared-presentation-multisampled",
+                        `FlexRenderer shared context '${entry.key}': the default framebuffer is multisampled, ` +
+                        `presentation falls back to readPixels.`);
+                } else if (requested === "blit") {
+                    transfer = "blit";
+                } else {
+                    if (!state.probed && typeof backend.canProbePresentationBlit === "function" &&
+                        backend.canProbePresentationBlit(source)) {
+                        const result = backend.probePresentationBlit(source);
+                        state.probed = true;
+                        state.blitAvailable = !!(result && result.ok);
+                        state.reason = (result && result.reason) || null;
+                        if (!state.blitAvailable) {
+                            this._warnOnce("shared-presentation-blit-probe-failed",
+                                `FlexRenderer shared context '${entry.key}': GPU presentation probe failed ` +
+                                `(${state.reason}); presentation uses readPixels.`);
+                        }
+                    }
+                    transfer = state.blitAvailable === true ? "blit" : "read-pixels";
+                }
+            }
+
+            const mode = backend.presentColorTargetToCanvas(this._finalColorTarget, this.getPresentationCanvas(), {
+                transfer: transfer,
+                sourceCanvas: source
+            }) || "none";
+
+            this._presentationTransferMode = mode;
+            return mode;
+        }
+
+        _warnOnce(key, message) {
+            this._warningCounts[key] = (this._warningCounts[key] || 0) + 1;
+            if (!this._warningsEmitted.has(key)) {
+                this._warningsEmitted.add(key);
+                $.console.warn(message);
+            }
+        }
+
+        /**
+         * Route the last shared-context frame took to the presentation canvas:
+         * "blit-draw-image" (GPU), "read-pixels" (CPU readback) or "none" (nothing presented).
+         * `null` before the first presentation and always for private-context renderers, whose
+         * presentation canvas is the WebGL canvas itself. For diagnostics.
+         * @type {"blit-draw-image"|"read-pixels"|"none"|null}
+         */
+        get presentationTransferMode() {
+            return this._presentationTransferMode;
         }
 
         /**
@@ -2040,12 +2307,10 @@
 
                 this.__finalPassResult = this._finalColorTarget;
 
-                this.backend.presentColorTargetToCanvas(
-                    this._finalColorTarget,
-                    this.getPresentationCanvas(),
-                );
-
-                this.gl.finish();
+                // No gl.finish() here: every renderer on the shared context issues its commands in
+                // order on the one context, readPixels already synchronizes, and drawImage() of a
+                // WebGL canvas snapshots its drawing buffer at call time.
+                this._presentFinalColorTarget();
             } finally {
                 this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
 
@@ -2175,65 +2440,79 @@
             for (let shaderId in this._shaders) {
                 reinstantiateIfTypeChanged(shaderId, this._shaders[shaderId], null);
             }
-            // Needs reference early
+            // Needs reference early: setBackground() writes _bgColor onto the registered instance,
+            // which build() then bakes into the GLSL.
             this._programImplementations[key] = program;
-            this.backend.setBackground(this._background);
+            let webglProgram;
+            try {
+                this.backend.setBackground(this._background);
 
-            // Building with an empty order over a non-empty shader set is always a bug, and it used
-            // to present as a white canvas with no diagnostic at all: the program links, the layer
-            // list looks right, and only a per-frame GL_INVALID_OPERATION hints at it. Say it here,
-            // where both halves of the contradiction are in scope.
-            const buildOrder = this.getShaderLayerOrder();
-            const registeredIds = Object.keys(this._shaders);
-            if (!buildOrder.length && registeredIds.length) {
-                $.console.error(`$.FlexRenderer: program '${key}' is being built with an EMPTY ` +
-                    `render order while ${registeredIds.length} shader layer(s) are registered ` +
-                    `(${registeredIds.join(", ")}). Nothing will be composed and the output will ` +
-                    `be the background colour. Check what last called setShaderLayerOrder().`);
-            }
-
-            program.build(this._shaders, buildOrder);
-
-            // Check the fragment uniform budget before the driver does. Left to the driver this
-            // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
-            // MAX_FRAGMENT_UNIFORM_VECTORS(256)" with no indication of which declarations are
-            // responsible — and only on the devices that are too small, which are rarely the ones
-            // being developed on.
-            const uniformBudget = this.backend && this.backend.maxFragmentUniformVectors;
-            if (uniformBudget && typeof program.fragmentShader === "string") {
-                const estimate = $.FlexRenderer.WebGLImplementation
-                    .estimateFragmentUniformVectors(program.fragmentShader);
-                program.__uniformVectorEstimate = estimate;
-
-                if (estimate.total > uniformBudget) {
-                    const worst = estimate.items.slice(0, 8)
-                        .map(item => `    ${String(item.vectors).padStart(4)}  ${item.type} ${item.name}` +
-                            `${item.length > 1 ? `[${item.length}]` : ""}`)
-                        .join("\n");
-                    $.console.error(
-                        `[FlexRenderer] Program "${key}" declares ~${estimate.total} fragment uniform ` +
-                        `vectors but this device allows ${uniformBudget}; the link is expected to fail.\n` +
-                        `Largest consumers:\n${worst}\n` +
-                        `Reduce the number of shader layers, or the number of colormap / ` +
-                        `advanced_slider controls — those are the largest per-control consumers.`
-                    );
+                // Building with an empty order over a non-empty shader set is always a bug, and it used
+                // to present as a white canvas with no diagnostic at all: the program links, the layer
+                // list looks right, and only a per-frame GL_INVALID_OPERATION hints at it. Say it here,
+                // where both halves of the contradiction are in scope.
+                const buildOrder = this.getShaderLayerOrder();
+                const registeredIds = Object.keys(this._shaders);
+                if (!buildOrder.length && registeredIds.length) {
+                    $.console.error(`$.FlexRenderer: program '${key}' is being built with an EMPTY ` +
+                        `render order while ${registeredIds.length} shader layer(s) are registered ` +
+                        `(${registeredIds.join(", ")}). Nothing will be composed and the output will ` +
+                        `be the background colour. Check what last called setShaderLayerOrder().`);
                 }
-            }
 
-            const errMsg = program.getValidateErrorMessage();
-            if (errMsg) {
-                // Nothing has been created yet and the previously linked program is untouched;
-                // it keeps rendering while the caller decides what to do.
-                throw new Error(errMsg);
-            }
+                program.build(this._shaders, buildOrder);
 
-            const webglProgram = this.gl.createProgram();
-            if (!$.FlexRenderer.WebGLImplementation._compileProgram(
-                webglProgram, this.gl, program, $.console.error, this.debug
-            )) {
-                this.gl.deleteProgram(webglProgram);
-                throw new Error(`$.FlexRenderer::registerProgram: program "${key}" failed to compile or ` +
-                    `link; the previously linked program is kept. See the COMPILE/LINK log above.`);
+                // Check the fragment uniform budget before the driver does. Left to the driver this
+                // surfaces as a bare "LINK: FRAGMENT shader uniforms count exceeds
+                // MAX_FRAGMENT_UNIFORM_VECTORS(256)" with no indication of which declarations are
+                // responsible — and only on the devices that are too small, which are rarely the ones
+                // being developed on.
+                const uniformBudget = this.backend && this.backend.maxFragmentUniformVectors;
+                if (uniformBudget && typeof program.fragmentShader === "string") {
+                    const estimate = $.FlexRenderer.WebGLImplementation
+                        .estimateFragmentUniformVectors(program.fragmentShader);
+                    program.__uniformVectorEstimate = estimate;
+
+                    if (estimate.total > uniformBudget) {
+                        const worst = estimate.items.slice(0, 8)
+                            .map(item => `    ${String(item.vectors).padStart(4)}  ${item.type} ${item.name}` +
+                                `${item.length > 1 ? `[${item.length}]` : ""}`)
+                            .join("\n");
+                        $.console.error(
+                            `[FlexRenderer] Program "${key}" declares ~${estimate.total} fragment uniform ` +
+                            `vectors but this device allows ${uniformBudget}; the link is expected to fail.\n` +
+                            `Largest consumers:\n${worst}\n` +
+                            `Reduce the number of shader layers, or the number of colormap / ` +
+                            `advanced_slider controls — those are the largest per-control consumers.`
+                        );
+                    }
+                }
+
+                const errMsg = program.getValidateErrorMessage();
+                if (errMsg) {
+                    // Nothing has been created yet and the previously linked program is untouched;
+                    // it keeps rendering while the caller decides what to do.
+                    throw new Error(errMsg);
+                }
+
+                webglProgram = this.gl.createProgram();
+                if (!$.FlexRenderer.WebGLImplementation._compileProgram(
+                    webglProgram, this.gl, program, $.console.error, this.debug
+                )) {
+                    this.gl.deleteProgram(webglProgram);
+                    throw new Error(`$.FlexRenderer::registerProgram: program "${key}" failed to compile or ` +
+                        `link; the previously linked program is kept. See the COMPILE/LINK log above.`);
+                }
+            } catch (e) {
+                // A failed build changes nothing: when a fresh instance was handed in for an
+                // occupied key, the map must keep naming the one whose program is still linked,
+                // not the unlinked replacement.
+                if (previous === undefined) {
+                    delete this._programImplementations[key];
+                } else {
+                    this._programImplementations[key] = previous;
+                }
+                throw e;
             }
 
             // Linked: only now is the old implementation expendable. deleteProgram() looks the
@@ -2393,16 +2672,19 @@
                                 shaderLayers: this._shaders,
                             });
                         }
-
-                        for (const shaderId in this._shaders) {
-                            try {
-                                this._shaders[shaderId].init();
-                            } catch (e) {
-                                $.console.warn(`Shader ${shaderId} init(). The shader control will not work.`, e);
-                            }
-                        }
                     } catch (e) {
-                        $.console.warn(`Second pass re-initialization error: the visualization might not render.`, e);
+                        $.console.warn(`Second pass HTML controls error: shader controls might not be interactive.`, e);
+                    }
+
+                    // Must run even when the HTML step threw: requiresLoad is already consumed, so this
+                    // is the only init the controls get, and an uninitialized control uploads an
+                    // undefined uniform value on every draw.
+                    for (const shaderId in this._shaders) {
+                        try {
+                            this._shaders[shaderId].init();
+                        } catch (e) {
+                            $.console.warn(`Shader ${shaderId} init(). The shader control will not work.`, e);
+                        }
                     }
                 }
             }
@@ -2505,8 +2787,9 @@
                 params: config.params,
                 interactive: this.interactive,
 
-                // callback to re-render the viewport
-                invalidate: this.redrawCallback,
+                // callback to re-render the viewport; guarded because control listeners and
+                // debounce timers can outlive this renderer
+                invalidate: () => this._requestRedraw(),
                 // callback to rebuild the WebGL program
                 rebuild: () => {
                     try {
@@ -3380,6 +3663,30 @@
         }
 
         /**
+         * Notify observers of a control- or layer-level fallback: a cached value dropped for not
+         * fitting its control, an invalid palette, a control that failed to build or init, or a
+         * layer hidden for an assembly error (`config.error`). The same details also reach
+         * `UIControls.setReporter()`'s reporter.
+         *
+         * @param {object} details
+         * @param {String} details.layerId
+         * @param {String|null} details.control control name, null for layer-level reports
+         * @param {String} details.code e.g. "palette-invalid", "cache-value-rejected",
+         *   "control-build-failed", "control-init-failed", "layer-assembly-failed"
+         * @param {String} details.level "warn" | "error"
+         * @param {String} details.message
+         */
+        notifyShaderWarning(details = {}) {
+            this.raiseEvent('shader-warning', Object.assign({
+                layerId: null,
+                control: null,
+                code: "unknown",
+                level: "warn",
+                message: ""
+            }, details));
+        }
+
+        /**
          * Normalize inspector state to the canonical backend-agnostic shape.
          *
          * Backends must consume this logical state, not an implementation-specific variant.
@@ -3448,8 +3755,8 @@
                 });
             }
 
-            if (options.redraw !== false && typeof this.redrawCallback === 'function') {
-                this.redrawCallback();
+            if (options.redraw !== false) {
+                this._requestRedraw();
             }
 
             return this.getInspectorState();
@@ -3507,8 +3814,8 @@
                 });
             }
 
-            if (changed && options.redraw !== false && typeof this.redrawCallback === 'function') {
-                this.redrawCallback();
+            if (changed && options.redraw !== false) {
+                this._requestRedraw();
             }
 
             return this.getInteractionState();
@@ -3548,8 +3855,8 @@
                 });
             }
 
-            if (changed && options.redraw !== false && typeof this.redrawCallback === 'function') {
-                this.redrawCallback();
+            if (changed && options.redraw !== false) {
+                this._requestRedraw();
             }
 
             return this.getInteractionState();
@@ -3570,6 +3877,17 @@
                 throw new Error('Active WebGL implementation does not support second-pass texture targets.');
             }
             return this.backend.renderSecondPassToTexture(renderArray, options);
+        }
+
+        /**
+         * Invoke the host `redrawCallback`, unless this renderer is destroyed. Every internal redraw
+         * request goes through here: shader `invalidate` is handed to control listeners and timers
+         * that can fire after teardown, when the host viewer may be gone too.
+         */
+        _requestRedraw() {
+            if (!this._destroyed && typeof this.redrawCallback === "function") {
+                this.redrawCallback();
+            }
         }
 
         destroy() {
@@ -3647,16 +3965,39 @@
         }
 
         static sanitizeKey(key) {
+            // idPattern rejects a trailing '_': GLSL names append '_<suffix>' to ids and uids
+            // (and group children chain their parent's uid), which would form the reserved '__'.
+            // Non-string keys (numeric IDs) pass the pattern and are returned as before.
             if (!$.FlexRenderer.idPattern.test(key)) {
                 key = key.replace(/[^0-9a-zA-Z_]/g, '');
                 key = key.replace(/_+/g, '_');
                 key = key.replace(/^_+/, '');
+                key = key.replace(/_+$/, '');
 
                 if (!key) {
                     throw new Error("Invalid key: sanitization removed all parts!");
                 }
             }
             return key;
+        }
+
+        /**
+         * Throw when two distinct keys sanitize to the same key (e.g. 'a' and 'a_'), which would
+         * otherwise make one shader silently replace the other.
+         * @param {Array<string>} keys
+         * @param {string} [context="FlexRenderer"] prefix for the error message
+         * @throws {Error} on the first collision found
+         */
+        static assertUniqueSanitizedKeys(keys, context = "FlexRenderer") {
+            const seen = new Map();
+            for (const key of keys || []) {
+                const sanitized = String($.FlexRenderer.sanitizeKey(key));
+                const other = seen.get(sanitized);
+                if (other !== undefined && other !== key) {
+                    throw new Error(`${context}: shader ids '${other}' and '${key}' both map to '${sanitized}'. Rename one of them.`);
+                }
+                seen.set(sanitized, key);
+            }
         }
 
         static _buildSelfTestColorData(width, height, rgba) {
@@ -4388,12 +4729,13 @@
 
     // STATIC PROPERTIES
     /**
-     * ID pattern allowed for FlexRenderer. ID's are used in GLSL to distinguish uniquely between individual ShaderLayer's generated code parts
+     * ID pattern allowed for FlexRenderer. ID's are used in GLSL to distinguish uniquely between individual ShaderLayer's generated code parts.
+     * No leading or trailing '_' and no '__': generated names append '_<suffix>' to IDs, and GLSL reserves '__'.
      * @property
      * @type {RegExp}
      * @memberof FlexRenderer
      */
-    FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
+    FlexRenderer.idPattern = /^(?!_)(?!.*__)(?!.*_$)[0-9a-zA-Z_]*$/;
 
     FlexRenderer.__runtimeSupportCache = null;
 

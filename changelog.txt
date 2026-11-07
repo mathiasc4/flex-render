@@ -2,6 +2,89 @@ OPENSEADRAGON FLEX RENDERER
 ===========================
 
 0.0.2
+Control cache scoped per shader type:
+ * config.cache is { [type]: { [controlKey]: value } } again (as in xOpat 2.x). Flat 3.x caches
+   share one key space across types: a former heatmap's cache.color "#2962ff" was loaded by a
+   colormap's custom_colormap and fell back to grayscale. ShaderLayer.cache returns the bucket of
+   config.type; switching back to a type restores its values. Flat caches migrate to config.type
+   (ShaderLayer.normalizeCacheRoot). storeProperty(name, undefined) deletes; hasProperty(name).
+ * IControl.acceptsStoredValue(value, paramName) hook: a rejected cached value is dropped and the
+   default used. custom_colormap rejects non-palettes.
+ * custom_colormap invalid palette falls back to normalized params.default, then supports.default,
+   and stores the result.
+ * NEW UIControls.setReporter((level, code, details) => ...) / UIControls.report(), IControl.report(),
+   renderer event 'shader-warning' {layerId, shaderType, control, code, level, message, ...}. Codes:
+   cache-value-rejected, palette-invalid, control-build-failed, control-init-failed,
+   layer-assembly-failed (raised when a layer gets config.error). Test cache-scope.js.
+
+Shared-context presentation (sharedContextKey):
+ * NEW frame moves on GPU: blitFramebuffer final target -> shared default framebuffer, drawImage
+   region -> 2D presentation canvas ("copy" composite). Was unconditional readPixels + CPU row flip +
+   putImageData; profiled at ~18% of wall clock in a multi-viewer session.
+ * NEW renderer option presentationTransfer: "auto" (default) | "blit" | "read-pixels". auto probes
+   once per shared context (orientation + alpha via three 1x1 blits); failure -> read-pixels for good.
+   Multisampled default framebuffer -> read-pixels. renderer.presentationTransferMode reports route
+   ("blit-draw-image" | "read-pixels" | "none"); getSharedContextStatus()[i].presentationTransfer
+   reports probe. Backend presentColorTargetToCanvas(target, canvas, {transfer, sourceCanvas}).
+ * Shared contexts force canvasOptions.antialias=false (blit into MSAA framebuffer is illegal).
+ * Dropped gl.finish() after shared render() presentation.
+ * FIX translucent shared output darkened: putImageData took premultiplied target as straight alpha
+   (green a=64 read [0,64,0,64], private path [0,255,0,64]). read-pixels route now unpremultiplies.
+   Test shared-presentation.js.
+
+Teardown (FlexDrawer/FlexRenderer):
+ * FIX deferred work after viewer.destroy() threw "Cannot set properties of undefined (setting
+   'forceRedraw')": redrawCallback, shader invalidate (control listeners, slider debounce),
+   resumeRendering, shader-config mutation, refetch. All guarded by _canRedraw()
+   (drawer torn down / viewer.isDestroyed()); renderer._requestRedraw() no-op once destroyed.
+ * _requestRebuild/rebuild/overrideConfigureAll/... return early once destroy() started; destroyed
+   wins over suspended; destroy drops pending rebuild request.
+ * world remove-item handler detached in destroy() (drawer swap left it reaching a null renderer).
+ * Relink microtask skips a destroyed renderer.
+ * ShaderLayer.destroy() destroys owned controls (control.destroy()); group/time-series/
+   channel-series call super.destroy(). IControl.destroy() base no-op; AdvancedSlider destroy()
+   clears debounce timer + its noUiSlider. Host forceRedraw monkey-patches unnecessary.
+   Test destroy-deferred.js.
+
+Hidden layers / program assembly:
+ * FIX all-hidden program failed to compile when two groups (or a group and the root) held a child
+   with the same id and type: child uid unprefixed -> duplicate fr_compute_* placeholders and
+   uniforms. Child uid now prefixed with group uid (GLSL names only; DOM ids and config lookups use
+   id). Delegates of time-series/channel-series inherit prefix.
+ * FIX stack function fr_compute_<uid>_stack collided with layer uid "<uid>_stack" (group 'g' +
+   group 'g_stack'). Renamed fr_stack_<uid> / fr_stack_root.
+ * FIX visible:"0" / "false" rendered the layer (truthy string). FlexRenderer.isShaderConfigActive()
+   single rule for both assembly sides; normalizeShaderConfig coerces string visible in place.
+ * FIX group order naming a missing child threw in init/glLoaded/glDrawing; ids dropped with warning.
+ * One unbalanced layer no longer fails whole program: definition checked with
+   FlexRenderer.findGlslImbalance(), layer becomes error placeholder. includeGlobalCode refuses
+   unbalanced code (global includes go into every program, hidden layers or not). Compile failure
+   log names first imbalance line. Test hidden-stack-compile.js.
+
+Control markup:
+ * Tags and class attributes single-line. toHtml(classes, css, options) and
+   ShaderLayer.htmlControls(wrapper, classes, css, options) / htmlControls({wrapper, classes, css,
+   inputClasses}) thread per-role input classes. NEW UIControls.inputClassDefaults /
+   setInputClassDefaults() / resolveInputClasses(): DaisyUI classes by default
+   (setInputClassDefaults(null) for other hosts). SliderWithInput classes now on its root.
+ * UI strings localizable: UIControls.setTranslator(fn), UIControls.t(), IControl.t(), per-control
+   params.strings for image and icon; translated text HTML-escaped.
+ * Button: escaped title is the button label (no title span, type="button", no inline float).
+   Button and Icon honor layoutColumns (Button data-columns="1"; titled Icon data-columns="2",
+   title and compact btn-sm trigger on one row, popup anchored to the control root).
+ * Control titles are HTML-escaped for every control (UIControls.renderTitle), not just Button.
+   BREAKING for titles carrying markup: host opts in with UIControls.allowHtmlTitles = true (off by
+   default, cannot be set from shader config), then per control with params.titleHtml: true (strict
+   boolean). NEW UIControls.titleFrom(params), UIControls.isHtmlTitle(params).
+ * Colormap gradient published as --er-colormap CSS variable (+ .er-control__colormap-preview)
+   instead of inline background on the select. Removed init overwrite painting gradient from float
+   uniform buffer.
+ * advanced_slider active intervals: .er-slider__connect--active class (color
+   --er-slider-connect-active, fallback #c62828) instead of inline oklch(var(--er)) (broke with hex --er);
+   --er is no longer read, since DaisyUI 4 defines it as raw oklch channels.
+ * assets/ui.controls.css now needed for colormap preview, slider active state, button alignment.
+   Test control-markup.js.
+
 Standalone drawer construction options:
  * NEW makeStandaloneFlexDrawer(viewer, optionOverrides). Deep-merged over copy of
    viewer.drawerOptions['flex-renderer'].
@@ -46,6 +129,12 @@ MVT vector tiles, world not a multiple of tileSize:
  * FIX worker `config` handler did STYLE = msg.style || STYLE - replaced whole object. TileJSON
    style declares `layers` only -> STYLE.fallback undefined -> unknown layer name dereferenced
    undefined.type -> worker throw instead of default style. Now merged.
+ * NEW MVTTileSource.configure honours TileJSON `width`/`height` (non-standard extension, both
+   required, image anchored at tile 0,0). Before: always square 2^maxLevel * tileSize -> slide layer
+   covered top 47% only, consumers needed a factory. Missing maxzoom with declared size -> smallest
+   level that fits. `bounds` ignored on purpose: lon/lat, non-origin needs tile offset OSD lacks.
+ * FIX getTileUrl TMS / {-y} flip used 1 << z rows. Now getNumTiles(level).y. Square: identical.
+   Test mvt-tilejson-world.js.
 
 Shader coordinate units on HiDPI displays:
  * FIX grid + gridheatmap drew cells 1/devicePixelRatio of configured size when devicePixelRatio
@@ -113,6 +202,10 @@ Shared-context correctness:
    is not from the associated program", forever, nothing re-links on its own.
  * Now: builds + links into scratch program, swaps only after link succeeds. Failure leaves previous
    program bound and rendering. Throws like the validation path instead of returning undefined.
+ * Failed build/link also restores registry entry. Fresh implementation handed in for occupied key
+   was assigned into _programImplementations before build (setBackground needs it) and left there
+   on throw -> map named unlinked instance, live program of previous unreferenced. Unoccupied key
+   left unregistered.
  * Reachable whenever SecondPassProgram widens uniform arrays (world past _uTiInfoSlots, or past
    instance/texture-index sizes) on a device where that crosses MAX_FRAGMENT_UNIFORM_VECTORS.
  * Every registerProgram() caller that could not see a failure now handles the throw and reports it:
@@ -221,6 +314,11 @@ FlexRenderer:
  * render() binds default framebuffer before clearing in private mode. Frame whose second pass was
    empty left first-pass offscreen framebuffer bound -> next frame clear landed there, not on the
    canvas.
+
+Config schema:
+ * FIX compileConfigSchemaModel() deterministic again. "x-generatedAt" timestamp, removed in
+   52bc6a3, came back via modular-shader-layers merge a226445 -> two dumps never byte-equal, schema
+   not content-hashable. Docs model generatedAt (shown as "Generated at") unaffected.
 
 ShaderLayer interaction requirement:
  * NEW static ShaderLayer.requiresInteraction(), default false. True on fisheye-lens +

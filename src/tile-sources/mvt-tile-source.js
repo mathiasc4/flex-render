@@ -339,6 +339,10 @@ $.FlexRenderer.AbstractMVTTileSource = AbstractMVTTileSource;
  *   );
  *   viewer.addTiledImage({ tileSource: src });
  *
+ * Non-square worlds (e.g. pathology slides): add `width` and `height` (full
+ * resolution pixels) to the TileJSON. The image is anchored at tile (0,0);
+ * `maxzoom` defaults to the smallest level that fits it.
+ *
  * Usage (local server for testing via docker):
  *     Download desired vector tiles from the server, and run:
  *       docker run -it --rm -p 8080:8080 -v /path/to/data:/data maptiler/tileserver-gl-light:latest
@@ -424,16 +428,29 @@ $.MVTTileSource = class extends $.FlexRenderer.AbstractMVTTileSource {
                 ? tj.tile_size
                 : 512;
 
+        // Non-standard extension: `width`/`height` declare the full-resolution image
+        // size (e.g. a pathology slide), anchored at tile (0,0). Without both, the
+        // world is the square web-mercator pyramid. `bounds` is deliberately ignored:
+        // it is lon/lat, and a non-origin west/north would need a tile offset OSD lacks.
+        const declaredWidth = Number(tj.width);
+        const declaredHeight = Number(tj.height);
+        const hasDeclaredSize = Number.isFinite(declaredWidth) && declaredWidth > 0
+            && Number.isFinite(declaredHeight) && declaredHeight > 0;
+
         const minLevel = Number.isFinite(tj.minzoom) ? tj.minzoom : 0;
-        const maxLevel = Number.isFinite(tj.maxzoom) ? tj.maxzoom : 14;
+        const maxLevel = Number.isFinite(tj.maxzoom)
+            ? tj.maxzoom
+            : hasDeclaredSize
+                ? Math.max(0, Math.ceil(Math.log2(Math.max(declaredWidth, declaredHeight) / tileSize)))
+                : 14;
 
         const scheme = tj.scheme === "tms" ? "tms" : "xyz";
 
         // This is the internal vector-tile coordinate extent, not geographic bounds.
         const extent = Number.isFinite(tj.extent) ? tj.extent : 4096;
 
-        const width = Math.pow(2, maxLevel) * tileSize;
-        const height = width;
+        const width = hasDeclaredSize ? declaredWidth : Math.pow(2, maxLevel) * tileSize;
+        const height = hasDeclaredSize ? declaredHeight : width;
 
         return {
             template,
@@ -451,8 +468,10 @@ $.MVTTileSource = class extends $.FlexRenderer.AbstractMVTTileSource {
 
     getTileUrl(level, x, y) {
         const z = level;
-        const n = 1 << z;
-        const flippedY = n - 1 - y;
+        // TMS rows count from the bottom of the level's real grid, which is 2^z
+        // only for a square world.
+        const rows = this.getNumTiles(level).y;
+        const flippedY = rows - 1 - y;
         const yValue = this.scheme === "tms" ? flippedY : y;
 
         return this.template

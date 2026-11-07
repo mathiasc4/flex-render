@@ -191,12 +191,9 @@ $.FlexRenderer.UIControls.ColorMap = class extends $.FlexRenderer.UIControls.ICo
             node.addEventListener("change", updater);
         } else {
             this._setPallete(this.colorPallete);
+            // paints the --er-colormap hook from colorPallete (hex strings); the display node may
+            // legitimately be absent when the host mounts no markup
             this.updateColormapUI();
-            //be careful with what the DOM elements contains or not if not interactive...
-            let existsNode = document.getElementById(this.id);
-            if (existsNode) {
-                existsNode.style.background = this.cssGradient(this.pallete);
-            }
         }
     }
 
@@ -313,9 +310,29 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
     updateColormapUI() {
         let node = document.getElementById(this.id);
         if (node) {
-            node.style.background = this.cssGradient(this.colorPallete);
+            this._paintGradient(node, this.cssGradient(this.colorPallete));
         }
         return node;
+    }
+
+    /**
+     * Publish the palette gradient as the `--er-colormap` custom property on the control root
+     * (`.er-control`), falling back to the node itself when it is mounted without one. The
+     * stylesheet (assets/ui.controls.css) paints the display / preview from that property, so
+     * the gradient is never written as an inline background over the host's input styling.
+     * @param {Element} node any element inside the control
+     * @param {string} gradient CSS gradient, empty removes the property
+     */
+    _paintGradient(node, gradient) {
+        if (!node) {
+            return;
+        }
+        const root = (typeof node.closest === "function" && node.closest(".er-control")) || node;
+        if (gradient) {
+            root.style.setProperty("--er-colormap", gradient);
+        } else {
+            root.style.removeProperty("--er-colormap");
+        }
     }
 
     /**
@@ -429,7 +446,7 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
 
         const node = document.getElementById(this.id);
         if (node) {
-            node.style.background = this.cssGradient(this.colorPallete);
+            this._paintGradient(node, this.cssGradient(this.colorPallete));
             if (this.params.interactive) {
                 node.value = this.value;
             }
@@ -439,8 +456,18 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
         this.changed("default", this.pallete, this.value, this);
     }
 
+    /**
+     * init() assigns 'value' before the palette lookup that can throw, so 'value' alone would
+     * report a half-run init() as done and the bake would stay dirty forever.
+     * @return {boolean}
+     */
+    _isInitialized() {
+        return this.value !== undefined && !!this.pallete;
+    }
+
     glDrawing(program, gl) {
-        if (this._lutDirty) {
+        // Without init() the bake stays dirty forever and the colormap never shows.
+        if (this._lutDirty && this._ensureInitialized()) {
             this._bakeAndUploadLut();
         }
         gl.uniform1i(this.textureIdGluint, this.textureId);
@@ -452,14 +479,17 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
         this._lutDirty = true;
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
+        const UI = $.FlexRenderer.UIControls;
         if (!this.params.interactive) {
-            const display = `<span id="${this.id}" class="er-control__display er-control__display--colormap"${$.FlexRenderer.UIControls.styleAttr(css)}>${this.load(this.params.default)}</span>`;
-            return $.FlexRenderer.UIControls.renderControl("colormap", this.params.title, display, classes);
+            const display = `<span id="${this.id}" class="er-control__display er-control__display--colormap"${UI.styleAttr(css)}>${UI.escapeHtml(this.load(this.params.default))}</span>`;
+            return UI.renderControl("colormap", UI.titleFrom(this.params), display, classes, this.layoutColumns);
         }
 
-        const input = `<select id="${this.id}" class="er-control__input er-control__input--colormap"${$.FlexRenderer.UIControls.styleAttr(css)}></select>`;
-        return $.FlexRenderer.UIControls.renderControl("colormap", this.params.title, input, classes);
+        const input = UI.renderInput("select", "colormap", this.id, "", css,
+            UI.resolveInputClasses("colormap", options && options.inputClasses)) +
+            `</select><span class="er-control__colormap-preview" aria-hidden="true"></span>`;
+        return UI.renderControl("colormap", UI.titleFrom(this.params), input, classes, this.layoutColumns);
     }
 
     define() {
@@ -547,9 +577,29 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
      * Tolerated inputs:
      *   - array of hex strings (canonical)              → returned as-is
      *   - array of [r, g, b] or [r, g, b, a] in 0..1   → converted to hex (alpha dropped — GLSL is vec3)
-     *   - anything else                                  → warn, fall back to supports().default
+     *   - anything else                                  → report, fall back to the normalized
+     *                                                      params.default, then supports.default
+     *
+     * Sets `this._paletteFellBack` so callers can persist the replacement over the bad value.
      */
     _normalizePalette(value) {
+        const palette = this._coercePalette(value);
+        this._paletteFellBack = !palette;
+        if (palette) {
+            return palette;
+        }
+        this.report("palette-invalid",
+            `custom_colormap '${this.name}' of layer '${this.owner.id}': palette has unsupported ` +
+            `shape; expected an array of "#rrggbb" hex strings (or [r,g,b] tuples in 0..1). ` +
+            `Falling back to the configured default.`, { value: value });
+        return this._coercePalette(this.params.default) || this.supports.default;
+    }
+
+    /**
+     * Shape logic of _normalizePalette without the fallback.
+     * @return {string[]|null} canonical palette, or null when the value is not a palette
+     */
+    _coercePalette(value) {
         if (Array.isArray(value) && value.length > 0) {
             if (value.every(item => typeof item === "string")) {
                 return value;
@@ -558,13 +608,18 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
                 return value.map(rgb => this._rgbTupleToHex(rgb));
             }
         }
-        console.warn(
-            `[FlexRenderer.UIControls.custom_colormap] palette has unsupported shape; ` +
-            `expected an array of "#rrggbb" hex strings (or [r,g,b] tuples in 0..1). ` +
-            `Falling back to default.`,
-            value
-        );
-        return this.supports.default;
+        return null;
+    }
+
+    /**
+     * A cached value that is not a palette (e.g. heatmap's hex `color` from a flat 3.x cache)
+     * is dropped on load rather than replaced by supports.default.
+     */
+    acceptsStoredValue(value, paramName = "") {
+        if (paramName && paramName !== "default") {
+            return true;
+        }
+        return this._coercePalette(value) !== null;
     }
 
     _rgbTupleToHex(tuple) {
@@ -598,6 +653,10 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         // user-supplied default in any tolerated input shape, or a stale cache entry from an
         // earlier (possibly buggy) run — normalize once here so internal methods can trust it.
         this.value = this._normalizePalette(this.load(this.params.default));
+        if (this._paletteFellBack) {
+            // Overwrite the bad entry so it does not persist with the session.
+            this.store(this.value);
+        }
 
         if (!Array.isArray(this.steps)) {
             this.setSteps();
@@ -615,11 +674,6 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         } else {
             this._setPallete(this.colorPallete);
             this.updateColormapUI();
-            //be careful with what the DOM elements contains or not if not interactive...
-            let existsNode = document.getElementById(this.id);
-            if (existsNode) {
-                existsNode.style.background = this.cssGradient(this.pallete);
-            }
         }
     }
 
@@ -643,9 +697,7 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
             if (Number.isInteger(index)) {
                 _this.colorPallete[index] = selected;
                 _this._setPallete(_this.colorPallete);
-                if (self.parentElement) {
-                    self.parentElement.style.background = _this.cssGradient(_this.colorPallete);
-                }
+                _this._paintGradient(self.parentElement || node, _this.cssGradient(_this.colorPallete));
                 _this.value = _this.colorPallete;
                 _this.store(_this.colorPallete);
                 _this.changed("default", _this.pallete, _this.value, _this);
@@ -685,14 +737,15 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         this.changed("default", this.pallete, this.value, this);
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
+        const UI = $.FlexRenderer.UIControls;
         if (!this.params.interactive) {
-            const display = `<span id="${this.id}" class="er-control__display er-control__display--custom-colormap"${$.FlexRenderer.UIControls.styleAttr(css)}>&emsp;</span>`;
-            return $.FlexRenderer.UIControls.renderControl("custom-colormap", this.params.title, display, classes);
+            const display = `<span id="${this.id}" class="er-control__display er-control__display--custom-colormap"${UI.styleAttr(css)}>&emsp;</span>`;
+            return UI.renderControl("custom-colormap", UI.titleFrom(this.params), display, classes, this.layoutColumns);
         }
 
-        const display = `<span id="${this.id}" class="er-control__display er-control__display--custom-colormap"${$.FlexRenderer.UIControls.styleAttr(css)}></span>`;
-        return $.FlexRenderer.UIControls.renderControl("custom-colormap", this.params.title, display, classes);
+        const display = `<span id="${this.id}" class="er-control__display er-control__display--custom-colormap"${UI.styleAttr(css)}></span>`;
+        return UI.renderControl("custom-colormap", UI.titleFrom(this.params), display, classes, this.layoutColumns);
     }
 
     get supports() {
@@ -817,6 +870,7 @@ return masked * bigger / actualLength;
 
     init() {
         this._updatePending = false;
+        this._destroyed = false;
         //encoded values hold breaks values between min and max,
         // Pin the shape contract at the boundary: `encodedValues` and `mask` are always arrays of
         // finite numbers from this point on. Loaders may return user-supplied input or stale cache
@@ -904,6 +958,9 @@ return masked * bigger / actualLength;
             if (!window.noUiSlider) {
                 throw new Error("noUiSlider not found: install noUiSlide library!");
             }
+            // Kept so destroy() tears down exactly the slider this instance built: re-querying by
+            // id at destroy time could hit a node a replacement layer with the same id now owns.
+            this._sliderContainer = container;
             window.noUiSlider.create(container, {
                 range: {
                     min: _this.params.min,
@@ -975,10 +1032,7 @@ return masked * bigger / actualLength;
 
                         let idx = Number.parseInt(this.dataset.index, 10);
                         _this.mask[idx] = _this.mask[idx] > 0 ? 0 : _this._originalMask[idx];
-                        /* eslint-disable eqeqeq */
-                        this.style.background = (!_this.params.inverted && _this.mask[idx] > 0) ||
-                            (_this.params.inverted && _this.mask[idx] == 0) ?
-                                "oklch(var(--er))" : "";
+                        this.classList.toggle("er-slider__connect--active", _this._isConnectActive(idx));
                         _this.owner.invalidate();
                         _this._ignoreNextClick = idx !== 0 && idx !== _this.sampleSize - 1;
                         _this.changed("mask", _this.mask, _this.mask, _this);
@@ -1001,13 +1055,17 @@ return masked * bigger / actualLength;
                 } else if (!_this._updatePending) {
                     //can be called multiple times upon multiple handle updates, do once if possible
                     _this._updatePending = true;
-                    setTimeout(_ => {
+                    _this._updateTimer = setTimeout(_ => {
+                        _this._updateTimer = null;
+                        _this._updatePending = false;
+                        if (_this._destroyed) {
+                            return;
+                        }
                         //todo re-scale values or filter out -1ones
                         _this.changed("breaks", _this.value, strValues, _this);
                         _this.store(unencoded, "breaks");
 
                         _this.owner.invalidate();
-                        _this._updatePending = false;
                     }, 50);
                 }
             });
@@ -1021,8 +1079,42 @@ return masked * bigger / actualLength;
         }
     }
 
+    /**
+     * Tear down the slider this instance created and drop a pending debounced update.
+     * Idempotent and safe before init().
+     */
+    destroy() {
+        this._destroyed = true;
+        if (this._updateTimer) {
+            clearTimeout(this._updateTimer);
+            this._updateTimer = null;
+        }
+        this._updatePending = false;
+        const container = this._sliderContainer;
+        this._sliderContainer = null;
+        if (container && container.noUiSlider && typeof container.noUiSlider.destroy === "function") {
+            try {
+                container.noUiSlider.destroy();
+            } catch (e) {
+                console.warn("FlexRenderer.UIControls.AdvancedSlider: failed to destroy the slider.", e);
+            }
+        }
+    }
+
     _normalize(value) {
         return (value - this.params.min) / (this.params.max - this.params.min);
+    }
+
+    /**
+     * Whether the interval `idx` is drawn as active (er-slider__connect--active).
+     * @param {number} idx interval index
+     * @return {boolean}
+     */
+    _isConnectActive(idx) {
+        const mask = this.mask || [];
+        /* eslint-disable eqeqeq */
+        return (!this.params.inverted && mask[idx] > 0) || (this.params.inverted && mask[idx] == 0);
+        /* eslint-enable eqeqeq */
     }
 
     /**
@@ -1066,10 +1158,7 @@ return masked * bigger / actualLength;
         }
         let pips = container.querySelectorAll('.noUi-connect');
         for (let i = 0; i < pips.length; i++) {
-            /* eslint-disable eqeqeq */
-            pips[i].style.background = (!this.params.inverted && this.mask[i] > 0) ||
-                (this.params.inverted && this.mask[i] == 0) ?
-                "oklch(var(--er))" : "";
+            pips[i].classList.toggle("er-slider__connect--active", this._isConnectActive(i));
             pips[i].dataset.index = (i).toString();
         }
     }
@@ -1150,7 +1239,15 @@ return masked * bigger / actualLength;
         }
     }
 
+    _isInitialized() {
+        return Array.isArray(this.value) && Array.isArray(this.mask);
+    }
+
     glDrawing(program, gl) {
+        // _packVec4 reads .length, so drawing before init() would throw out of the render loop.
+        if (!this._ensureInitialized()) {
+            return;
+        }
         gl.uniform4fv(this.breaksGluint, this._packVec4(this.value, this.BREAK_VEC4S));
         gl.uniform4fv(this.maskGluint, this._packVec4(this.mask, this.MASK_VEC4S));
     }
@@ -1162,12 +1259,12 @@ return masked * bigger / actualLength;
         this.maskGluint = gl.getUniformLocation(program, this.webGLVariableName + "_mask[0]");
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         if (!this.params.interactive) {
             return "";
         }
         const slider = `<div id="${this.id}" class="er-control__widget er-control__widget--advanced-slider"${$.FlexRenderer.UIControls.styleAttr(`height: 9px; display: inline-block;${css}`)}></div>`;
-        return $.FlexRenderer.UIControls.renderControl("advanced-slider", this.params.title, slider, classes);
+        return $.FlexRenderer.UIControls.renderControl("advanced-slider", $.FlexRenderer.UIControls.titleFrom(this.params), slider, classes, this.layoutColumns);
     }
 
     define() {
@@ -1289,11 +1386,14 @@ $.FlexRenderer.UIControls.TextArea = class extends $.FlexRenderer.UIControls.ICo
         //do nothing
     }
 
-    toHtml(classes = "", css = "") {
-        let disabled = this.params.interactive ? "" : "disabled";
-        const textarea = `<textarea id="${this.id}" class="er-control__input er-control__input--textarea"
-${$.FlexRenderer.UIControls.styleAttr(`width: 100%; display: block; resize: vertical; ${css}`)} ${disabled} placeholder="${this.params.placeholder}"></textarea>`;
-        return $.FlexRenderer.UIControls.renderControl("text-area", this.params.title, textarea, classes);
+    toHtml(classes = "", css = "", options = {}) {
+        const UI = $.FlexRenderer.UIControls;
+        const disabled = this.params.interactive ? "" : " disabled";
+        const textarea = UI.renderInput("textarea", "textarea", this.id,
+            `${disabled} placeholder="${UI.escapeHtml(this.params.placeholder)}"`,
+            `width: 100%; display: block; resize: vertical; ${css}`,
+            UI.resolveInputClasses("textarea", options && options.inputClasses)) + `</textarea>`;
+        return UI.renderControl("text-area", UI.titleFrom(this.params), textarea, classes, this.layoutColumns);
     }
 
     define() {
@@ -1358,10 +1458,8 @@ $.FlexRenderer.UIControls.Button = class extends $.FlexRenderer.UIControls.ICont
     init() {
         this.value = this.load(this.params.default);
 
+        // the label is rendered by toHtml() as escaped text content
         let node = document.getElementById(this.id);
-        if (node) {
-            node.innerHTML = this.params.title;
-        }
 
         if (this.params.interactive && node) {
             const _this = this;
@@ -1393,10 +1491,17 @@ $.FlexRenderer.UIControls.Button = class extends $.FlexRenderer.UIControls.ICont
         //do nothing
     }
 
-    toHtml(classes = "", css = "") {
-        let disabled = this.params.interactive ? "" : "disabled";
-        const button = `<button id="${this.id}" class="er-control__button er-control__button--action"${$.FlexRenderer.UIControls.styleAttr(`${css ? css : ""}float: right;`)} ${disabled}></button>`;
-        return $.FlexRenderer.UIControls.renderControl("button", this.params.title, button, classes);
+    /**
+     * The title is the button label; no separate title span is emitted. Alignment comes from
+     * `.er-control--button > .er-control__body` in assets/ui.controls.css, not inline style.
+     */
+    toHtml(classes = "", css = "", options = {}) {
+        const UI = $.FlexRenderer.UIControls;
+        const disabled = this.params.interactive ? "" : " disabled";
+        const cls = UI.joinClasses("er-control__button", "er-control__button--action",
+            UI.resolveInputClasses("button", options && options.inputClasses));
+        const button = `<button id="${this.id}" type="button" class="${cls}"${UI.styleAttr(css)}${disabled}>${UI.isHtmlTitle(this.params) ? String(this.params.title) : UI.escapeHtml(this.params.title)}</button>`;
+        return UI.renderControl("button", "", button, classes, this.layoutColumns);
     }
 
     get layoutColumns() {
@@ -1551,7 +1656,8 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
                 { name: "title", type: "string", default: "Images" },
                 { name: "interactive", type: "boolean", default: true },
                 { name: "default", type: "number", default: -1 },
-                { name: "accept", type: "string", default: "image/*" }
+                { name: "accept", type: "string", default: "image/*" },
+                { name: "strings", type: "object", default: {}, usage: "Per-control UI string overrides keyed by i18n key (image.hint, image.selected, image.upload, image.noFile); wins over UIControls.setTranslator()." }
             ],
             glType: "vec4"
         };
@@ -1603,7 +1709,7 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
                         };
                         fr.readAsDataURL(file.files[0]);
                     } else {
-                        alert("No file selected");
+                        alert(_this.t("image.noFile", "No file selected"));
                     }
                 };
 
@@ -1612,16 +1718,24 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
         }
     }
 
-    toHtml(classes = "", css = "") {
-        const disabled = this.params.interactive ? "" : "disabled";
-        const body = `
-        <div id="${this.id}_root" class="er-control__widget er-control__widget--image"${$.FlexRenderer.UIControls.styleAttr(`${css}; position: relative;`)}>
-            <div class="er-control__hint er-control__hint--image">The atlas starts empty. Upload an image to create a new atlas entry.</div>
-            <label class="er-control__row er-control__row--image-number">Selected: <input type="number" id="${this.id}_number" class="er-control__input er-control__input--image-number" min="-1" step="1" ${disabled}></label>
-            <input type="file" id="${this.id}_file" class="er-control__input er-control__input--image-file" accept="${this.params.accept}" ${disabled}>
-            <button id="${this.id}_button" class="er-control__button er-control__button--image-upload" ${disabled}>Upload Image</button>
-        </div>`;
-        return $.FlexRenderer.UIControls.renderControl("image", this.params.title, body, classes);
+    toHtml(classes = "", css = "", options = {}) {
+        const UI = $.FlexRenderer.UIControls;
+        const esc = UI.escapeHtml;
+        const inputClasses = options && options.inputClasses;
+        const disabled = this.params.interactive ? "" : " disabled";
+        const rootCss = `${css ? `${css}; ` : ""}position: relative;`;
+        const numberCls = UI.joinClasses("er-control__input", "er-control__input--image-number", UI.resolveInputClasses("image-number", inputClasses));
+        const fileCls = UI.joinClasses("er-control__input", "er-control__input--image-file", UI.resolveInputClasses("image-file", inputClasses));
+        const buttonCls = UI.joinClasses("er-control__button", "er-control__button--image-upload", UI.resolveInputClasses("image-upload", inputClasses));
+        const body = [
+            `<div id="${this.id}_root" class="er-control__widget er-control__widget--image"${UI.styleAttr(rootCss)}>`,
+            `<div class="er-control__hint er-control__hint--image">${esc(this.t("image.hint", "The atlas starts empty. Upload an image to create a new atlas entry."))}</div>`,
+            `<label class="er-control__row er-control__row--image-number">${esc(this.t("image.selected", "Selected:"))} <input type="number" id="${this.id}_number" class="${numberCls}" min="-1" step="1"${disabled}></label>`,
+            `<input type="file" id="${this.id}_file" class="${fileCls}" accept="${esc(this.params.accept)}"${disabled}>`,
+            `<button id="${this.id}_button" type="button" class="${buttonCls}"${disabled}>${esc(this.t("image.upload", "Upload Image"))}</button>`,
+            `</div>`
+        ].join("");
+        return UI.renderControl("image", UI.titleFrom(this.params), body, classes, this.layoutColumns);
     }
 
     get supports() {
@@ -1630,6 +1744,7 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
             interactive: true,
             default: -1,
             accept: "image/*",
+            strings: {}
         };
     }
 
@@ -2364,7 +2479,8 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
                 { name: "previewSize", type: "number", default: 27 },
                 { name: "maxResults", type: "number", default: 120 },
                 { name: "glyphFontFamily", type: "string", default: "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif" },
-                { name: "glyphFontWeight", type: "string", default: "400" }
+                { name: "glyphFontWeight", type: "string", default: "400" },
+                { name: "strings", type: "object", default: {}, usage: "Per-control UI string overrides keyed by i18n key (icon.pickerTitle, icon.close, icon.searchPlaceholder, icon.color, icon.tintColor, icon.tintBadge, icon.unknown); wins over UIControls.setTranslator()." }
             ],
             glType: "vec4"
         };
@@ -2636,14 +2752,15 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         const resolved = $.FlexRenderer.UIControls.IconLibrary.resolveAnyIconSpec(query, this.selectedSet);
         if (!resolved) {
             node.textContent = "?";
-            node.title = "Unknown icon";
+            node.title = this.t("icon.unknown", "Unknown icon");
             this._updateColorMode(false);
             return;
         }
 
         node.title = `${resolved.label} (${resolved.set})`;
 
-        const previewSize = Math.max(18, Number.parseInt(this.params.previewSize, 10) || 27);
+        // The trigger is a compact btn-sm square; previewSize governs the search results.
+        const previewSize = Math.min(20, Math.max(16, Number.parseInt(this.params.previewSize, 10) || 27));
         const result = this._buildIconVisual(query, resolved.set, resolved, previewSize);
         if (result && result.node) {
             node.appendChild(result.node);
@@ -2658,7 +2775,9 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         }
         const colorInput = document.getElementById(`${this.id}_color`);
         if (colorInput) {
-            colorInput.title = colored ? "Tint color (applied over original colors)" : "Icon color";
+            colorInput.title = colored
+                ? this.t("icon.tintColor", "Tint color (applied over original colors)")
+                : this.t("icon.color", "Icon color");
         }
     }
 
@@ -2766,43 +2885,52 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         }
     }
 
-    toHtml(classes = "", css = "") {
-        const disabled = this.params.interactive ? "" : "disabled";
+    toHtml(classes = "", css = "", options = {}) {
+        const UI = $.FlexRenderer.UIControls;
+        const esc = UI.escapeHtml;
+        const inputClasses = options && options.inputClasses;
+        const disabled = this.params.interactive ? "" : " disabled";
         const decodedColor = this._decodeStoredValue(this.encodedValue || this.params.default).color;
+        const triggerCls = UI.joinClasses("er-control__button", "er-control__button--icon-trigger", UI.resolveInputClasses("icon-trigger", inputClasses));
+        const closeCls = UI.joinClasses("er-control__button", "er-control__button--icon-close", UI.resolveInputClasses("icon-close", inputClasses));
+        const queryCls = UI.joinClasses("er-control__input", "er-control__input--icon-query", UI.resolveInputClasses("icon-query", inputClasses), "flex-1");
         // Positioning (`position: absolute`, top/right offsets, z-index, width
         // clamp) and the `display: none` toggle stay inline — init() flips
         // display directly, and these utilities don't compose cleanly as
         // single Tailwind classes. Visual styling delegates to daisyUI tokens
         // so the popover follows the host theme.
-        const body = `<div id="${this.id}_root" class="er-control__widget er-control__widget--icon relative"${$.FlexRenderer.UIControls.styleAttr(css)}>
-<div class="er-control__toolbar er-control__toolbar--icon flex items-center justify-between gap-2">
-    <button id="${this.id}_trigger" type="button" class="er-control__button er-control__button--icon-trigger btn btn-square btn-outline" ${disabled}>
-        <span id="${this.id}_preview" class="er-control__preview er-control__preview--icon inline-flex items-center justify-center w-full h-full">?</span>
-    </button>
-</div>
-<div id="${this.id}_popup" class="er-control__popup er-control__popup--icon card card-compact bg-base-100 border border-base-300 shadow-lg"
-     style="display: none; position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30; max-width: 100%;">
-    <div class="card-body p-3">
-        <div class="er-control__popup-header er-control__popup-header--icon flex justify-between items-center mb-2">
-            <span class="font-medium text-sm">Icon picker</span>
-            <button id="${this.id}_close" type="button" class="er-control__button er-control__button--icon-close btn btn-ghost btn-xs btn-circle" aria-label="Close" ${disabled}>✕</button>
-        </div>
-        <div class="er-control__search er-control__search--icon flex items-center gap-2 mb-2">
-            <input type="text" id="${this.id}_query" class="er-control__input er-control__input--icon-query input input-bordered input-sm flex-1" placeholder="Search icons, aliases, glyphs" ${disabled}>
-            <div class="relative">
-                <input type="color" id="${this.id}_color" class="er-control__input er-control__input--icon-color w-10 h-10 rounded cursor-pointer" value="${decodedColor}" title="Icon color" ${disabled}>
-                <span id="${this.id}_color_mode" class="er-control__color-mode badge badge-xs absolute -top-1 -right-1 hidden">tint</span>
-            </div>
-        </div>
-        <div id="${this.id}_results" class="er-control__results er-control__results--icon flex flex-wrap gap-1 max-h-[360px] overflow-auto"></div>
-    </div>
-</div>
-</div>`;
-        return $.FlexRenderer.UIControls.renderControl("icon", this.params.title, body, classes);
+        const body = [
+            `<div id="${this.id}_root" class="er-control__widget er-control__widget--icon"${UI.styleAttr(css)}>`,
+            `<div class="er-control__toolbar er-control__toolbar--icon flex items-center justify-between gap-2">`,
+            `<button id="${this.id}_trigger" type="button" class="${triggerCls}"${disabled}>`,
+            `<span id="${this.id}_preview" class="er-control__preview er-control__preview--icon inline-flex items-center justify-center w-full h-full">?</span>`,
+            `</button>`,
+            `</div>`,
+            `<div id="${this.id}_popup" class="er-control__popup er-control__popup--icon card card-compact bg-base-100 border border-base-300 shadow-lg" style="display: none; position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30; max-width: 100%;">`,
+            `<div class="card-body p-3">`,
+            `<div class="er-control__popup-header er-control__popup-header--icon flex justify-between items-center mb-2">`,
+            `<span class="er-control__popup-title er-control__popup-title--icon font-medium text-sm">${esc(this.t("icon.pickerTitle", "Icon picker"))}</span>`,
+            `<button id="${this.id}_close" type="button" class="${closeCls}" aria-label="${esc(this.t("icon.close", "Close"))}"${disabled}>✕</button>`,
+            `</div>`,
+            `<div class="er-control__search er-control__search--icon flex items-center gap-2 mb-2">`,
+            `<input type="text" id="${this.id}_query" class="${queryCls}" placeholder="${esc(this.t("icon.searchPlaceholder", "Search icons, aliases, glyphs"))}"${disabled}>`,
+            `<div class="relative">`,
+            `<input type="color" id="${this.id}_color" class="er-control__input er-control__input--icon-color w-10 h-10 rounded cursor-pointer" value="${esc(decodedColor)}" title="${esc(this.t("icon.color", "Icon color"))}"${disabled}>`,
+            `<span id="${this.id}_color_mode" class="er-control__color-mode badge badge-xs absolute -top-1 -right-1 hidden">${esc(this.t("icon.tintBadge", "tint"))}</span>`,
+            `</div>`,
+            `</div>`,
+            `<div id="${this.id}_results" class="er-control__results er-control__results--icon flex flex-wrap gap-1 max-h-[360px] overflow-auto"></div>`,
+            `</div>`,
+            `</div>`,
+            `</div>`
+        ].join("");
+        // Title and trigger share one row; the control root anchors the popup so it
+        // spans the full control width instead of only the narrow body column.
+        return UI.renderControl("icon", UI.titleFrom(this.params), body, classes, this.layoutColumns, `style="position: relative;"`);
     }
 
     get layoutColumns() {
-        return 1;
+        return this.params.title ? 2 : 1;
     }
 
     get supports() {
@@ -2818,7 +2946,8 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
             previewSize: 27,
             maxResults: 120,
             glyphFontFamily: "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji','Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2','Noto Emoji',sans-serif",
-            glyphFontWeight: "400"
+            glyphFontWeight: "400",
+            strings: {}
         };
     }
 

@@ -77,7 +77,8 @@ Important constraints:
 - the first renderer that creates a shared key owns the WebGL context creation options;
 - later renderers using the same key but different `canvasOptions` attach to the existing context and emit a warning;
 - context loss is detected and reported in diagnostics, but automatic GPU resource restoration is not implemented;
-- shared-context presentation currently uses `readPixels` to copy the renderer-owned final color target into the renderer-local presentation canvas.
+- shared contexts are created with `antialias: false`;
+- shared-context presentation copies the renderer-owned final color target into the renderer-local presentation canvas on the GPU (`blitFramebuffer` + `drawImage`), verified once per context and falling back to `readPixels`; choose explicitly with the renderer option `presentationTransfer: "auto" | "blit" | "read-pixels"` and read the route used from `renderer.presentationTransferMode`.
 
 For diagnostics, use:
 

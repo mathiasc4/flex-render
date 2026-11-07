@@ -57,8 +57,13 @@ The same argument is the only way to reach the other construction-time renderer 
 off-screen drawer from binding another renderer's control DOM by element id and from taking the live
 viewer's canvas with it when it is destroyed.
 
-Shared-context presentation currently uses `readPixels` for the final transfer into the presentation
-canvas. This avoids using the shared default framebuffer as an intermediate output target.
+Shared-context presentation moves each frame on the GPU: the final color target is blitted into the shared
+canvas' default framebuffer and `drawImage`d onto the renderer's 2D presentation canvas. A one-time probe per
+shared context verifies the route; if it fails, or the default framebuffer is multisampled, presentation falls
+back to the old synchronous `readPixels` transfer. The renderer option `presentationTransfer`
+(`"auto"` | `"blit"` | `"read-pixels"`) overrides the choice, `renderer.presentationTransferMode` reports the route
+the last frame took, and `FlexRenderer.getSharedContextStatus()[i].presentationTransfer` reports the probe outcome.
+Shared contexts are created with `antialias: false` for this reason.
 
 Do not call `gl.readPixels` against `renderer.gl` to get a drawer's output. It happens to work in
 private-context mode, where the default framebuffer *is* the presentation canvas, and it silently reads

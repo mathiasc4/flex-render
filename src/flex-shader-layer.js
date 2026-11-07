@@ -80,7 +80,13 @@
              *
              * @type {string}
              */
-            this.uid = this.constructor.type().replaceAll('-', '_') + '_' + layerId;
+            // A child of a group is prefixed with the group's uid: two groups (or a group and the
+            // root) may each hold a child 'a' of the same type, and an unprefixed uid would emit
+            // duplicate GLSL functions and uniforms. Only GLSL names derive from uid; DOM ids and
+            // config lookups use `id`.
+            this._uidPrefix = options.uidPrefix || null;
+            this.uid = (options.uidPrefix ? options.uidPrefix + '_' : '') +
+                this.constructor.type().replaceAll('-', '_') + '_' + layerId;
 
             if (!$.FlexRenderer.idPattern.test(this.uid)) {
                 console.error(`Invalid ID for the shader: ${layerId} does not match to the pattern`, $.FlexRenderer.idPattern);
@@ -547,9 +553,16 @@
          * Initialize the ShaderLayer's controls.
          */
         init() {
+            // Per-control: one throwing control must not leave the ones after it uninitialized.
             for (const controlName in this._controls) {
                 const control = this[controlName];
-                control.init();
+                try {
+                    control.init();
+                } catch (e) {
+                    this._report("warn", "control-init-failed",
+                        `Shader ${this.id} control '${controlName}' init() failed. The control will not work.`,
+                        { control: controlName, error: e });
+                }
             }
         }
 
@@ -592,9 +605,11 @@
                 // every consumer iterates `for (name in this._controls)`.
                 if (!control) {
                     const requestedType = this._params[controlName] && this._params[controlName].type;
-                    $.console.error(`ShaderLayer '${this.id}' (${this.constructor.type()}): control ` +
+                    this._report("error", "control-build-failed",
+                        `ShaderLayer '${this.id}' (${this.constructor.type()}): control ` +
                         `'${controlName}'${requestedType ? ` of type '${requestedType}'` : ""} could not ` +
-                        `be built and is omitted. GLSL referencing it will fail to assemble.`);
+                        `be built and is omitted. GLSL referencing it will fail to assemble.`,
+                        { control: controlName });
                     continue;
                 }
 
@@ -697,13 +712,35 @@
 
         /**
          * Get HTML code of the ShaderLayer's controls.
+         *
+         * Accepts either positional arguments or a single options object:
+         * `htmlControls({wrapper, classes, css, inputClasses})`.
+         *
+         * @param {function(string):string|object|null} [wrapper] applied to each control's markup,
+         *   or the options object form
+         * @param {string} [classes] extra classes for each control root
+         * @param {string} [css] inline style for each control's main widget
+         * @param {object} [options] render options passed to every control's toHtml()
+         * @param {string|Object<string, string|null>} [options.inputClasses] per-role input classes,
+         *   see OpenSeadragon.FlexRenderer.UIControls.resolveInputClasses
          * @returns {String} HTML code
          */
-        htmlControls(wrapper = null, classes = "", css = "") {
+        htmlControls(wrapper = null, classes = "", css = "", options = {}) {
+            if (wrapper && typeof wrapper === "object") {
+                const opts = wrapper;
+                wrapper = typeof opts.wrapper === "function" ? opts.wrapper : null;
+                classes = typeof opts.classes === "string" ? opts.classes : "";
+                css = typeof opts.css === "string" ? opts.css : "";
+                options = {};
+                if (opts.inputClasses !== undefined) {
+                    options.inputClasses = opts.inputClasses;
+                }
+            }
+            options = options && typeof options === "object" ? options : {};
             let controlsHtmls = [];
             for (const controlName in this._controls) {
                 const control = this[controlName];
-                controlsHtmls.push(control.toHtml(classes, css));
+                controlsHtmls.push(control.toHtml(classes || "", css || "", options));
             }
             if (wrapper) {
                 controlsHtmls = controlsHtmls.map(wrapper);
@@ -773,6 +810,15 @@
          * @param {String} code GLSL code to add to the WebGL shader
          */
         includeGlobalCode(key, code) {
+            // Global includes are emitted into every program on the page, hidden layers or not,
+            // so one malformed include would break every renderer. Refuse it here instead.
+            const imbalance = $.FlexRenderer.findGlslImbalance(code);
+            if (imbalance) {
+                $.console.error(`$.FlexRenderer.ShaderLayer::includeGlobalCode: global code '${key}' from ` +
+                    `layer type '${this.constructor.type()}' is unbalanced (line ${imbalance.line}: ` +
+                    `${imbalance.reason}); it is not included.`);
+                return;
+            }
             const container = this.constructor.__globalIncludes;
             if (container[key]) {
                 if (container[key] === code) {
@@ -786,15 +832,83 @@
         /**
          * Called when shader is destructed
          */
+        /**
+         * Release resources held by this layer. The base implementation destroys every owned
+         * control that implements destroy() (debounce timers, document listeners, slider widgets);
+         * subclasses that override this must call super.destroy().
+         */
         destroy() {
+            for (const controlName in this._controls) {
+                const control = this[controlName];
+                if (control && typeof control.destroy === "function") {
+                    try {
+                        control.destroy();
+                    } catch (e) {
+                        $.console.warn(`[flex-renderer] control '${controlName}' of layer '${this.id}' ` +
+                            `failed to destroy.`, e);
+                    }
+                }
+            }
         }
 
         /**
          * Proxy cache to the config object. The config object stores the cached values, which keeps consistent state.
+         *
+         * `config.cache` is a root of per-shader-type buckets, `{[type]: {[name]: value}}`, and this
+         * returns the bucket of the config's *current* type. Control names repeat across types with
+         * different value shapes (heatmap's `color` is a hex string, a colormap's is a palette), so a
+         * shared key space let one type's value poison another after a type change. The type is read
+         * on every access: switching a layer's type selects a fresh bucket, switching back restores
+         * the old values. A time-series delegate shares its parent's root under its own type.
          * @return {Object}
          */
         get cache() {
-            return this.__shaderConfig.cache;
+            const config = this.__shaderConfig;
+            if (!config.cache || typeof config.cache !== "object" || Array.isArray(config.cache)) {
+                config.cache = {};
+            }
+            const root = config.cache;
+            if (this.__normalizedCacheRoot !== root) {
+                this.constructor.normalizeCacheRoot(config);
+                this.__normalizedCacheRoot = root;
+            }
+            const type = config.type || this.constructor.type();
+            let bucket = root[type];
+            if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) {
+                bucket = root[type] = {};
+            }
+            return bucket;
+        }
+
+        /**
+         * Migrate a flat cache written by 3.x builds (`{[name]: value}`) to the per-type root
+         * (`{[type]: {[name]: value}}`). A root is taken as already bucketed when every own value
+         * is a plain object; otherwise all its entries belong to `config.type` and are moved there
+         * in place, keeping the root's identity (drawers share configs by reference).
+         *
+         * A flat cache whose every entry is a plain object would be misread as bucketed; no
+         * built-in control stores plain objects (values are primitives, arrays or JSON strings).
+         *
+         * @param {ShaderLayerConfig} config
+         * @return {Object} the cache root
+         */
+        static normalizeCacheRoot(config) {
+            const root = config.cache;
+            if (!root || typeof root !== "object") {
+                return root;
+            }
+            const isBucket = value => !!value && typeof value === "object" && !Array.isArray(value);
+            const keys = Object.keys(root);
+            if (keys.every(key => isBucket(root[key]))) {
+                return root;
+            }
+            const bucket = {};
+            for (const key of keys) {
+                bucket[key] = root[key];
+                delete root[key];
+            }
+            root[config.type || this.type()] = bucket;
+            return root;
         }
 
         // CACHE LOGIC
@@ -811,12 +925,56 @@
         }
 
         /**
-         * Store value in the cache.
+         * Whether the cache holds a value for the name.
+         * @param {String} name
+         * @return {boolean}
+         */
+        hasProperty(name) {
+            return this.cache[name] !== undefined;
+        }
+
+        /**
+         * Store value in the cache. Storing `undefined` removes the entry.
          * @param {String} name
          * @param {String} value
          */
         storeProperty(name, value) {
+            if (value === undefined) {
+                delete this.cache[name];
+                return;
+            }
             this.cache[name] = value;
+        }
+
+        /**
+         * Report a layer-level fallback to the host: UIControls.report() (reporter or console)
+         * and the renderer's `shader-warning` event.
+         * @param {String} level "warn" | "error"
+         * @param {String} code stable identifier, e.g. "control-build-failed"
+         * @param {String} message
+         * @param {Object} [extra] merged into the details
+         * @private
+         */
+        _report(level, code, message, extra = {}) {
+            let shaderType;
+            try {
+                shaderType = this.constructor.type();
+            } catch (e) {
+                shaderType = undefined;
+            }
+            const details = Object.assign({
+                layerId: this.id,
+                shaderType: shaderType,
+                control: null,
+                code: code,
+                level: level,
+                message: message
+            }, extra);
+            $.FlexRenderer.UIControls.report(level, code, details);
+            const renderer = this.backend && this.backend.renderer;
+            if (renderer && typeof renderer.notifyShaderWarning === "function") {
+                renderer.notifyShaderWarning(details);
+            }
         }
 
         // TEXTURE SAMPLING LOGIC
@@ -1295,6 +1453,28 @@
             return `vec4(${comps.slice(0, 4).join(", ")})`;
         }
 
+        /**
+         * Map a legacy use_mode name to its current one, warning once per layer and name.
+         * @param {string} mode
+         * @return {string}
+         */
+        _resolveLegacyUseMode(mode) {
+            let resolved = mode;
+            if (mode === "mask") {
+                resolved = "blend";
+            } else if (mode === "mask_clip" || mode === "clip_mask") {
+                resolved = "clip";
+            }
+            if (resolved !== mode) {
+                this._warnedLegacyUseModes = this._warnedLegacyUseModes || {};
+                if (!this._warnedLegacyUseModes[mode]) {
+                    this._warnedLegacyUseModes[mode] = true;
+                    $.console.warn(`OpenSeadragon.FlexRenderer.ShaderLayer: use_mode '${mode}' is deprecated, use '${resolved}' instead.`);
+                }
+            }
+            return resolved;
+        }
+
         _resetOption(name, supportedValueList, options = {}, force = true) {
             let result;
             if (!options) {
@@ -1308,17 +1488,10 @@
             if (!result) {
                 let dynamicValue = options[name];
                 if (name === "use_mode") {
-                    // Supporting legacy names
-                    if (dynamicValue === "mask") {
-                        dynamicValue = "blend";
-                        $.console.warn("OpenSeadragon.FlexRenderer.ShaderLayer: use_mode 'mask' is deprecated, use 'blend' instead.");
-                    }
-                    if (dynamicValue === "mask_clip") {
-                        dynamicValue = "clip";
-                        $.console.warn("OpenSeadragon.FlexRenderer.ShaderLayer: use_mode 'mask_clip' is deprecated, use 'clip' instead.");
-                    }
+                    // Remapped before caching: the cache then never receives a legacy name, so
+                    // forced resets (every rebuild, every navigator sync) do not churn it.
+                    dynamicValue = this._resolveLegacyUseMode(dynamicValue);
                 }
-
                 if (dynamicValue) {
                     // firstly try to load from cache, if not in cache, use options.use_mode
                     result = force ? dynamicValue : this.loadProperty(name, dynamicValue);
@@ -1329,6 +1502,16 @@
                     }
                 } else {
                     result = (predefined && predefined.default) || supportedValueList[0];
+                }
+            }
+
+            if (name === "use_mode") {
+                // Also resolved after the cache lookup: a persisted cache may still hold a legacy
+                // name stored verbatim by an older build.
+                const legacy = result;
+                result = this._resolveLegacyUseMode(legacy);
+                if (result !== legacy && this.cache[name] === legacy) {
+                    this.storeProperty(name, result);
                 }
             }
 
