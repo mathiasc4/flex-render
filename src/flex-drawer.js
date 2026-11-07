@@ -205,6 +205,11 @@
             // todo reset also when reordering tiled images!
             // or we could change order only
 
+            if (shaders) {
+                // Fail before touching any state: e.g. 'a' and 'a_' would both become shader 'a'.
+                $.FlexRenderer.assertUniqueSanitizedKeys(Object.keys(shaders), "FlexDrawer.overrideConfigureAll");
+            }
+
             const navDrawer = this._getNavigatorDrawer();
             if (navDrawer) {
                 navDrawer.overrideConfigureAll(shaders, shaderOrder, options);
@@ -255,7 +260,14 @@
          * @return {ShaderLayerConfig|*|undefined}
          */
         getOverriddenShaderConfig(key) {
-            const shaderLayer = this.renderer.getAllShaders()[key];
+            // Shaders are stored under their sanitized key (see createShaderLayer).
+            let sanitized;
+            try {
+                sanitized = $.FlexRenderer.sanitizeKey(key);
+            } catch (e) {
+                return undefined; // no shader can be stored under a key that sanitizes to nothing
+            }
+            const shaderLayer = this.renderer.getAllShaders()[sanitized];
             return shaderLayer ? shaderLayer.getConfig() : undefined;
         }
 
@@ -267,7 +279,10 @@
          * @return {ShaderLayerConfig} shader config used, a copy if options.copyShaderConfig is true, otherwise a modified argument
          */
         configureTiledImage(tiledImage, shader) {
-            if (this.options.copyShaderConfig) {
+            // The navigator mirror receives the parent's (already copied) config and must share it,
+            // like every other navigator mirror path; a second copy would leave the navigator on a
+            // stale type/params/cache after the parent's config changes and rebuild() runs.
+            if (this.options.copyShaderConfig && !this._isNavigatorDrawer) {
                 shader = $.extend(true, {}, shader);
             }
 
@@ -600,6 +615,11 @@
                         navDrawer.configureTiledImage(navTiledImage, tiledImage.__shaderConfig);
                     }
                 }
+            }
+
+            // setMinificationFilter() skips the navigator while its drawer is missing.
+            if (navDrawer.renderer) {
+                navDrawer.renderer.setMinificationFilter(this.renderer.getMinificationFilter(), { redraw: false });
             }
 
             this._syncNavigatorShaderState();

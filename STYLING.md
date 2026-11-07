@@ -342,10 +342,14 @@ OpenSeadragon.FlexRenderer.UIControls.setReporter((level, code, details) => {
 | `icon.unknown` | Unknown icon (preview tooltip) |
 
 Control titles come from the shader configuration (`title`) and are not passed through the translator.
-They are inserted as text (HTML-escaped). To put markup such as an icon into a title, set
-`titleHtml: true` on that control; only do this for configuration you trust:
+They are inserted as text (HTML-escaped). To put markup such as an icon into a title, the host page
+must first opt in globally, and the control must set `titleHtml: true` (a boolean; strings are ignored).
+Shader configuration cannot turn the opt-in on itself, so enable it only when every configuration
+the page renders is trusted (not loaded from URLs, sessions or shared links):
 
 ```js
+OpenSeadragon.FlexRenderer.UIControls.allowHtmlTitles = true; // host code, once
+
 run: { type: "button", title: '<i class="fa fa-play"></i> Run', titleHtml: true }
 ```
 

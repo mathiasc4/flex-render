@@ -236,21 +236,53 @@
     });
 
     QUnit.test("control titles are escaped unless titleHtml opts in", function(assert) {
-        ["number", "range", "bool", "advanced_slider"].forEach(type => {
-            const escaped = mount(buildControl(type, { title: "A <b>B</b>" }).toHtml());
-            const title = escaped.querySelector(".er-control__title");
-            assert.ok(title, `${type}: title span`);
-            assert.equal(title && title.textContent, "A <b>B</b>", `${type}: title is text`);
-            assert.notOk(title && title.querySelector("b"), `${type}: no markup`);
+        const UI = OpenSeadragon.FlexRenderer.UIControls;
+        const previous = UI.allowHtmlTitles;
+        try {
+            UI.allowHtmlTitles = true;
+            ["number", "range", "bool", "advanced_slider"].forEach(type => {
+                const escaped = mount(buildControl(type, { title: "A <b>B</b>" }).toHtml());
+                const title = escaped.querySelector(".er-control__title");
+                assert.ok(title, `${type}: title span`);
+                assert.equal(title && title.textContent, "A <b>B</b>", `${type}: title is text`);
+                assert.notOk(title && title.querySelector("b"), `${type}: no markup`);
 
-            const raw = mount(buildControl(type, { title: "A <b>B</b>", titleHtml: true }).toHtml());
-            const rawTitle = raw.querySelector(".er-control__title");
-            assert.ok(rawTitle && rawTitle.querySelector("b"), `${type}: titleHtml keeps markup`);
-        });
+                const raw = mount(buildControl(type, { title: "A <b>B</b>", titleHtml: true }).toHtml());
+                const rawTitle = raw.querySelector(".er-control__title");
+                assert.ok(rawTitle && rawTitle.querySelector("b"), `${type}: titleHtml keeps markup`);
+            });
 
-        const button = mount(buildControl("button", { title: "<i>x</i> Run", titleHtml: true }).toHtml())
-            .querySelector("button");
-        assert.ok(button.querySelector("i"), "button: titleHtml keeps markup");
+            const button = mount(buildControl("button", { title: "<i>x</i> Run", titleHtml: true }).toHtml())
+                .querySelector("button");
+            assert.ok(button.querySelector("i"), "button: titleHtml keeps markup");
+        } finally {
+            UI.allowHtmlTitles = previous;
+        }
+    });
+
+    QUnit.test("titleHtml needs the host opt-in and a strict boolean", function(assert) {
+        const UI = OpenSeadragon.FlexRenderer.UIControls;
+        const previous = UI.allowHtmlTitles;
+        const hasMarkup = (type, params) => {
+            const host = mount(buildControl(type, params).toHtml());
+            const node = type === "button" ? host.querySelector("button") : host.querySelector(".er-control__title");
+            return !!(node && node.querySelector("b"));
+        };
+        try {
+            UI.allowHtmlTitles = false;
+            assert.notOk(hasMarkup("number", { title: "<b>x</b>", titleHtml: true }), "number: flag off escapes");
+            assert.notOk(hasMarkup("button", { title: "<b>x</b>", titleHtml: true }), "button: flag off escapes");
+
+            UI.allowHtmlTitles = true;
+            ["false", "true", 1].forEach(value => {
+                assert.notOk(hasMarkup("number", { title: "<b>x</b>", titleHtml: value }),
+                    `number: titleHtml=${JSON.stringify(value)} escapes`);
+                assert.notOk(hasMarkup("button", { title: "<b>x</b>", titleHtml: value }),
+                    `button: titleHtml=${JSON.stringify(value)} escapes`);
+            });
+        } finally {
+            UI.allowHtmlTitles = previous;
+        }
     });
 
     QUnit.test("Button markup and behaviour", function(assert) {

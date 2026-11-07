@@ -478,15 +478,25 @@ $.FlexRenderer.UIControls = class {
     }
 
     /**
+     * True when a control's title may be inserted as markup. Needs both the host-level
+     * opt-in UIControls.allowHtmlTitles (never read from shader config, so untrusted config
+     * cannot enable it) and a strict boolean `params.titleHtml === true` on the control.
+     * @param {object} params
+     * @return {boolean}
+     */
+    static isHtmlTitle(params) {
+        return $.FlexRenderer.UIControls.allowHtmlTitles === true && !!params && params.titleHtml === true;
+    }
+
+    /**
      * Title argument for renderControl()/renderTitle() from control params. Titles are text and
-     * get escaped; `params.titleHtml: true` opts a control into inserting its title as markup
-     * (e.g. an icon), which must then come from a trusted source.
+     * get escaped; see isHtmlTitle() for when a title is inserted as markup (e.g. an icon).
      * @param {object} params
      * @return {string|{html: string}|undefined}
      */
     static titleFrom(params) {
         const title = params && params.title;
-        return title && params.titleHtml ? { html: String(title) } : title;
+        return title && this.isHtmlTitle(params) ? { html: String(title) } : title;
     }
 
     static renderTitle(title, type) {
@@ -541,6 +551,13 @@ $.FlexRenderer.UIControls._inputClassDefaults = {
 $.FlexRenderer.UIControls._translator = null;
 
 // Definitions of possible controls' types, simple functionalities:
+/**
+ * Host opt-in for `titleHtml: true` control titles (see UIControls.isHtmlTitle). Off by default:
+ * enable only when every shader configuration the page renders is trusted.
+ * @type {boolean}
+ */
+$.FlexRenderer.UIControls.allowHtmlTitles = false;
+
 $.FlexRenderer.UIControls._items = {
     number: {
         defaults: function() {

@@ -93,6 +93,8 @@
                 this.shaderLayers = {};
 
                 const shaderLayerConfigs = this.__shaderConfig["shaders"] || {};
+                // Children sharing a sanitized id (e.g. 'a' and 'a_') would emit the same GLSL names.
+                $.FlexRenderer.assertUniqueSanitizedKeys(Object.keys(shaderLayerConfigs), `group '${this.id}'`);
 
                 for (let id in shaderLayerConfigs) {
                     let config = shaderLayerConfigs[id];

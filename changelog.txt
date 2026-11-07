@@ -73,8 +73,9 @@ Control markup:
    Button and Icon honor layoutColumns (Button data-columns="1"; titled Icon data-columns="2",
    title and compact btn-sm trigger on one row, popup anchored to the control root).
  * Control titles are HTML-escaped for every control (UIControls.renderTitle), not just Button.
-   BREAKING for titles carrying markup: opt in per control with params.titleHtml: true (trusted
-   config only). NEW UIControls.titleFrom(params).
+   BREAKING for titles carrying markup: host opts in with UIControls.allowHtmlTitles = true (off by
+   default, cannot be set from shader config), then per control with params.titleHtml: true (strict
+   boolean). NEW UIControls.titleFrom(params), UIControls.isHtmlTitle(params).
  * Colormap gradient published as --er-colormap CSS variable (+ .er-control__colormap-preview)
    instead of inline background on the select. Removed init overwrite painting gradient from float
    uniform buffer.

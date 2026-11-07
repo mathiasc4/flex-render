@@ -1500,7 +1500,7 @@ $.FlexRenderer.UIControls.Button = class extends $.FlexRenderer.UIControls.ICont
         const disabled = this.params.interactive ? "" : " disabled";
         const cls = UI.joinClasses("er-control__button", "er-control__button--action",
             UI.resolveInputClasses("button", options && options.inputClasses));
-        const button = `<button id="${this.id}" type="button" class="${cls}"${UI.styleAttr(css)}${disabled}>${this.params.titleHtml ? String(this.params.title) : UI.escapeHtml(this.params.title)}</button>`;
+        const button = `<button id="${this.id}" type="button" class="${cls}"${UI.styleAttr(css)}${disabled}>${UI.isHtmlTitle(this.params) ? String(this.params.title) : UI.escapeHtml(this.params.title)}</button>`;
         return UI.renderControl("button", "", button, classes, this.layoutColumns);
     }
 

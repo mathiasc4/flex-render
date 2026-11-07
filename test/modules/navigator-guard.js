@@ -218,4 +218,46 @@
         });
     });
 
+    QUnit.test('copyShaderConfig: the navigator shares the copied config instead of copying again', function(assert) {
+        this.assert = assert;
+        assert.expect(2);
+
+        openViewer(this, true, async viewer => {
+            const drawer = viewer.drawer;
+            const navigator = viewer.navigator;
+            const navTiledImage = await navigatorItemLoaded(navigator);
+            drawer.options.copyShaderConfig = true;
+            navigator.drawer.options.copyShaderConfig = true;
+
+            const input = heatmapConfig();
+            const shader = drawer.configureTiledImage(viewer.world.getItemAt(0), input);
+            assert.notStrictEqual(shader, input, "the main drawer copied the argument");
+            assert.strictEqual(navTiledImage.__shaderConfig, shader,
+                "the navigator item shares the main drawer's config object");
+        });
+    });
+
+    QUnit.test('setMinificationFilter before the navigator drawer exists is replayed', function(assert) {
+        this.assert = assert;
+        assert.expect(3);
+
+        openViewer(this, true, async viewer => {
+            const drawer = viewer.drawer;
+            const navigator = viewer.navigator;
+            const navDrawer = navigator.drawer;
+
+            viewer.navigator = undefined;
+            try {
+                drawer.setMinificationFilter("max");
+            } finally {
+                viewer.navigator = navigator;
+            }
+            assert.ok(drawer._navigatorSyncPending, "the skipped mirror is marked pending");
+            assert.strictEqual(navDrawer.renderer.getMinificationFilter(), "default", "the navigator missed it");
+
+            drawer._onNavigatorDrawerReady(navDrawer);
+            assert.strictEqual(navDrawer.renderer.getMinificationFilter(), "max", "the navigator caught up");
+        });
+    });
+
 })();

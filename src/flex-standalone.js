@@ -1728,6 +1728,10 @@
         };
 
         runtime.overrideConfigureAll = async function(shaders, shaderOrder = undefined) {
+            if (shaders) {
+                // Fail before deleting anything: e.g. 'a' and 'a_' would both become shader 'a'.
+                $.FlexRenderer.assertUniqueSanitizedKeys(Object.keys(shaders), "FlexRenderer standalone overrideConfigureAll");
+            }
             this.renderer.deleteShaders();
             this.renderer.__firstPassResult = null;
             if (!shaders) {

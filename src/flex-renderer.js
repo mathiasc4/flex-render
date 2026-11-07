@@ -3965,23 +3965,39 @@
         }
 
         static sanitizeKey(key) {
+            // idPattern rejects a trailing '_': GLSL names append '_<suffix>' to ids and uids
+            // (and group children chain their parent's uid), which would form the reserved '__'.
+            // Non-string keys (numeric IDs) pass the pattern and are returned as before.
             if (!$.FlexRenderer.idPattern.test(key)) {
                 key = key.replace(/[^0-9a-zA-Z_]/g, '');
                 key = key.replace(/_+/g, '_');
                 key = key.replace(/^_+/, '');
+                key = key.replace(/_+$/, '');
 
                 if (!key) {
                     throw new Error("Invalid key: sanitization removed all parts!");
                 }
             }
-            // A trailing '_' passes idPattern on its own, but GLSL names append '_<suffix>' to
-            // ids and uids (and group children chain their parent's uid), which forms the
-            // reserved '__'. Non-string keys (numeric IDs) pass through as before.
-            // A valid key cannot be all underscores (no leading '_'), so stripping never empties it.
-            if (typeof key === "string") {
-                key = key.replace(/_+$/, '');
-            }
             return key;
+        }
+
+        /**
+         * Throw when two distinct keys sanitize to the same key (e.g. 'a' and 'a_'), which would
+         * otherwise make one shader silently replace the other.
+         * @param {Array<string>} keys
+         * @param {string} [context="FlexRenderer"] prefix for the error message
+         * @throws {Error} on the first collision found
+         */
+        static assertUniqueSanitizedKeys(keys, context = "FlexRenderer") {
+            const seen = new Map();
+            for (const key of keys || []) {
+                const sanitized = String($.FlexRenderer.sanitizeKey(key));
+                const other = seen.get(sanitized);
+                if (other !== undefined && other !== key) {
+                    throw new Error(`${context}: shader ids '${other}' and '${key}' both map to '${sanitized}'. Rename one of them.`);
+                }
+                seen.set(sanitized, key);
+            }
         }
 
         static _buildSelfTestColorData(width, height, rgba) {
@@ -4713,12 +4729,13 @@
 
     // STATIC PROPERTIES
     /**
-     * ID pattern allowed for FlexRenderer. ID's are used in GLSL to distinguish uniquely between individual ShaderLayer's generated code parts
+     * ID pattern allowed for FlexRenderer. ID's are used in GLSL to distinguish uniquely between individual ShaderLayer's generated code parts.
+     * No leading or trailing '_' and no '__': generated names append '_<suffix>' to IDs, and GLSL reserves '__'.
      * @property
      * @type {RegExp}
      * @memberof FlexRenderer
      */
-    FlexRenderer.idPattern = /^(?!_)(?:(?!__)[0-9a-zA-Z_])*$/;
+    FlexRenderer.idPattern = /^(?!_)(?!.*__)(?!.*_$)[0-9a-zA-Z_]*$/;
 
     FlexRenderer.__runtimeSupportCache = null;
 
