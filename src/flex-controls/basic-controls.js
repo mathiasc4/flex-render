@@ -477,11 +477,25 @@ $.FlexRenderer.UIControls = class {
         return css && String(css).trim() ? ` style="${css}"` : "";
     }
 
+    /**
+     * Title argument for renderControl()/renderTitle() from control params. Titles are text and
+     * get escaped; `params.titleHtml: true` opts a control into inserting its title as markup
+     * (e.g. an icon), which must then come from a trusted source.
+     * @param {object} params
+     * @return {string|{html: string}|undefined}
+     */
+    static titleFrom(params) {
+        const title = params && params.title;
+        return title && params.titleHtml ? { html: String(title) } : title;
+    }
+
     static renderTitle(title, type) {
         if (!title) {
             return "";
         }
-        return `<span class="er-control__title er-control__title--${type}">${title}</span>`;
+        const content = typeof title === "object" && typeof title.html === "string" ?
+            title.html : this.escapeHtml(title);
+        return `<span class="er-control__title er-control__title--${type}">${content}</span>`;
     }
 
     static renderControl(type, title, bodyHtml, classes = "", columns = undefined, extraAttrs = "") {
@@ -538,7 +552,7 @@ $.FlexRenderer.UIControls._items = {
             const input = UI.renderInput("input", "number", uniqueId,
                 ` type="number" min="${params.min}" max="${params.max}" step="${params.step}"`,
                 css, UI.resolveInputClasses("number", options && options.inputClasses));
-            return UI.renderControl("number", params.title, input, classes, params.title ? 2 : 1);
+            return UI.renderControl("number", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1f";
@@ -579,7 +593,7 @@ $.FlexRenderer.UIControls._items = {
             const input = UI.renderInput("input", "range", uniqueId,
                 ` type="range" min="${params.min}" max="${params.max}" step="${params.step}"`,
                 css, UI.resolveInputClasses("range", options && options.inputClasses));
-            return UI.renderControl("range", params.title, input, classes, params.title ? 2 : 1);
+            return UI.renderControl("range", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1f";
@@ -619,7 +633,7 @@ $.FlexRenderer.UIControls._items = {
             const UI = $.FlexRenderer.UIControls;
             const input = UI.renderInput("input", "color", uniqueId, ` type="color"`,
                 css, UI.resolveInputClasses("color", options && options.inputClasses));
-            return UI.renderControl("color", params.title, input, classes, params.title ? 2 : 1);
+            return UI.renderControl("color", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform3fv";
@@ -668,7 +682,7 @@ $.FlexRenderer.UIControls._items = {
             const input = UI.renderInput("input", "bool", uniqueId,
                 ` type="checkbox"${checked} onchange="this.value=this.checked; return true;"`,
                 css, UI.resolveInputClasses("bool", options && options.inputClasses));
-            return UI.renderControl("bool", params.title, input, classes, params.title ? 2 : 1);
+            return UI.renderControl("bool", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1i";
@@ -742,7 +756,7 @@ $.FlexRenderer.UIControls._items = {
 
             const input = UI.renderInput("select", "select", uniqueId, "", css,
                 UI.resolveInputClasses("select", renderOptions && renderOptions.inputClasses)) + `${optionHtml}</select>`;
-            return UI.renderControl("select", params.title, input, classes, params.title ? 2 : 1);
+            return UI.renderControl("select", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1i";
@@ -1635,9 +1649,8 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
             return "";
         }
 
-        const titleHtml = this._c1.params.title
-            ? `<span class="er-control__title er-control__title--slider-with-input">${this._c1.params.title}</span>`
-            : "";
+        const UI = $.FlexRenderer.UIControls;
+        const titleHtml = UI.renderTitle(UI.titleFrom(this._c1.params), "slider-with-input");
 
         const rangeHtml = $.FlexRenderer.UIControls.getUiElement("range").html(
             this._c1.id,

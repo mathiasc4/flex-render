@@ -235,6 +235,24 @@
         assert.equal(untitled.getAttribute("data-columns"), "1", "untitled icon: data-columns=1");
     });
 
+    QUnit.test("control titles are escaped unless titleHtml opts in", function(assert) {
+        ["number", "range", "bool", "advanced_slider"].forEach(type => {
+            const escaped = mount(buildControl(type, { title: "A <b>B</b>" }).toHtml());
+            const title = escaped.querySelector(".er-control__title");
+            assert.ok(title, `${type}: title span`);
+            assert.equal(title && title.textContent, "A <b>B</b>", `${type}: title is text`);
+            assert.notOk(title && title.querySelector("b"), `${type}: no markup`);
+
+            const raw = mount(buildControl(type, { title: "A <b>B</b>", titleHtml: true }).toHtml());
+            const rawTitle = raw.querySelector(".er-control__title");
+            assert.ok(rawTitle && rawTitle.querySelector("b"), `${type}: titleHtml keeps markup`);
+        });
+
+        const button = mount(buildControl("button", { title: "<i>x</i> Run", titleHtml: true }).toHtml())
+            .querySelector("button");
+        assert.ok(button.querySelector("i"), "button: titleHtml keeps markup");
+    });
+
     QUnit.test("Button markup and behaviour", function(assert) {
         const control = buildControl("button", { title: "Do <it>" });
         const host = mount(control.toHtml("", "margin: 1px;"));

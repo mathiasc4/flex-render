@@ -169,6 +169,7 @@
      * @property {WebGLTexture[]} texture           [TEXTURE_2D]
      * @property {Float32Array} textureCoords
      * @property {Float32Array} transformMatrix
+     * @property {"default"|"max"} [minificationFilter] per-tile override; unset inherits {@link FlexRenderer#getMinificationFilter}
      * //todo provide also opacity per tile?
      */
 
@@ -480,6 +481,7 @@
      *      which is why the default is off and enabling `auto` is a deployment decision.
      *
      * @property {boolean} [renderDiagnostics=true] if true, first-pass diagnostic regions are rendered when provided
+     * @property {string} [minificationFilter="default"] `default` or `max`; see {@link FlexRenderer#setMinificationFilter}
      *
      * @property {string} [backgroundColor="#00000000"] #RGB or #RGBA hex, default undefined - transparent
      * @property {number[]} [presentationClearColor=[1,1,1,1]] RGBA in [0,1] the presentation
@@ -558,6 +560,8 @@
             this._warningCounts = {};
 
             this._renderDiagnostics = options.renderDiagnostics !== false;
+
+            this._minificationFilter = options.minificationFilter === "max" ? "max" : "default";
 
             this._background = options.backgroundColor || "#00000000";
 
@@ -1662,6 +1666,44 @@
          */
         getRenderDiagnostics() {
             return this._renderDiagnostics !== false;
+        }
+
+        /**
+         * Set how the first pass samples tiles drawn smaller than their texture resolution.
+         *
+         * `default` takes a single tap. `max` takes the per-channel maximum over the screen
+         * pixel's texel footprint (up to 4x4 taps), so small bright features on a dark
+         * background do not vanish when zoomed out. Only minified tiles pay the extra taps.
+         * The value is a uniform, so changing it neither rebuilds programs nor re-uploads tiles.
+         *
+         * @param {"default"|"max"} mode
+         * @param {object} [options={}]
+         * @param {boolean} [options.redraw=true] request a redraw after changing the setting
+         * @return {"default"|"max"} Current minification filter.
+         */
+        setMinificationFilter(mode, options = {}) {
+            const current = mode === "max" ? "max" : "default";
+
+            if (this._minificationFilter === current) {
+                return current;
+            }
+
+            this._minificationFilter = current;
+
+            if (options.redraw !== false) {
+                this._requestRedraw();
+            }
+
+            return current;
+        }
+
+        /**
+         * Return the first-pass minification filter.
+         *
+         * @return {"default"|"max"}
+         */
+        getMinificationFilter() {
+            return this._minificationFilter === "max" ? "max" : "default";
         }
 
         /**
@@ -3931,6 +3973,13 @@
                 if (!key) {
                     throw new Error("Invalid key: sanitization removed all parts!");
                 }
+            }
+            // A trailing '_' passes idPattern on its own, but GLSL names append '_<suffix>' to
+            // ids and uids (and group children chain their parent's uid), which forms the
+            // reserved '__'. Non-string keys (numeric IDs) pass through as before.
+            // A valid key cannot be all underscores (no leading '_'), so stripping never empties it.
+            if (typeof key === "string") {
+                key = key.replace(/_+$/, '');
             }
             return key;
         }

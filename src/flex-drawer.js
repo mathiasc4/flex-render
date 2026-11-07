@@ -366,13 +366,13 @@
             if (!config && this._isNavigatorDrawer) {
                 // Navigator items load after the parent's, so a configureTiledImage() on the parent
                 // usually finds no navigator counterpart to mirror into. Inherit the parent's whole
-                // config (type, params, cache), not just its ID.
+                // config (type, params, cache), not just its ID. The object is shared, like every
+                // other navigator mirror path, so later changes (cache, exports) stay in one place;
+                // its `tiledImages` getter is the parent's (non-configurable, kept below).
                 const parentTiledImage = this._findParentTiledImage(tiledImage);
                 const parentConfig = parentTiledImage && parentTiledImage.__shaderConfig;
                 if (parentConfig) {
-                    config = tiledImage.__shaderConfig = $.extend(true, {}, parentConfig);
-                    // the copy holds the parent's world index as a plain value; redefined below
-                    delete config.tiledImages;
+                    config = tiledImage.__shaderConfig = parentConfig;
                 }
             }
             if (!config) {
@@ -475,7 +475,14 @@
             return this._requestRebuild();
         }
 
-        _applyShaderConfigMutationRequest(request = {}, syncNavigator = true) {
+        /**
+         * @param {object} request
+         * @param {boolean} [syncNavigator=true]
+         * @param {ShaderLayerConfig|null} [mirroredConfig=null] config the main drawer already
+         *   mutated; the navigator usually shares it and must not apply the mutation twice
+         * @private
+         */
+        _applyShaderConfigMutationRequest(request = {}, syncNavigator = true, mirroredConfig = null) {
             const {
                 shaderId,
                 mutation,
@@ -496,10 +503,12 @@
             }
 
             const config = shader.getConfig();
-            if (typeof mutation === "function") {
-                mutation(config, shader);
-            } else if (mutation && typeof mutation === "object") {
-                Object.assign(config, mutation);
+            if (config !== mirroredConfig) {
+                if (typeof mutation === "function") {
+                    mutation(config, shader);
+                } else if (mutation && typeof mutation === "object") {
+                    Object.assign(config, mutation);
+                }
             }
 
             if (refreshShader) {
@@ -524,7 +533,7 @@
             if (syncNavigator && !request.drawerLocalWorldIndex) {
                 const navDrawer = this._getNavigatorDrawer();
                 if (navDrawer) {
-                    navDrawer._applyShaderConfigMutationRequest(request, false);
+                    navDrawer._applyShaderConfigMutationRequest(request, false, config);
                 }
             }
 
@@ -582,8 +591,7 @@
                 navDrawer.overrideConfigureAll(shaders, this.renderer.getShaderLayerOrder().slice());
             } else {
                 // A skipped configureTiledImage() mirror (navigator drawer did not exist yet): re-apply
-                // the parent config. Note this shares the parent's config object, like the live mirror
-                // in configureTiledImage(), whereas tiledImageCreated() deep-copies it.
+                // the parent config, shared like every other navigator mirror path.
                 const world = this.viewer.world;
                 for (let i = 0; i < world.getItemCount(); i++) {
                     const tiledImage = world.getItemAt(i);
@@ -2668,6 +2676,7 @@
                 }
 
                 if (tiledImage.getOpacity() > 0 && tilesToDraw.length > 0) {
+                    const minificationFilter = this._resolveTiledImageMinificationFilter(tiledImage);
                     // TODO support placeholder?
                     // if (tiledImage.placeholderFillStyle && tiledImage._hasOpaqueTile === false) {
                     //     this._drawPlaceholder(tiledImage);
@@ -2701,6 +2710,7 @@
                                 texture: tileInfo.texture,
                                 position: tileInfo.position,
                                 normalized: tileInfo.normalized !== false,
+                                minificationFilter,
                                 tile: tile
                             });
                         } else if (tileInfo.vectors) {
@@ -3119,6 +3129,62 @@
                 this.setInternalCacheNeedsRefresh();
                 this.viewer.requestInvalidate(false);
             }
+        }
+
+        /**
+         * Set how tiles drawn below their texture resolution are sampled; mirrored to the navigator.
+         * @param {"default"|"max"} mode `max` keeps small bright features visible when zoomed out,
+         *     see {@link OpenSeadragon.FlexRenderer#setMinificationFilter}
+         */
+        setMinificationFilter(mode){
+            if (this._isTornDown()) {
+                return;
+            }
+            const navDrawer = this._getNavigatorDrawer();
+            if (navDrawer && navDrawer.renderer) {
+                navDrawer.renderer.setMinificationFilter(mode);
+            }
+            this.renderer.setMinificationFilter(mode);
+        }
+
+        /**
+         * Override the minification filter for a single tiledImage, e.g. `max` for a fluorescence
+         * overlay over a brightfield background that keeps `default`. A uniform per draw, so no
+         * cache refresh is needed. The navigator drawer resolves the same override through its
+         * counterpart tiled image.
+         *
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @param {"default"|"max"|null|undefined} mode null/undefined → inherit the renderer value
+         */
+        setTiledImageMinificationFilter(tiledImage, mode){
+            if (!tiledImage || this._isTornDown()) {
+                return;
+            }
+            const normalized = mode === "max" || mode === "default" ? mode : undefined;
+            if (tiledImage.__flexMinificationFilter === normalized) {
+                return;
+            }
+            tiledImage.__flexMinificationFilter = normalized;
+            this._safeForceRedraw();
+            if (this._getNavigatorDrawer()) {
+                this._safeForceRedraw(this.viewer.navigator);
+            }
+        }
+
+        /**
+         * Effective per-tiledImage minification filter, or undefined to inherit the renderer value.
+         *
+         * @private
+         * @param {OpenSeadragon.TiledImage} tiledImage
+         * @returns {"default"|"max"|undefined}
+         */
+        _resolveTiledImageMinificationFilter(tiledImage){
+            const own = tiledImage.__flexMinificationFilter;
+            if (own !== undefined || !this._isNavigatorDrawer) {
+                return own;
+            }
+            const parent = this._findParentTiledImage(tiledImage);
+            return parent ? parent.__flexMinificationFilter : undefined;
         }
 
         /**

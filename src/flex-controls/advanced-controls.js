@@ -483,13 +483,13 @@ return osd_atlas_texture(textureId, vec2(u, 0.5)).rgb;
         const UI = $.FlexRenderer.UIControls;
         if (!this.params.interactive) {
             const display = `<span id="${this.id}" class="er-control__display er-control__display--colormap"${UI.styleAttr(css)}>${UI.escapeHtml(this.load(this.params.default))}</span>`;
-            return UI.renderControl("colormap", this.params.title, display, classes, this.layoutColumns);
+            return UI.renderControl("colormap", UI.titleFrom(this.params), display, classes, this.layoutColumns);
         }
 
         const input = UI.renderInput("select", "colormap", this.id, "", css,
             UI.resolveInputClasses("colormap", options && options.inputClasses)) +
             `</select><span class="er-control__colormap-preview" aria-hidden="true"></span>`;
-        return UI.renderControl("colormap", this.params.title, input, classes, this.layoutColumns);
+        return UI.renderControl("colormap", UI.titleFrom(this.params), input, classes, this.layoutColumns);
     }
 
     define() {
@@ -741,11 +741,11 @@ $.FlexRenderer.UIControls.registerClass("custom_colormap", class extends $.FlexR
         const UI = $.FlexRenderer.UIControls;
         if (!this.params.interactive) {
             const display = `<span id="${this.id}" class="er-control__display er-control__display--custom-colormap"${UI.styleAttr(css)}>&emsp;</span>`;
-            return UI.renderControl("custom-colormap", this.params.title, display, classes, this.layoutColumns);
+            return UI.renderControl("custom-colormap", UI.titleFrom(this.params), display, classes, this.layoutColumns);
         }
 
         const display = `<span id="${this.id}" class="er-control__display er-control__display--custom-colormap"${UI.styleAttr(css)}></span>`;
-        return UI.renderControl("custom-colormap", this.params.title, display, classes, this.layoutColumns);
+        return UI.renderControl("custom-colormap", UI.titleFrom(this.params), display, classes, this.layoutColumns);
     }
 
     get supports() {
@@ -1264,7 +1264,7 @@ return masked * bigger / actualLength;
             return "";
         }
         const slider = `<div id="${this.id}" class="er-control__widget er-control__widget--advanced-slider"${$.FlexRenderer.UIControls.styleAttr(`height: 9px; display: inline-block;${css}`)}></div>`;
-        return $.FlexRenderer.UIControls.renderControl("advanced-slider", this.params.title, slider, classes, this.layoutColumns);
+        return $.FlexRenderer.UIControls.renderControl("advanced-slider", $.FlexRenderer.UIControls.titleFrom(this.params), slider, classes, this.layoutColumns);
     }
 
     define() {
@@ -1393,7 +1393,7 @@ $.FlexRenderer.UIControls.TextArea = class extends $.FlexRenderer.UIControls.ICo
             `${disabled} placeholder="${UI.escapeHtml(this.params.placeholder)}"`,
             `width: 100%; display: block; resize: vertical; ${css}`,
             UI.resolveInputClasses("textarea", options && options.inputClasses)) + `</textarea>`;
-        return UI.renderControl("text-area", this.params.title, textarea, classes, this.layoutColumns);
+        return UI.renderControl("text-area", UI.titleFrom(this.params), textarea, classes, this.layoutColumns);
     }
 
     define() {
@@ -1500,7 +1500,7 @@ $.FlexRenderer.UIControls.Button = class extends $.FlexRenderer.UIControls.ICont
         const disabled = this.params.interactive ? "" : " disabled";
         const cls = UI.joinClasses("er-control__button", "er-control__button--action",
             UI.resolveInputClasses("button", options && options.inputClasses));
-        const button = `<button id="${this.id}" type="button" class="${cls}"${UI.styleAttr(css)}${disabled}>${UI.escapeHtml(this.params.title)}</button>`;
+        const button = `<button id="${this.id}" type="button" class="${cls}"${UI.styleAttr(css)}${disabled}>${this.params.titleHtml ? String(this.params.title) : UI.escapeHtml(this.params.title)}</button>`;
         return UI.renderControl("button", "", button, classes, this.layoutColumns);
     }
 
@@ -1735,7 +1735,7 @@ $.FlexRenderer.UIControls.Image = class extends $.FlexRenderer.IAtlasTextureCont
             `<button id="${this.id}_button" type="button" class="${buttonCls}"${disabled}>${esc(this.t("image.upload", "Upload Image"))}</button>`,
             `</div>`
         ].join("");
-        return UI.renderControl("image", this.params.title, body, classes, this.layoutColumns);
+        return UI.renderControl("image", UI.titleFrom(this.params), body, classes, this.layoutColumns);
     }
 
     get supports() {
@@ -2926,7 +2926,7 @@ $.FlexRenderer.UIControls.Icon = class extends $.FlexRenderer.IAtlasTextureContr
         ].join("");
         // Title and trigger share one row; the control root anchors the popup so it
         // spans the full control width instead of only the narrow body column.
-        return UI.renderControl("icon", this.params.title, body, classes, this.layoutColumns, `style="position: relative;"`);
+        return UI.renderControl("icon", UI.titleFrom(this.params), body, classes, this.layoutColumns, `style="position: relative;"`);
     }
 
     get layoutColumns() {

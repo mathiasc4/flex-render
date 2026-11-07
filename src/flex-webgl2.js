@@ -3137,6 +3137,10 @@ uniform int u_tileLayer;
 // float layer behaves exactly as before, while float data passes through untouched.
 uniform float u_clampColorOutput;
 
+// 1 when tiles drawn below their texture resolution should keep the max over the texel footprint
+// (renderer minificationFilter "max"), so sparse bright features survive zooming out.
+uniform int u_minifyMax;
+
 ${this.atlas.getFragmentShaderDefinition()}
 
 // Every branch of main() below assigns both of these, including the pure-clipping path that has
@@ -3151,6 +3155,30 @@ float fr_segment_distance(vec2 p, vec2 a, vec2 b) {
     float denom = max(dot(ba, ba), 0.000001);
     float h = clamp(dot(pa, ba) / denom, 0.0, 1.0);
     return length(pa - ba * h);
+}
+
+vec4 fr_sample_tile(sampler2DArray tex, vec2 uv, float layer) {
+    // Derivatives before any non-uniform branch.
+    vec2 duv = fwidth(uv);
+    vec4 color = texture(tex, vec3(uv, layer));
+    if (u_minifyMax == 0) {
+        return color;
+    }
+    vec2 footprint = duv * vec2(textureSize(tex, 0).xy);
+    int n = int(clamp(ceil(max(footprint.x, footprint.y)), 1.0, 4.0));
+    if (n <= 1) {
+        return color;
+    }
+    vec2 stepUv = duv / float(n);
+    vec2 base = uv - 0.5 * duv + 0.5 * stepUv;
+    for (int y = 0; y < 4; y++) {
+        if (y >= n) break;
+        for (int x = 0; x < 4; x++) {
+            if (x >= n) break;
+            color = max(color, texture(tex, vec3(base + stepUv * vec2(float(x), float(y)), layer)));
+        }
+    }
+    return color;
 }
 
 bool fr_diagnostic_pixel(vec2 p) {
@@ -3184,7 +3212,7 @@ void main() {
             if (i == instance_id) {
                  switch (i) {
     ${ this.printN(x =>
-                    `case ${x}: outputColor = texture(u_textures[${x}], vec3(v_texture_coords, float(u_tileLayer))); break;`,
+                    `case ${x}: outputColor = fr_sample_tile(u_textures[${x}], v_texture_coords, float(u_tileLayer)); break;`,
                 this._maxTextures, "                ")}
                  }
                  break;
@@ -3267,6 +3295,7 @@ void main() {
         this._renderClipping = gl.getUniformLocation(program, "u_renderClippingParams");
         this._tileLayerLoc = gl.getUniformLocation(program, "u_tileLayer");
         this._clampColorOutputLoc = gl.getUniformLocation(program, "u_clampColorOutput");
+        this._minifyMaxLoc = gl.getUniformLocation(program, "u_minifyMax");
 
         // Alias names to avoid confusion
         this._positionsBuffer = gl.getAttribLocation(program, "a_payload0");
@@ -3383,6 +3412,11 @@ void main() {
             this.created(0, 0);
         }
 
+        // A tile's own minificationFilter wins; unset inherits the renderer value.
+        const renderer = this.context.renderer;
+        const rendererMinifyMax = !!(renderer.getMinificationFilter && renderer.getMinificationFilter() === "max");
+        const tileMinifyMax = tile => (tile.minificationFilter ? tile.minificationFilter === "max" : rendererMinifyMax);
+
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.offScreenBuffer);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.stencilClipBuffer);
 
@@ -3497,16 +3531,20 @@ void main() {
                 while (currentIndex < tileCount) {
                     const maxBatchSize = Math.min(this._maxTextures, tileCount - currentIndex);
 
-                    // The [0,1] clamp is a per-draw uniform, so a batch must be homogeneous in
-                    // source kind. Tiles of one source always are, so this normally never splits.
+                    // The [0,1] clamp and the minification filter are per-draw uniforms, so a batch
+                    // must be homogeneous in both. Tiles of one source always are, so this normally
+                    // splits only at source boundaries.
                     const batchNormalized = rasterTiles[currentIndex].normalized !== false;
+                    const batchMinifyMax = tileMinifyMax(rasterTiles[currentIndex]);
                     let batchSize = 1;
                     while (batchSize < maxBatchSize &&
-                        (rasterTiles[currentIndex + batchSize].normalized !== false) === batchNormalized) {
+                        (rasterTiles[currentIndex + batchSize].normalized !== false) === batchNormalized &&
+                        tileMinifyMax(rasterTiles[currentIndex + batchSize]) === batchMinifyMax) {
                         batchSize++;
                     }
 
                     gl.uniform1f(this._clampColorOutputLoc, batchNormalized ? 1.0 : 0.0);
+                    gl.uniform1i(this._minifyMaxLoc, batchMinifyMax ? 1 : 0);
 
                     for (let i = 0; i < batchSize; i++) {
                         const tile = rasterTiles[currentIndex + i];
