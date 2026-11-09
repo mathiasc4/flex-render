@@ -140,6 +140,10 @@
         assert.notStrictEqual(drawer.renderer.getPresentationCanvas(),
             drawer.renderer.getWebGLCanvas(),
             'and in shared mode the presentation canvas is not the WebGL canvas');
+        assert.equal(viewer.drawer.renderer.presentationTransferMode, 'blit-draw-image',
+            'the live viewer presents its frames through the GPU route, not readPixels');
+        assert.strictEqual(viewer.drawer.renderer.gl.getContextAttributes().antialias, false,
+            'the shared context is created without multisampling');
     });
 
     QUnit.test('the bound program is tracked on the context, not on the renderer', function(assert) {

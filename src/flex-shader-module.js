@@ -1034,7 +1034,7 @@
      */
     function suggestGraphKey(key) {
         let out = String(key || "").replace(/[^0-9a-zA-Z_]/g, "");
-        out = out.replace(/_+/g, "_").replace(/^_+/, "");
+        out = out.replace(/_+/g, "_").replace(/^_+/, "").replace(/_+$/, "");
         return out || "node";
     }
 

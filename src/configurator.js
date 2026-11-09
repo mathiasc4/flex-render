@@ -520,8 +520,7 @@
                     shaderModules,
                     shaderModuleGraph
                 },
-                "x-schemaVersion": 3,
-                "x-generatedAt": new Date().toISOString()
+                "x-schemaVersion": 3
             };
 
             return schema;
@@ -1651,7 +1650,7 @@
                 },
                 cache: {
                     type: "object",
-                    description: "Runtime value store owned by the shader's controls (ShaderLayer.cache / loadProperty / storeProperty). Populated by the renderer, persisted with the config, and reapplied on load. Keys are control-defined, so the shape is open."
+                    description: "Runtime value store owned by the shader's controls (ShaderLayer.cache / loadProperty / storeProperty), scoped per shader type: { [type]: { [controlKey]: value } }. Populated by the renderer, persisted with the config, and reapplied on load; switching a layer back to a type restores that type's values. A flat { [controlKey]: value } cache from 3.x builds is migrated to the bucket of config.type, and cached values that do not fit their control are dropped. Keys are control-defined, so the shape is open."
                 },
                 // Enumerated rather than left open: the schema stays closed, so a typo in this
                 // key is still reported instead of being silently accepted as an unknown value.
@@ -2285,7 +2284,7 @@
                 kind: "built-in",
                 type: "string",
                 usage: "Rendering mode resolved by resetMode(). Supported values come from renderer WebGL context.",
-                allowedValues: ["show", "blend", "clip", "mask", "clip_mask"],
+                allowedValues: ["show", "blend", "clip", "mask", "mask_clip", "clip_mask"],
                 default: firstDefined(spec.required, spec.default, "show"),
                 required: firstDefined(spec.required, null)
             };

@@ -214,6 +214,62 @@
         }
     });
 
+    QUnit.test('a failed link with a fresh implementation leaves the registry untouched',
+        async function(assert) {
+            const runtime = OpenSeadragon.makeStandaloneFlexRenderer({
+                uniqueId: `rebuildfail_${Math.floor(Math.random() * 1e9)}`,
+                width: SIZE,
+                height: SIZE
+            });
+
+            try {
+                const renderer = runtime.renderer;
+                const backend = renderer.backend;
+                const key = backend.secondPassProgramKey;
+                const freshKey = "__probe_fresh";
+
+                await runtime.overrideConfigureAll(probeConfig(["a"]));
+
+                const previous = renderer.getProgram(key);
+                const workingProgram = previous.webGLProgram;
+                const makeFresh = () => new OpenSeadragon.FlexRenderer.WebGL20.SecondPassProgram(
+                    backend, backend.gl, backend.secondAtlas);
+
+                breakGlsl = true;
+                // registerProgram() assigns the implementation into the map before building, so
+                // setBackground() can reach it. A failed link must put the previous one back.
+                let error = null;
+                try {
+                    await withSilencedConsole(() => renderer.registerProgram(makeFresh(), key));
+                } catch (e) {
+                    error = e;
+                }
+                // Match the link failure itself: any earlier throw (e.g. from the constructor)
+                // would leave the registry untouched trivially.
+                assert.ok(error && /failed to compile or link/.test(error.message),
+                    `the broken build fails at link (${error && error.message})`);
+                assert.strictEqual(renderer.getProgram(key), previous,
+                    "the registry still names the implementation that is linked");
+                assert.strictEqual(previous.webGLProgram, workingProgram,
+                    "and its program was not replaced");
+                assert.ok(backend.gl.isProgram(workingProgram), "nor deleted");
+
+                error = null;
+                try {
+                    await withSilencedConsole(() => renderer.registerProgram(makeFresh(), freshKey));
+                } catch (e) {
+                    error = e;
+                }
+                assert.ok(error && /failed to compile or link/.test(error.message),
+                    `the broken build fails at link for an unoccupied key too (${error && error.message})`);
+                assert.strictEqual(renderer.getProgram(freshKey), undefined,
+                    "and leaves that key unregistered");
+            } finally {
+                breakGlsl = false;
+                runtime.destroy();
+            }
+        });
+
     QUnit.module('DrawerRebuildFailure', {
         beforeEach: function() {
             const element = document.createElement("div");

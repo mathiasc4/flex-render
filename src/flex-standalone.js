@@ -566,8 +566,8 @@
      *   for the opaque default, but plainly wrong the moment `presentationClearColor` is
      *   translucent, where alpha 0.5 would read back as 0.75.
      * - shared context: the second pass lands in a color target that is cleared to
-     *   [0,0,0,0], and the transfer into the presentation canvas is a putImageData, which
-     *   overwrites. The backdrop exists nowhere else.
+     *   [0,0,0,0], and the transfer into the presentation canvas overwrites it (drawImage with
+     *   the "copy" operator, or putImageData). The backdrop exists nowhere else.
      *
      * @param {OpenSeadragon.FlexRenderer} renderer
      * @param {number} width
@@ -1216,7 +1216,7 @@
                     zoom: this.viewport.getZoom(true)
                 });
 
-                if (!sources.length) {
+                if (!sources.length && !(typeof this.viewer.isDestroyed === "function" && this.viewer.isDestroyed())) {
                     this.viewer.forceRedraw();
                 }
 
@@ -1422,7 +1422,8 @@
         presentationClearColor = undefined,
         canvasOptions = { stencil: true },
         sharedContextKey = null,
-        sharedContextBusyPolicy = undefined
+        sharedContextBusyPolicy = undefined,
+        presentationTransfer = undefined
     } = {}) {
         const runtime = {};
         const mutex = createLock();
@@ -1443,7 +1444,8 @@
             presentationClearColor,
             canvasOptions,
             sharedContextKey,
-            sharedContextBusyPolicy
+            sharedContextBusyPolicy,
+            presentationTransfer
         });
 
         runtime.renderer.setDataBlendingEnabled(true);
@@ -1726,6 +1728,10 @@
         };
 
         runtime.overrideConfigureAll = async function(shaders, shaderOrder = undefined) {
+            if (shaders) {
+                // Fail before deleting anything: e.g. 'a' and 'a_' would both become shader 'a'.
+                $.FlexRenderer.assertUniqueSanitizedKeys(Object.keys(shaders), "FlexRenderer standalone overrideConfigureAll");
+            }
             this.renderer.deleteShaders();
             this.renderer.__firstPassResult = null;
             if (!shaders) {

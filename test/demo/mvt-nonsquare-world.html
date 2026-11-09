@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MVT Non-Square World Demo</title>
+
+    <script type="text/javascript" src='../../openseadragon/openseadragon.js'></script>
+    <script type="text/javascript" src='/build/openseadragon/flex-renderer.js'></script>
+
+    <script type="text/javascript" src="mvt-nonsquare-world.js" defer></script>
+
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            font-family: system-ui, sans-serif;
+            font-size: 14px;
+            color: #1f2937;
+            background: #fafafa;
+        }
+
+        .layout {
+            display: flex;
+            height: 100%;
+        }
+
+        #viewer-container {
+            flex: 1;
+            min-width: 0;
+            background: #111827;
+        }
+
+        .panel {
+            width: 340px;
+            padding: 12px 16px;
+            overflow-y: auto;
+            box-sizing: border-box;
+            border-left: 1px solid #d1d5db;
+        }
+
+        .panel h1 {
+            font-size: 16px;
+            margin: 0 0 6px;
+        }
+
+        .panel h2 {
+            font-size: 13px;
+            margin: 16px 0 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #6b7280;
+        }
+
+        .panel p {
+            margin: 0 0 8px;
+            line-height: 1.4;
+        }
+
+        .panel label {
+            display: block;
+            margin: 6px 0;
+        }
+
+        .panel select, .panel input[type=range] {
+            width: 100%;
+        }
+
+        .buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .buttons button {
+            flex: 1 1 45%;
+            padding: 4px 6px;
+        }
+
+        pre {
+            background: #f3f4f6;
+            padding: 8px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin: 0;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 13px;
+        }
+
+        td {
+            padding: 2px 4px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        td:last-child {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .verdict-ok { color: #047857; font-weight: 600; }
+        .verdict-bad { color: #b91c1c; font-weight: 600; }
+
+        .legend span {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+<div class="layout">
+    <div id="viewer-container"></div>
+    <div class="panel">
+        <h1>MVT on a non-square world</h1>
+        <p>
+            The raster is a synthetic 105185 × 221772 slide. The vector layer is the same grid,
+            encoded as MVT in the browser and loaded from a <b>TileJSON object</b> through
+            <code>MVTTileSource.configure</code>, with no factory.
+        </p>
+        <p class="legend">
+            <span style="background:#9ca3af"></span>raster grid / cells &nbsp;
+            <span style="background:#db2777"></span>vector grid &nbsp;
+            <span style="background:#f59e0b"></span>vector cells
+        </p>
+        <p>
+            Aligned means the magenta lines sit on the grey ones, the orange cells fill the white
+            gaps of the raster checkerboard, and the diagonals meet the image corners.
+        </p>
+
+        <h2>TileJSON</h2>
+        <label><input type="checkbox" id="declare-size" checked> Declare <code>width</code>/<code>height</code></label>
+        <label><input type="checkbox" id="omit-maxzoom"> Omit <code>maxzoom</code> (derive from size)</label>
+        <label><input type="checkbox" id="show-cells" checked> Vector cells (fills)</label>
+        <label>Row scheme
+            <select id="scheme">
+                <option value="xyz">xyz: {y}</option>
+                <option value="tms">tms: {y} flipped</option>
+                <option value="neg">xyz with a {-y} template</option>
+            </select>
+        </label>
+        <label>Vector opacity
+            <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.85">
+        </label>
+
+        <h2>Navigate</h2>
+        <div class="buttons">
+            <button data-goto="home">Whole slide</button>
+            <button data-goto="top-left">Top-left</button>
+            <button data-goto="right-edge">Right edge</button>
+            <button data-goto="bottom-right">Bottom-right</button>
+        </div>
+
+        <h2>Stress</h2>
+        <p>
+            Random features generated inside every tile, at every level. They are deterministic
+            per tile, and the alignment grid still draws on top.
+        </p>
+        <label>Features per tile
+            <select id="stress-count">
+                <option value="0">0 (alignment only)</option>
+                <option value="250">250</option>
+                <option value="1000">1 000</option>
+                <option value="5000">5 000</option>
+                <option value="20000">20 000</option>
+            </select>
+        </label>
+        <label>Shape
+            <select id="stress-shape">
+                <option value="polygons">polygons (non-convex)</option>
+                <option value="lines">polylines</option>
+                <option value="mixed">mixed</option>
+            </select>
+        </label>
+        <label>Vertices per feature
+            <select id="stress-verts">
+                <option value="6">6</option>
+                <option value="24">24</option>
+                <option value="96">96</option>
+            </select>
+        </label>
+        <label>Stress line width
+            <select id="stress-width">
+                <option value="1">1 px</option>
+                <option value="4">4 px</option>
+                <option value="12">12 px</option>
+            </select>
+        </label>
+        <label><input type="checkbox" id="native-lines"> Native lines (<code>useNativeLines</code>)</label>
+        <label>Vector layer copies
+            <select id="stress-copies">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="4">4</option>
+                <option value="8">8</option>
+            </select>
+        </label>
+        <label>Tour speed
+            <select id="tour-speed">
+                <option value="0.5">slow</option>
+                <option value="1" selected>normal</option>
+                <option value="3">fast</option>
+            </select>
+        </label>
+        <div class="buttons">
+            <button id="tour">Start tour</button>
+            <button id="reset-stats">Reset stats</button>
+        </div>
+
+        <h2>Performance</h2>
+        <table id="perf"></table>
+        <p style="font-size:12px;color:#6b7280;margin-top:6px">
+            Tiles are encoded on the main thread, so encode time eats into frame time.
+            Subtract it before blaming the renderer. Frame rate only means something
+            while the view moves, so use the tour.
+        </p>
+
+        <h2>Source as configured</h2>
+        <table id="readout"></table>
+
+        <h2>Tile requests</h2>
+        <table id="requests"></table>
+
+        <h2>TileJSON sent</h2>
+        <pre id="tilejson"></pre>
+    </div>
+</div>
+</body>
+</html>
