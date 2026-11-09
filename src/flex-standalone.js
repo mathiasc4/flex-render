@@ -566,8 +566,8 @@
      *   for the opaque default, but plainly wrong the moment `presentationClearColor` is
      *   translucent, where alpha 0.5 would read back as 0.75.
      * - shared context: the second pass lands in a color target that is cleared to
-     *   [0,0,0,0], and the transfer into the presentation canvas is a putImageData, which
-     *   overwrites. The backdrop exists nowhere else.
+     *   [0,0,0,0], and the transfer into the presentation canvas overwrites it (drawImage with
+     *   the "copy" operator, or putImageData). The backdrop exists nowhere else.
      *
      * @param {OpenSeadragon.FlexRenderer} renderer
      * @param {number} width
@@ -1216,7 +1216,7 @@
                     zoom: this.viewport.getZoom(true)
                 });
 
-                if (!sources.length) {
+                if (!sources.length && !(typeof this.viewer.isDestroyed === "function" && this.viewer.isDestroyed())) {
                     this.viewer.forceRedraw();
                 }
 
@@ -1420,7 +1420,10 @@
         interactive = false,
         precision = "auto",
         presentationClearColor = undefined,
-        canvasOptions = { stencil: true }
+        canvasOptions = { stencil: true },
+        sharedContextKey = null,
+        sharedContextBusyPolicy = undefined,
+        presentationTransfer = undefined
     } = {}) {
         const runtime = {};
         const mutex = createLock();
@@ -1439,8 +1442,12 @@
             // Every pass this runtime draws clears to it, so a caller that wants a backdrop
             // other than opaque white has to be able to say so here.
             presentationClearColor,
-            canvasOptions
+            canvasOptions,
+            sharedContextKey,
+            sharedContextBusyPolicy,
+            presentationTransfer
         });
+
         runtime.renderer.setDataBlendingEnabled(true);
         runtime.renderer.setDimensions(0, 0, width, height, 1, 1);
         runtime.canvas = runtime.renderer.getPresentationCanvas();
@@ -1721,6 +1728,10 @@
         };
 
         runtime.overrideConfigureAll = async function(shaders, shaderOrder = undefined) {
+            if (shaders) {
+                // Fail before deleting anything: e.g. 'a' and 'a_' would both become shader 'a'.
+                $.FlexRenderer.assertUniqueSanitizedKeys(Object.keys(shaders), "FlexRenderer standalone overrideConfigureAll");
+            }
             this.renderer.deleteShaders();
             this.renderer.__firstPassResult = null;
             if (!shaders) {

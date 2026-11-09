@@ -93,8 +93,8 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
         this.secondAtlas = new $.FlexRenderer.WebGL20.TextureAtlas2DArray(this.gl);
         this._namedColorTargets = {};
         this._presentationTransferScratch = {
-            canvas: null,
-            ctx: null,
+            probeCanvas: null,
+            probeCtx: null,
             pixels: null,
             flippedPixels: null,
             imageData: null
@@ -148,7 +148,9 @@ class WebGL2 extends $.FlexRenderer.WebGLImplementation {
      * @returns {string}
      */
     getShaderLayerStackComputeName(ownerShader = null) {
-        return ownerShader ? `fr_compute_${ownerShader.uid}_stack` : "fr_compute_root_stack";
+        // fr_stack_* rather than fr_compute_*_stack: a group 'g' and a layer whose uid is 'g_stack'
+        // would otherwise both define fr_compute_g_stack().
+        return ownerShader ? `fr_stack_${ownerShader.uid}` : "fr_stack_root";
     }
 
     /**
@@ -191,7 +193,7 @@ vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
             return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Config read failed placeholder");
         }
 
-        if (!shaderConfig || shaderConfig.type === "none" || shaderConfig.error || !shaderConfig.visible) {
+        if (!$.FlexRenderer.isShaderConfigActive(shaderConfig)) {
             return this.getShaderLayerPlaceholderDefinition(
                 shaderLayer,
                 "Disabled, hidden, or error placeholder"
@@ -199,7 +201,7 @@ vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
         }
 
         try {
-            return `
+            const definition = `
 // ${shaderLayer.uid} - Definition
 ${shaderLayer.getFragmentShaderDefinition()}
 
@@ -211,9 +213,18 @@ vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
 ${shaderLayer.getFragmentShaderExecution()}
 }
 `;
+            // One unbalanced brace in one layer would otherwise fail the whole program, hiding
+            // every other layer; isolate it like any other assembly error.
+            const imbalance = $.FlexRenderer.findGlslImbalance(definition);
+            if (imbalance) {
+                throw new Error(`generated GLSL is unbalanced at layer line ${imbalance.line}: ${imbalance.reason}`);
+            }
+            return definition;
         } catch (e) {
-            $.console.error(`Failed to assemble shader '${shaderLayer.id}' (${shaderConfig.type}). Emitting placeholder.`, e);
             shaderConfig.error = true;
+            shaderLayer._report("error", "layer-assembly-failed",
+                `Failed to assemble shader '${shaderLayer.id}' (${shaderConfig.type}). Emitting placeholder.`,
+                { error: e });
             return this.getShaderLayerPlaceholderDefinition(shaderLayer, "Assembly error placeholder");
         }
     }
@@ -362,7 +373,7 @@ ${this.getShaderLayerStencilPassCode(remainingBlendShader)}
 
             try {
                 shaderLayerConfig = shaderLayer.getConfig();
-                isClipLayer = shaderLayer._mode === "clip";
+                isClipLayer = shaderLayer.mode === "clip";
 
                 const slot = shaderLayer.__renderSlot;
                 const opacityModifierBase = shaderLayer.opacity ? `opacity * ${shaderLayer.opacity.sample()}` : "opacity";
@@ -372,7 +383,7 @@ ${this.getShaderLayerStencilPassCode(remainingBlendShader)}
 
                 execution += `\n    // ${shaderLayer.uid}\n`;
 
-                if (!shaderLayerConfig || shaderLayerConfig.type === "none" || shaderLayerConfig.error || !shaderLayerConfig.visible) {
+                if (!$.FlexRenderer.isShaderConfigActive(shaderLayerConfig)) {
                     if (!isClipLayer) {
                         // A hidden non-clip layer breaks the clip chain. Clip layers above it
                         // must not accidentally modify the previous visible non-clip layer.
@@ -425,14 +436,12 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
 `;
                 }
             } catch (e) {
-                $.console.error(
-                    `Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig ? shaderLayerConfig.type : "unknown"}). Hiding layer.`,
-                    e
-                );
-
                 if (shaderLayerConfig) {
                     shaderLayerConfig.error = true;
                 }
+                shaderLayer._report("error", "layer-assembly-failed",
+                    `Failed to assemble shader '${shaderLayer.id}' (${shaderLayerConfig ? shaderLayerConfig.type : "unknown"}). Hiding layer.`,
+                    { error: e });
 
                 execution = executionSnapshot;
                 remainingBlendShader = remainingBlendSnapshot;
@@ -650,24 +659,235 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     /**
      * Copy a color target into a renderer-local presentation canvas.
      *
-     * Shared-context presentation uses readPixels because the WebGL default
-     * framebuffer is not a reliable intermediate transfer target across browsers
-     * and context configurations.
+     * Two routes:
+     *  - "blit-draw-image": blitFramebuffer the target into the shared WebGL canvas' default
+     *    framebuffer, then drawImage() that region onto the 2D presentation canvas. Stays on the
+     *    GPU in every current engine and needs no CPU row flip (the browser presents the default
+     *    framebuffer bottom-up, exactly like the target). Well-defined because the context is
+     *    created with preserveDrawingBuffer and each renderer blits and draws before the next one
+     *    touches the shared context.
+     *  - "read-pixels": synchronous readPixels + CPU flip/unpremultiply + putImageData. The slow
+     *    fallback, used when the blit route is unavailable (multisampled default framebuffer,
+     *    clamped drawing buffer, failed probe) or explicitly requested.
      *
      * @param {object} target
      * @param {HTMLCanvasElement} canvas
-     * @returns {string} Transfer mode used.
+     * @param {object} [options={}]
+     * @param {"blit"|"read-pixels"} [options.transfer="read-pixels"] requested route
+     * @param {HTMLCanvasElement} [options.sourceCanvas] the shared WebGL canvas (required for "blit")
+     * @returns {"blit-draw-image"|"read-pixels"|"none"} Transfer route that ran.
      */
-    presentColorTargetToCanvas(target, canvas) {
-        if (!target || !target.framebuffer || !canvas) {
+    presentColorTargetToCanvas(target, canvas, options = {}) {
+        if (!target || !target.framebuffer || !canvas || !this.gl || this.gl.isContextLost()) {
             return "none";
+        }
+
+        if (options.transfer === "blit" && options.sourceCanvas) {
+            const route = this._blitColorTargetToCanvas(target, canvas, options.sourceCanvas);
+            if (route) {
+                return route;
+            }
         }
 
         return this._readColorTargetToCanvas(target, canvas);
     }
 
     /**
+     * Whether the blit route can run against this source canvas. The drawing buffer must match
+     * the canvas size: a browser that clamped it would scale the canvas, and the drawImage source
+     * rectangle would no longer address the blitted pixels.
+     *
+     * @private
+     * @param {HTMLCanvasElement} src
+     * @param {number} width
+     * @param {number} height
+     * @returns {boolean}
+     */
+    _canBlitThrough(src, width, height) {
+        const gl = this.gl;
+        return !!src && width > 0 && height > 0 &&
+            src.width >= width && src.height >= height &&
+            gl.drawingBufferWidth === src.width && gl.drawingBufferHeight === src.height;
+    }
+
+    /**
+     * Blit a region of a color target into the default framebuffer at the origin. Scissor applies
+     * to blits, so it is lifted for the copy; framebuffer bindings are restored to null, matching
+     * every other caller in this backend. Program, VAO, texture and viewport state are untouched.
+     *
+     * @private
+     */
+    _blitTargetToDefaultFramebuffer(target, width, height, dstX = 0, dstY = 0) {
+        const gl = this.gl;
+        const scissor = gl.isEnabled(gl.SCISSOR_TEST);
+        if (scissor) {
+            gl.disable(gl.SCISSOR_TEST);
+        }
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.blitFramebuffer(0, 0, width, height, dstX, dstY, dstX + width, dstY + height,
+            gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (scissor) {
+            gl.enable(gl.SCISSOR_TEST);
+        }
+    }
+
+    /**
+     * Copy `height` rows from the bottom of the WebGL canvas onto a 2D context, overwriting it.
+     * GL row 0 is the canvas' bottom row, so the blitted region sits at canvas rows
+     * [src.height - height, src.height) and arrives upright without a manual flip.
+     *
+     * @private
+     */
+    _drawDefaultFramebufferRegion(ctx, src, width, height) {
+        const previousOp = ctx.globalCompositeOperation;
+        const previousSmoothing = ctx.imageSmoothingEnabled;
+        // "copy" overwrites including alpha, like putImageData, and also clears any part of the
+        // destination outside the drawn rectangle.
+        ctx.globalCompositeOperation = "copy";
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(src, 0, src.height - height, width, height, 0, 0, width, height);
+        ctx.globalCompositeOperation = previousOp;
+        ctx.imageSmoothingEnabled = previousSmoothing;
+    }
+
+    /**
+     * GPU presentation route. Returns null when its preconditions do not hold, so the caller
+     * falls back to readPixels for this frame.
+     *
+     * @private
+     * @param {object} target
+     * @param {HTMLCanvasElement} canvas
+     * @param {HTMLCanvasElement} src shared WebGL canvas
+     * @returns {"blit-draw-image"|null}
+     */
+    _blitColorTargetToCanvas(target, canvas, src) {
+        const width = Math.min(target.width || 0, canvas.width || 0);
+        const height = Math.min(target.height || 0, canvas.height || 0);
+        if (!this._canBlitThrough(src, width, height)) {
+            return null;
+        }
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+            return null;
+        }
+
+        this._blitTargetToDefaultFramebuffer(target, width, height);
+        this._drawDefaultFramebufferRegion(ctx, src, width, height);
+        return "blit-draw-image";
+    }
+
+    /**
+     * Sample count of the default framebuffer. blitFramebuffer into a multisampled draw
+     * framebuffer is INVALID_OPERATION, so a non-zero result rules the blit route out.
+     * Queried once per context by the renderer, never per frame.
+     *
+     * @returns {number}
+     */
+    getDefaultFramebufferSamples() {
+        const gl = this.gl;
+        const previous = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const samples = gl.getParameter(gl.SAMPLES) || 0;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, previous);
+        const attributes = gl.getContextAttributes && gl.getContextAttributes();
+        return samples || (attributes && attributes.antialias ? 1 : 0);
+    }
+
+    /**
+     * Whether {@link probePresentationBlit} can run now (the shared canvas needs three rows).
+     * @param {HTMLCanvasElement} src
+     * @returns {boolean}
+     */
+    canProbePresentationBlit(src) {
+        return this._canBlitThrough(src, 1, 3);
+    }
+
+    /**
+     * One-time check that the blit route reproduces what readPixels would: blit three 1x1
+     * targets cleared to opaque red, premultiplied half-alpha red and opaque blue into default
+     * framebuffer rows 0..2, draw them onto a scratch canvas and read them back once. Verifies
+     * orientation, the premultiplied interpretation and that the blit is legal on this context.
+     *
+     * @param {HTMLCanvasElement} src shared WebGL canvas
+     * @returns {{ok: boolean, reason: string|null}}
+     */
+    probePresentationBlit(src) {
+        const gl = this.gl;
+        const scratch = this._presentationTransferScratch;
+        const colors = [[1, 0, 0, 1], [0.5, 0, 0, 0.5], [0, 0, 1, 1]];
+        const targets = [];
+        // The probe runs mid-frame on a context other code may share: target creation and clears
+        // change the clear color and the active unit's TEXTURE_2D binding, so restore them, and keep
+        // an outside scissor rect from clipping the 1x1 clears.
+        const savedClearColor = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+        const savedActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
+        const savedTexture2D = gl.getParameter(gl.TEXTURE_BINDING_2D);
+        const savedScissor = gl.isEnabled(gl.SCISSOR_TEST);
+        if (savedScissor) {
+            gl.disable(gl.SCISSOR_TEST);
+        }
+        try {
+            if (!scratch.probeCtx) {
+                scratch.probeCanvas = document.createElement("canvas");
+                scratch.probeCanvas.width = 1;
+                scratch.probeCanvas.height = 3;
+                scratch.probeCtx = scratch.probeCanvas.getContext("2d", { willReadFrequently: true });
+            }
+            if (!scratch.probeCtx) {
+                return { ok: false, reason: "no 2d context for the probe canvas" };
+            }
+
+            // Drain errors raised by earlier, unrelated calls so they are not blamed on the blit.
+            for (let i = 0; i < 16 && gl.getError() !== gl.NO_ERROR; i++) { /* drain */ }
+
+            colors.forEach((rgba, row) => {
+                const target = this._createColorTarget(1, 1, { filter: gl.NEAREST });
+                targets.push(target);
+                this._clearColorTarget(target, rgba);
+                this._blitTargetToDefaultFramebuffer(target, 1, 1, 0, row);
+            });
+            const glError = gl.getError();
+            if (glError !== gl.NO_ERROR) {
+                return { ok: false, reason: `blitFramebuffer raised GL error 0x${glError.toString(16)}` };
+            }
+
+            this._drawDefaultFramebufferRegion(scratch.probeCtx, src, 1, 3);
+            const data = scratch.probeCtx.getImageData(0, 0, 1, 3).data;
+            // canvas top row = GL row 2 (blue), middle = half red, bottom = GL row 0 (red)
+            const expected = [[0, 0, 255, 255], [255, 0, 0, 128], [255, 0, 0, 255]];
+            const labels = ["blue (GL row 2)", "half-alpha red (GL row 1)", "red (GL row 0)"];
+            for (let row = 0; row < 3; row++) {
+                const tolerance = row === 1 ? 4 : 2;
+                for (let c = 0; c < 4; c++) {
+                    if (Math.abs(data[row * 4 + c] - expected[row][c]) > tolerance) {
+                        const got = Array.from(data.subarray(row * 4, row * 4 + 4));
+                        return { ok: false, reason: `${labels[row]} read back as [${got.join(",")}]` };
+                    }
+                }
+            }
+            return { ok: true, reason: null };
+        } catch (e) {
+            return { ok: false, reason: e && e.message ? e.message : String(e) };
+        } finally {
+            targets.forEach(target => this._destroyColorTarget(target));
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.activeTexture(savedActiveTexture);
+            gl.bindTexture(gl.TEXTURE_2D, savedTexture2D);
+            gl.clearColor(savedClearColor[0], savedClearColor[1], savedClearColor[2], savedClearColor[3]);
+            if (savedScissor) {
+                gl.enable(gl.SCISSOR_TEST);
+            }
+        }
+    }
+
+    /**
      * Copy a color target into a presentation canvas through readPixels.
+     *
+     * The target holds premultiplied colour (the second pass blends ONE, ONE_MINUS_SRC_ALPHA) but
+     * putImageData expects straight alpha, so the copy unpremultiplies while it flips rows;
+     * otherwise translucent pixels come out darker than on the private and blit routes.
      *
      * @private
      * @param {object} target
@@ -717,13 +937,40 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
         gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, scratch.pixels);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+        const src = scratch.pixels;
+        const dst = scratch.flippedPixels;
         for (let y = 0; y < height; y++) {
             const srcStart = (height - 1 - y) * rowLength;
             const dstStart = y * rowLength;
-            scratch.flippedPixels.set(
-                scratch.pixels.subarray(srcStart, srcStart + rowLength),
-                dstStart
-            );
+            // Rows with only opaque/transparent pixels need no unpremultiply: copy them whole.
+            let translucent = false;
+            for (let i = srcStart + 3; i < srcStart + rowLength; i += 4) {
+                if (src[i] !== 0 && src[i] !== 255) {
+                    translucent = true;
+                    break;
+                }
+            }
+            if (!translucent) {
+                dst.set(src.subarray(srcStart, srcStart + rowLength), dstStart);
+                continue;
+            }
+            for (let i = 0; i < rowLength; i += 4) {
+                const s = srcStart + i;
+                const d = dstStart + i;
+                const a = src[s + 3];
+                if (a === 255 || a === 0) {
+                    dst[d] = src[s];
+                    dst[d + 1] = src[s + 1];
+                    dst[d + 2] = src[s + 2];
+                } else {
+                    // Uint8ClampedArray rounds and clamps to [0,255].
+                    const scale = 255 / a;
+                    dst[d] = src[s] * scale;
+                    dst[d + 1] = src[s + 1] * scale;
+                    dst[d + 2] = src[s + 2] * scale;
+                }
+                dst[d + 3] = a;
+            }
         }
 
         scratch.imageData.data.set(scratch.flippedPixels);
@@ -791,27 +1038,6 @@ ${this.getShaderLayerStencilPassCode(shaderLayer)}
     }
 
     getBlendingFunction(name) {
-        const h = `
-float blendLum(vec3 c){return dot(c,vec3(.3,.59,.11));}
-float blendSat(vec3 c){return max(max(c.r,c.g),c.b)-min(min(c.r,c.g),c.b);}
-vec3 clipColor(vec3 c){
-    float l=blendLum(c),n=min(min(c.r,c.g),c.b),x=max(max(c.r,c.g),c.b);
-    if(n<0.) c=l+((c-l)*l)/(l-n);
-    if(x>1.) c=l+((c-l)*(1.-l))/(x-l);
-    return c;
-}
-vec3 setLum(vec3 c,float l){return clipColor(c+vec3(l-blendLum(c)));}
-vec3 setSat(vec3 c,float s){
-    float mn=min(min(c.r,c.g),c.b),mx=max(max(c.r,c.g),c.b);
-    if(mx<=mn) return vec3(0.);
-    if(c.r<=c.g&&c.g<=c.b) return vec3(0.,((c.g-mn)*s)/(mx-mn),s);
-    if(c.r<=c.b&&c.b<=c.g) return vec3(0.,s,((c.b-mn)*s)/(mx-mn));
-    if(c.g<=c.r&&c.r<=c.b) return vec3(((c.r-mn)*s)/(mx-mn),0.,s);
-    if(c.g<=c.b&&c.b<=c.r) return vec3(s,0.,((c.b-mn)*s)/(mx-mn));
-    if(c.b<=c.r&&c.r<=c.g) return vec3(((c.r-mn)*s)/(mx-mn),s,0.);
-    return vec3(s,((c.g-mn)*s)/(mx-mn),0.);
-}`;
-
         return {
             mask: `
 if (close(fg.a, 0.0)) return vec4(.0);
@@ -919,22 +1145,18 @@ if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, bg.rgb + fg.rgb - 2.0 * bg.rgb * fg.rgb);`,
 
             hue: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(setSat(fg.rgb, blendSat(bg.rgb)), blendLum(bg.rgb)), 0.0, 1.0));`,
 
             saturation: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(setSat(bg.rgb, blendSat(fg.rgb)), blendLum(bg.rgb)), 0.0, 1.0));`,
 
             color: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(fg.rgb, blendLum(bg.rgb)), 0.0, 1.0));`,
 
             luminosity: `
-${h}
 if (!stencilPasses) return bg;
 return blendAlpha(fg, bg, clamp(setLum(bg.rgb, blendLum(fg.rgb)), 0.0, 1.0));`,
         }[name];
@@ -2159,6 +2381,27 @@ vec4 blend_source_over(vec4 fg, vec4 bg) {
     return pre_fg + bg * (1.0 - pre_fg.a);
 }
 
+// Non-separable blend mode helpers (hue, saturation, color, luminosity)
+float blendLum(vec3 c){return dot(c,vec3(.3,.59,.11));}
+float blendSat(vec3 c){return max(max(c.r,c.g),c.b)-min(min(c.r,c.g),c.b);}
+vec3 clipColor(vec3 c){
+    float l=blendLum(c),n=min(min(c.r,c.g),c.b),x=max(max(c.r,c.g),c.b);
+    if(n<0.) c=l+((c-l)*l)/(l-n);
+    if(x>1.) c=l+((c-l)*(1.-l))/(x-l);
+    return c;
+}
+vec3 setLum(vec3 c,float l){return clipColor(c+vec3(l-blendLum(c)));}
+vec3 setSat(vec3 c,float s){
+    float mn=min(min(c.r,c.g),c.b),mx=max(max(c.r,c.g),c.b);
+    if(mx<=mn) return vec3(0.);
+    if(c.r<=c.g&&c.g<=c.b) return vec3(0.,((c.g-mn)*s)/(mx-mn),s);
+    if(c.r<=c.b&&c.b<=c.g) return vec3(0.,s,((c.b-mn)*s)/(mx-mn));
+    if(c.g<=c.r&&c.r<=c.b) return vec3(((c.r-mn)*s)/(mx-mn),0.,s);
+    if(c.g<=c.b&&c.b<=c.r) return vec3(s,0.,((c.b-mn)*s)/(mx-mn));
+    if(c.b<=c.r&&c.r<=c.g) return vec3(((c.r-mn)*s)/(mx-mn),s,0.);
+    return vec3(s,((c.g-mn)*s)/(mx-mn),0.);
+}
+
 // CUSTOM BLEND FUNCTIONS
 
 ${customBlendFunctions ? customBlendFunctions : "    // No custom blend functions here..."}
@@ -2583,7 +2826,8 @@ ${mainBody}
         const key = this.context && this.context.secondPassProgramKey;
         Promise.resolve().then(() => {
             this._relinkScheduled = false;
-            if (renderer && key !== undefined) {
+            // The renderer may have been destroyed in the same tick that scheduled the relink.
+            if (renderer && !renderer._destroyed && key !== undefined) {
                 try {
                     renderer.registerProgram(null, key);
                 } catch (e) {
@@ -2820,25 +3064,29 @@ $.FlexRenderer.WebGL20.FirstPassProgram = class extends $.FlexRenderer.WGLProgra
         // mantissa, silently undoing the float target. Stays mediump for RGBA8.
         const targetPrecision = this.context.colorTargetGlslPrecision;
 
-        // Vertex stage matches the fragment stage: mismatched precision on the shared
-        // varyings is a link error on some drivers.
+        // Geometry always runs in highp, independent of targetPrecision. Drivers that honor
+        // mediump as real fp16 (e.g. Mesa radeonsi via ANGLE's GLES backend) otherwise place
+        // tile corners several framebuffer pixels off, leaving transparent seams between tiles.
+        // The shared uniform and the varyings are declared highp explicitly in both stages:
+        // precision mismatches on them are link errors, and the fragment default float
+        // precision follows targetPrecision.
         this.vertexShader = `#version 300 es
 precision mediump int;
-precision ${targetPrecision} float;
+precision highp float;
 
 layout(location = 0) in mat3 a_transform_matrix;
 // Generic payload args. Used for texture positions, vector positions and colors.
 layout(location = 4) in vec4 a_payload0; // first 4 raster texture coords or vector positions and atlas texture ID (x, y, z, textureId)
 layout(location = 5) in vec4 a_payload1; // second 4 raster texture coords or vector colors or icon parameters (x, y, width, height)
 
-uniform vec2 u_renderClippingParams;
+uniform highp vec2 u_renderClippingParams;
 uniform mat3 u_geomMatrix;
 
 flat out int instance_id;
-out vec2 v_texture_coords;
-out float v_vecDepth;
+out highp vec2 v_texture_coords;
+out highp float v_vecDepth;
 flat out int v_textureId;
-out vec4 v_vecColor;
+out highp vec4 v_vecColor;
 
 const vec3 viewport[4] = vec3[4] (
     vec3(0.0, 1.0, 1.0),
@@ -2876,13 +3124,13 @@ precision ${targetPrecision} float;
 precision ${targetPrecision} sampler2D;
 precision ${targetPrecision} sampler2DArray;
 
-uniform vec2 u_renderClippingParams;
+uniform highp vec2 u_renderClippingParams;
 
 flat in int instance_id;
-in vec2 v_texture_coords;
-in float v_vecDepth;
+in highp vec2 v_texture_coords;
+in highp float v_vecDepth;
 flat in int v_textureId;
-in vec4 v_vecColor;
+in highp vec4 v_vecColor;
 
 uniform sampler2DArray u_textures[${this._maxTextures}];
 uniform int u_tileLayer;
@@ -2892,6 +3140,10 @@ uniform int u_tileLayer;
 // unorm sources preserves the old [0,1] contract for them, so an 8-bit background mixed with a
 // float layer behaves exactly as before, while float data passes through untouched.
 uniform float u_clampColorOutput;
+
+// 1 when tiles drawn below their texture resolution should keep the max over the texel footprint
+// (renderer minificationFilter "max"), so sparse bright features survive zooming out.
+uniform int u_minifyMax;
 
 ${this.atlas.getFragmentShaderDefinition()}
 
@@ -2907,6 +3159,30 @@ float fr_segment_distance(vec2 p, vec2 a, vec2 b) {
     float denom = max(dot(ba, ba), 0.000001);
     float h = clamp(dot(pa, ba) / denom, 0.0, 1.0);
     return length(pa - ba * h);
+}
+
+vec4 fr_sample_tile(sampler2DArray tex, vec2 uv, float layer) {
+    // Derivatives before any non-uniform branch.
+    vec2 duv = fwidth(uv);
+    vec4 color = texture(tex, vec3(uv, layer));
+    if (u_minifyMax == 0) {
+        return color;
+    }
+    vec2 footprint = duv * vec2(textureSize(tex, 0).xy);
+    int n = int(clamp(ceil(max(footprint.x, footprint.y)), 1.0, 4.0));
+    if (n <= 1) {
+        return color;
+    }
+    vec2 stepUv = duv / float(n);
+    vec2 base = uv - 0.5 * duv + 0.5 * stepUv;
+    for (int y = 0; y < 4; y++) {
+        if (y >= n) break;
+        for (int x = 0; x < 4; x++) {
+            if (x >= n) break;
+            color = max(color, texture(tex, vec3(base + stepUv * vec2(float(x), float(y)), layer)));
+        }
+    }
+    return color;
 }
 
 bool fr_diagnostic_pixel(vec2 p) {
@@ -2940,7 +3216,7 @@ void main() {
             if (i == instance_id) {
                  switch (i) {
     ${ this.printN(x =>
-                    `case ${x}: outputColor = texture(u_textures[${x}], vec3(v_texture_coords, float(u_tileLayer))); break;`,
+                    `case ${x}: outputColor = fr_sample_tile(u_textures[${x}], v_texture_coords, float(u_tileLayer)); break;`,
                 this._maxTextures, "                ")}
                  }
                  break;
@@ -3023,6 +3299,7 @@ void main() {
         this._renderClipping = gl.getUniformLocation(program, "u_renderClippingParams");
         this._tileLayerLoc = gl.getUniformLocation(program, "u_tileLayer");
         this._clampColorOutputLoc = gl.getUniformLocation(program, "u_clampColorOutput");
+        this._minifyMaxLoc = gl.getUniformLocation(program, "u_minifyMax");
 
         // Alias names to avoid confusion
         this._positionsBuffer = gl.getAttribLocation(program, "a_payload0");
@@ -3139,6 +3416,11 @@ void main() {
             this.created(0, 0);
         }
 
+        // A tile's own minificationFilter wins; unset inherits the renderer value.
+        const renderer = this.context.renderer;
+        const rendererMinifyMax = !!(renderer.getMinificationFilter && renderer.getMinificationFilter() === "max");
+        const tileMinifyMax = tile => (tile.minificationFilter ? tile.minificationFilter === "max" : rendererMinifyMax);
+
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.offScreenBuffer);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.stencilClipBuffer);
 
@@ -3253,16 +3535,20 @@ void main() {
                 while (currentIndex < tileCount) {
                     const maxBatchSize = Math.min(this._maxTextures, tileCount - currentIndex);
 
-                    // The [0,1] clamp is a per-draw uniform, so a batch must be homogeneous in
-                    // source kind. Tiles of one source always are, so this normally never splits.
+                    // The [0,1] clamp and the minification filter are per-draw uniforms, so a batch
+                    // must be homogeneous in both. Tiles of one source always are, so this normally
+                    // splits only at source boundaries.
                     const batchNormalized = rasterTiles[currentIndex].normalized !== false;
+                    const batchMinifyMax = tileMinifyMax(rasterTiles[currentIndex]);
                     let batchSize = 1;
                     while (batchSize < maxBatchSize &&
-                        (rasterTiles[currentIndex + batchSize].normalized !== false) === batchNormalized) {
+                        (rasterTiles[currentIndex + batchSize].normalized !== false) === batchNormalized &&
+                        tileMinifyMax(rasterTiles[currentIndex + batchSize]) === batchMinifyMax) {
                         batchSize++;
                     }
 
                     gl.uniform1f(this._clampColorOutputLoc, batchNormalized ? 1.0 : 0.0);
+                    gl.uniform1i(this._minifyMaxLoc, batchMinifyMax ? 1 : 0);
 
                     for (let i = 0; i < batchSize; i++) {
                         const tile = rasterTiles[currentIndex + i];

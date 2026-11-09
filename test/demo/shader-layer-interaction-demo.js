@@ -68,7 +68,7 @@ const viewer = window.viewer = OpenSeadragon({
         top: 0,
         right: 0,
         bottom: 50
-    }
+    },
 });
 
 IMAGE_SOURCES.forEach((source) => {

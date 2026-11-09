@@ -34,9 +34,14 @@ module.exports = function(grunt) {
             "src/flex-modules/source-sampling.js",
             "src/flex-modules/threshold-mask.js",
             "src/flex-modules/colorize.js",
+            "src/flex-modules/fisheye-lens.js",
+            "src/flex-modules/gamma.js",
+            "src/flex-modules/heatmap.js",
+            "src/flex-modules/invert.js",
             "src/flex-modules/scalar-mask-modules.js",
             "src/flex-modules/classification-colormap-modules.js",
             "src/flex-modules/neighborhood-edge-modules.js",
+            "src/flex-module-graph-editor.js",
             "src/flex-controls/basic-controls.js",
             "src/flex-controls/advanced-controls.js",
             "src/flex-controls/icon-sets/icon-codepoints.generated.js",
@@ -46,7 +51,7 @@ module.exports = function(grunt) {
             "src/flex-webgl2.js",
             "src/flex-webgl2-atlas.js",
             "src/flex-drawer.js",
-            "src/workers/http-bridge.main.js",
+            "src/tile-sources/workers/http-bridge.main.js",
             "src/flex-standalone.js",
             "src/flex-layers/adaptive-threshold.js",
             "src/flex-layers/bipolar-heatmap.js",
@@ -60,6 +65,7 @@ module.exports = function(grunt) {
             "src/flex-layers/heatmap.js",
             "src/flex-layers/iconmap.js",
             "src/flex-layers/interaction-debug.js",
+            "src/flex-layers/modular.js",
             "src/flex-layers/patternmap.js",
             "src/flex-layers/sobel.js",
             "src/flex-layers/stain-separation.js",
@@ -68,27 +74,31 @@ module.exports = function(grunt) {
             "src/flex-layers/time-series.js",
             "src/flex-layers/channel.js",
             "src/flex-layers/channel-series.js",
-            "src/mvt-tile-source.js",
-            "src/fabric-tile-source.js",
-            "src/geojson-tile-source.js",
+            "src/tile-sources/blank-tile-source.js",
+            "src/tile-sources/mvt-tile-source.js",
+            "src/tile-sources/fabric-tile-source.js",
+            "src/tile-sources/geojson-tile-source.js",
             "src/configurator.js"
         ],
+        shaderModuleGraphEditorDeps = [
+            "src/vendor/litegraph.min.js",
+        ],
         mvtWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
             "src/vendor/pbf.min.js",
             "src/vendor/vector-tile.min.js",
             "src/vendor/earcut.min.js",
-            "src/workers/mvt-worker.core.js"
+            "src/tile-sources/workers/http-bridge.worker.js",
+            "src/tile-sources/workers/mvt-worker.core.js"
         ],
         fabricWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
-            "src/workers/fabric-worker.core.js"
+            "src/tile-sources/workers/http-bridge.worker.js",
+            "src/tile-sources/workers/fabric-worker.core.js"
         ],
         geojsonWorkerDeps = [
-            "src/workers/http-bridge.worker.js",
             "src/vendor/earcut.min.js",
-            "src/workers/geojson-worker.core.js"
+            "src/tile-sources/workers/http-bridge.worker.js",
+            "src/tile-sources/workers/geojson-worker.core.js"
         ];
 
     const banner = "//! <%= pkg.name %> <%= pkg.version %>\n" +
@@ -108,7 +118,7 @@ module.exports = function(grunt) {
     }
 
     // --port lets the suite run when something else already holds the default (docker, WSL, ...)
-    const testPort = grunt.option('port') || 8888;
+    const testPort = Number(grunt.option('port')) || 8888;
 
     // ----------
     // Project configuration.
@@ -216,12 +226,14 @@ module.exports = function(grunt) {
                 dest: "build/openseadragon/geojson-worker.inline.js"
             },
             dist: {
-                // keep your existing dist concat; just ensure the inline is appended:
-                src: ["<banner>"].concat(sources).concat([
-                    "build/openseadragon/mvt-worker.inline.js",
-                    "build/openseadragon/fabric-worker.inline.js",
-                    "build/openseadragon/geojson-worker.inline.js"
-                ]),
+                src: ["<banner>"]
+                    .concat(shaderModuleGraphEditorDeps)
+                    .concat(sources)
+                    .concat([
+                        "build/openseadragon/mvt-worker.inline.js",
+                        "build/openseadragon/fabric-worker.inline.js",
+                        "build/openseadragon/geojson-worker.inline.js"
+                    ]),
                 dest: distribution
             }
         },

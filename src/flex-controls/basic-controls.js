@@ -50,6 +50,82 @@ $.FlexRenderer.UIControls = class {
     }
 
     /**
+     * Return lightweight metadata for a registered UI control type.
+     *
+     * This is used by editor/configurator surfaces to list candidate control
+     * types without constructing live controls. It intentionally exposes only
+     * the fields needed for type selection and basic parameter editing.
+     *
+     * @param {string} type registered control type
+     * @returns {{
+     *   type: string,
+     *   kind: "simple"|"class",
+     *   glType: string,
+     *   defaults: object,
+     *   docs: object|null
+     * }|null}
+     */
+    static describeType(type) {
+        const simple = this._items[type];
+
+        if (simple) {
+            const docs = typeof simple.docs === "function" ?
+                simple.docs() :
+                (simple.docs || null);
+
+            return {
+                type: type,
+                kind: "simple",
+                glType: simple.glType || (docs && docs.glType) || "void",
+                defaults: typeof simple.defaults === "function" ?
+                    $.extend(true, {}, simple.defaults()) :
+                    {},
+                docs: docs ? $.extend(true, {}, docs) : null
+            };
+        }
+
+        const ControlClass = this._impls[type];
+
+        if (ControlClass) {
+            const docs = typeof ControlClass.docs === "function" ?
+                ControlClass.docs() :
+                (ControlClass.docs || null);
+
+            const defaults = {};
+
+            if (docs && Array.isArray(docs.parameters)) {
+                for (const param of docs.parameters) {
+                    if (param && typeof param.name === "string" && Object.prototype.hasOwnProperty.call(param, "default")) {
+                        defaults[param.name] = $.extend(true, {}, {value: param.default}).value;
+                    }
+                }
+            }
+
+            return {
+                type: type,
+                kind: "class",
+                glType: (docs && docs.glType) || ControlClass.glType || "void",
+                defaults: defaults,
+                docs: docs ? $.extend(true, {}, docs) : null
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Return lightweight metadata for all registered UI control types.
+     *
+     * @returns {object[]}
+     */
+    static describeTypes() {
+        return this.types()
+            .map(type => this.describeType(type))
+            .filter(Boolean)
+            .sort((a, b) => a.type.localeCompare(b.type));
+    }
+
+    /**
      * Build UI control object based on given parameters
      * @param {OpenSeadragon.FlexRenderer.ShaderLayer} owner owner of the control, shaderLayer
      * @param {string} controlName name used for the control (eg.: opacity)
@@ -82,10 +158,14 @@ $.FlexRenderer.UIControls = class {
         // hints, titles) are not transferable to a different control type and would corrupt the new control's
         // expected param shape. Drop defaultParams in that case and let the chosen control's own `supports`
         // fill in defaults via getParams(). requiredParams is layer-enforced and stays.
+        // Exception: the value domain (min/max/step) is the layer's statement about what the parameter
+        // means, not type-specific config. It is carried over when the new control has the same glType,
+        // otherwise normalize() would silently change units (e.g. opacity 0.5 in a 0..100 range = 0.005).
         const userType = customParams && customParams.type;
         const typeOverridden = userType && originalType && userType !== originalType;
         const params = typeOverridden
-            ? $.extend(true, {}, customParams, requiredParams)
+            ? $.extend(true, {}, this._carriedDomain(controlName, originalType, userType, defaultParams),
+                customParams, requiredParams)
             : $.extend(true, {}, defaultParams, customParams, requiredParams);
 
         if (!this._items[params.type]) {
@@ -119,6 +199,40 @@ $.FlexRenderer.UIControls = class {
         }
     }
 
+    /**
+     * Pick the value domain (min/max/step) of the original control to keep when its type is overridden.
+     * Carried only between controls of the same glType; otherwise warns that the domain is dropped.
+     * @param {string} controlName
+     * @param {string} originalType
+     * @param {string} newType
+     * @param {object} defaultParams
+     * @return {object}
+     */
+    static _carriedDomain(controlName, originalType, newType, defaultParams) {
+        const domain = {};
+        for (const key of ["min", "max", "step"]) {
+            if (defaultParams[key] !== undefined) {
+                domain[key] = defaultParams[key];
+            }
+        }
+        if (!Object.keys(domain).length) {
+            return domain;
+        }
+
+        const original = this.describeType(originalType),
+            replacement = this.describeType(newType);
+        if (!original || !replacement) {
+            // unknown type: build() falls back to the original type, which merges defaultParams again
+            return {};
+        }
+        if (original.glType === replacement.glType) {
+            return domain;
+        }
+        console.warn(`Control '${controlName}': type '${originalType}' overridden by '${newType}' with a different ` +
+            `GL type, the value domain ${JSON.stringify(domain)} is dropped and the new control's defaults apply.`);
+        return {};
+    }
+
     static _buildFallback(newType, originalType, owner, controlName, controlObject, controlId, customParams) {
         //repeated check when building object from type
 
@@ -137,7 +251,8 @@ $.FlexRenderer.UIControls = class {
      * Register simple UI element by providing necessary object
      * implementation:
      *  { defaults: function() {...}, // object with all default values for all supported parameters
-         html: function(uniqueId, params, classes="", css="") {...}, //how the HTML UI controls look like
+         html: function(uniqueId, params, classes="", css="", options={}) {...}, //how the HTML UI controls look like,
+                                                options.inputClasses: see UIControls.resolveInputClasses
         glUniformFunName: function() {...}, //what function webGL uses to pass this attribute to GPU
         decode: function(fromValue) {...}, //parse value obtained from HTML controls into something
                                                 gl[glUniformFunName()](...) can pass to GPU
@@ -201,39 +316,260 @@ $.FlexRenderer.UIControls = class {
         return values.filter(value => typeof value === "string" && value.trim()).join(" ").trim();
     }
 
+    /**
+     * Escape a string for safe insertion into HTML text or a quoted attribute.
+     * @param {*} value
+     * @return {string}
+     */
+    static escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return "";
+        }
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    /**
+     * Copy of the per-role default classes appended to the BEM classes of emitted inputs and
+     * buttons. Roles: number, range, color, bool, select, colormap, textarea, button,
+     * image-number, image-file, image-upload, icon-trigger, icon-close, icon-query.
+     * Defaults target DaisyUI; call setInputClassDefaults(null) on hosts that do not use it.
+     * @return {Object<string, string>}
+     */
+    static get inputClassDefaults() {
+        return Object.assign({}, this._inputClassDefaults);
+    }
+
+    /**
+     * Replace or merge the per-role default input classes.
+     * @param {Object<string, string>|null} map role -> class string; null clears every role to ""
+     * @param {object} [options]
+     * @param {boolean} [options.merge=true] merge into the current map rather than replacing it
+     */
+    static setInputClassDefaults(map, { merge = true } = {}) {
+        if (map === null) {
+            const cleared = {};
+            Object.keys(this._inputClassDefaults || {}).forEach(role => {
+                cleared[role] = "";
+            });
+            this._inputClassDefaults = cleared;
+            return;
+        }
+        const next = merge ? Object.assign({}, this._inputClassDefaults) : {};
+        Object.keys(map || {}).forEach(role => {
+            const value = map[role];
+            next[role] = typeof value === "string" ? value : "";
+        });
+        this._inputClassDefaults = next;
+    }
+
+    /**
+     * Resolve the classes for an input of the given role.
+     * @param {string} role input role (see inputClassDefaults)
+     * @param {string|Object<string, string|null>} [inputClasses] per-call override:
+     *   a string is appended to the role default; an object with an own key for the role
+     *   replaces the default (null or "" clears it); anything else keeps the default
+     * @return {string}
+     */
+    static resolveInputClasses(role, inputClasses = undefined) {
+        const defaults = this._inputClassDefaults || {};
+        const base = typeof defaults[role] === "string" ? defaults[role] : "";
+        if (typeof inputClasses === "string") {
+            return this.joinClasses(base, inputClasses);
+        }
+        if (inputClasses && typeof inputClasses === "object" &&
+                Object.prototype.hasOwnProperty.call(inputClasses, role)) {
+            const value = inputClasses[role];
+            return typeof value === "string" ? value.trim() : "";
+        }
+        return base;
+    }
+
+    /**
+     * Set the translator used for the human-readable strings controls emit.
+     * @param {function(string, string, object):string|null} fn called as fn(key, fallback, vars);
+     *   a non-string result falls back to the English default. null removes the translator.
+     */
+    static setTranslator(fn) {
+        this._translator = typeof fn === "function" ? fn : null;
+    }
+
+    /**
+     * Set the reporter that receives control- and layer-level fallbacks (a rejected cache value,
+     * an invalid palette, a control that failed to build or init, a layer hidden for an assembly
+     * error). Installed, it replaces the console output; a reporter that throws falls back to it.
+     * Renderers additionally raise `shader-warning` with the same details.
+     * @param {function(string, string, object):void|null} fn called as fn(level, code, details),
+     *   level "warn" | "error"; details carry {layerId, shaderType, control, code, level, message, ...}.
+     *   null removes the reporter.
+     */
+    static setReporter(fn) {
+        this._reporter = typeof fn === "function" ? fn : null;
+    }
+
+    /**
+     * Report a fallback through the reporter, or the console when none is set.
+     * @param {string} level "warn" | "error"
+     * @param {string} code stable identifier, e.g. "palette-invalid"
+     * @param {object} [details]
+     */
+    static report(level, code, details = {}) {
+        if (this._reporter) {
+            try {
+                this._reporter(level, code, details);
+                return;
+            } catch (e) {
+                console.warn(`FlexRenderer.UIControls: reporter failed for '${code}'.`, e);
+            }
+        }
+        const out = $.console || console;
+        const log = level === "error" ? out.error : out.warn;
+        const args = [`[FlexRenderer] ${details.message || code}`];
+        if (details.value !== undefined) {
+            args.push(details.value);
+        }
+        if (details.error !== undefined) {
+            args.push(details.error);
+        }
+        log.apply(out, args);
+    }
+
+    /**
+     * Translate a control string. Precedence: overrides[key] (per-control params.strings),
+     * then the translator, then fallback. `{name}` placeholders are substituted from vars.
+     * The result is plain text: escape it before inserting it into HTML.
+     * @param {string} key
+     * @param {string} fallback English default
+     * @param {object} [vars]
+     * @param {object} [overrides]
+     * @return {string}
+     */
+    static t(key, fallback, vars = undefined, overrides = undefined) {
+        let text;
+        if (overrides && typeof overrides === "object" &&
+                Object.prototype.hasOwnProperty.call(overrides, key) && typeof overrides[key] === "string") {
+            text = overrides[key];
+        } else if (this._translator) {
+            try {
+                const translated = this._translator(key, fallback, vars || {});
+                if (typeof translated === "string") {
+                    text = translated;
+                }
+            } catch (e) {
+                console.warn(`FlexRenderer.UIControls: translator failed for '${key}', using the default text.`, e);
+            }
+        }
+        if (text === undefined) {
+            text = fallback === undefined || fallback === null ? "" : String(fallback);
+        }
+        if (vars && typeof vars === "object") {
+            text = text.replace(/\{(\w+)\}/g, (match, name) =>
+                (Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match));
+        }
+        return text;
+    }
+
     static styleAttr(css = "") {
         return css && String(css).trim() ? ` style="${css}"` : "";
+    }
+
+    /**
+     * True when a control's title may be inserted as markup. Needs both the host-level
+     * opt-in UIControls.allowHtmlTitles (never read from shader config, so untrusted config
+     * cannot enable it) and a strict boolean `params.titleHtml === true` on the control.
+     * @param {object} params
+     * @return {boolean}
+     */
+    static isHtmlTitle(params) {
+        return $.FlexRenderer.UIControls.allowHtmlTitles === true && !!params && params.titleHtml === true;
+    }
+
+    /**
+     * Title argument for renderControl()/renderTitle() from control params. Titles are text and
+     * get escaped; see isHtmlTitle() for when a title is inserted as markup (e.g. an icon).
+     * @param {object} params
+     * @return {string|{html: string}|undefined}
+     */
+    static titleFrom(params) {
+        const title = params && params.title;
+        return title && this.isHtmlTitle(params) ? { html: String(title) } : title;
     }
 
     static renderTitle(title, type) {
         if (!title) {
             return "";
         }
-        return `<span class="er-control__title er-control__title--${type}">${title}</span>`;
+        const content = typeof title === "object" && typeof title.html === "string" ?
+            title.html : this.escapeHtml(title);
+        return `<span class="er-control__title er-control__title--${type}">${content}</span>`;
     }
 
     static renderControl(type, title, bodyHtml, classes = "", columns = undefined, extraAttrs = "") {
         const resolvedColumns = Number(columns) || (title ? 2 : 1);
-        return `<div class="${this.joinClasses("er-control", `er-control--${type}`, classes)}" data-columns="${resolvedColumns}" ${extraAttrs}>${this.renderTitle(title, type)}<div class="er-control__body
-  er-control__body--${type}">${bodyHtml}</div></div>`;
+        const attrs = extraAttrs && String(extraAttrs).trim() ? ` ${String(extraAttrs).trim()}` : "";
+        return `<div class="${this.joinClasses("er-control", `er-control--${type}`, classes)}" data-columns="${resolvedColumns}"${attrs}>${this.renderTitle(title, type)}<div class="er-control__body er-control__body--${type}">${bodyHtml}</div></div>`;
     }
 
-    static renderInput(inputTag, type, uniqueId, attrs = "", css = "") {
-        return `<${inputTag} id="${uniqueId}" class="er-control__input er-control__input--${type}"${attrs}${this.styleAttr(css)}>`;
+    /**
+     * Render an input opening tag with the BEM classes plus any extra classes.
+     * @param {string} inputTag tag name (input, select, textarea)
+     * @param {string} type BEM modifier (er-control__input--<type>)
+     * @param {string} uniqueId DOM id
+     * @param {string} [attrs] extra attributes, each with a leading space
+     * @param {string} [css] inline style
+     * @param {string} [extraClasses] classes appended after the BEM classes (role defaults)
+     * @return {string}
+     */
+    static renderInput(inputTag, type, uniqueId, attrs = "", css = "", extraClasses = "") {
+        const cls = this.joinClasses("er-control__input", `er-control__input--${type}`, extraClasses);
+        return `<${inputTag} id="${uniqueId}" class="${cls}"${attrs}${this.styleAttr(css)}>`;
     }
 };
 
+// Per-role default classes appended to emitted inputs/buttons (DaisyUI flavoured). Assigned
+// after the class body: the toolchain targets ES2018, which has no static class fields.
+$.FlexRenderer.UIControls._inputClassDefaults = {
+    number: "input input-bordered input-sm",
+    range: "range range-sm",
+    color: "",
+    bool: "checkbox checkbox-sm",
+    select: "select select-bordered select-sm",
+    colormap: "select select-bordered select-sm",
+    textarea: "textarea textarea-bordered textarea-sm",
+    button: "btn btn-sm btn-outline",
+    "image-number": "input input-bordered input-sm",
+    "image-file": "file-input file-input-bordered file-input-sm",
+    "image-upload": "btn btn-sm btn-outline",
+    "icon-trigger": "btn btn-sm btn-square btn-outline",
+    "icon-close": "btn btn-ghost btn-xs btn-circle",
+    "icon-query": "input input-bordered input-sm"
+};
+$.FlexRenderer.UIControls._translator = null;
+
 // Definitions of possible controls' types, simple functionalities:
+/**
+ * Host opt-in for `titleHtml: true` control titles (see UIControls.isHtmlTitle). Off by default:
+ * enable only when every shader configuration the page renders is trusted.
+ * @type {boolean}
+ */
+$.FlexRenderer.UIControls.allowHtmlTitles = false;
+
 $.FlexRenderer.UIControls._items = {
     number: {
         defaults: function() {
             return {title: "Number", interactive: true, default: 0, min: 0, max: 100, step: 1};
         },
         // returns string corresponding to html code for injection
-        html: function(uniqueId, params, classes = "", css = "") {
-            const input = `<input class="er-control__input er-control__input--number" min="${params.min}" max="${params.max}"
-step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("number", params.title, input, classes, params.title ? 2 : 1);
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const input = UI.renderInput("input", "number", uniqueId,
+                ` type="number" min="${params.min}" max="${params.max}" step="${params.step}"`,
+                css, UI.resolveInputClasses("number", options && options.inputClasses));
+            return UI.renderControl("number", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1f";
@@ -269,9 +605,12 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
         defaults: function() {
             return {title: "Range", interactive: true, default: 0, min: 0, max: 100, step: 1};
         },
-        html: function(uniqueId, params, classes = "", css = "") {
-            const input = `<input type="range" class="er-control__input er-control__input--range" min="${params.min}" max="${params.max}" step="${params.step}" id="${uniqueId}"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("range", params.title, input, classes, params.title ? 2 : 1);
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const input = UI.renderInput("input", "range", uniqueId,
+                ` type="range" min="${params.min}" max="${params.max}" step="${params.step}"`,
+                css, UI.resolveInputClasses("range", options && options.inputClasses));
+            return UI.renderControl("range", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1f";
@@ -307,9 +646,11 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
         defaults: function() {
             return { title: "Color", interactive: true, default: "#fff900" };
         },
-        html: function(uniqueId, params, classes = "", css = "") {
-            const input = `<input type="color" id="${uniqueId}" class="er-control__input er-control__input--color"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("color", params.title, input, classes, params.title ? 2 : 1);
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const input = UI.renderInput("input", "color", uniqueId, ` type="color"`,
+                css, UI.resolveInputClasses("color", options && options.inputClasses));
+            return UI.renderControl("color", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform3fv";
@@ -351,12 +692,14 @@ step="${params.step}" type="number" id="${uniqueId}"${$.FlexRenderer.UIControls.
         defaults: function() {
             return { title: "Checkbox", interactive: true, default: true };
         },
-        html: function(uniqueId, params, classes = "", css = "") {
-            let value = this.decode(params.default) ? "checked" : "";
+        html: function(uniqueId, params, classes = "", css = "", options = {}) {
+            const UI = $.FlexRenderer.UIControls;
+            const checked = this.decode(params.default) ? " checked" : "";
             //note a bit dirty, but works :) - we want uniform access to 'value' property of all inputs
-            const input = `<input type="checkbox" id="${uniqueId}" ${value}
-class="er-control__input er-control__input--bool" onchange="this.value=this.checked; return true;"${$.FlexRenderer.UIControls.styleAttr(css)}>`;
-            return $.FlexRenderer.UIControls.renderControl("bool", params.title, input, classes, params.title ? 2 : 1);
+            const input = UI.renderInput("input", "bool", uniqueId,
+                ` type="checkbox"${checked} onchange="this.value=this.checked; return true;"`,
+                css, UI.resolveInputClasses("bool", options && options.inputClasses));
+            return UI.renderControl("bool", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1i";
@@ -402,7 +745,8 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
                 options: [{ value: 0, label: "Off" }, { value: 1, label: "On" }]
             };
         },
-        html: function(uniqueId, params, classes = "", css = "") {
+        html: function(uniqueId, params, classes = "", css = "", renderOptions = {}) {
+            const UI = $.FlexRenderer.UIControls;
             let options = [];
             if (Array.isArray(params.options)) {
                 options = params.options.map(opt => {
@@ -427,8 +771,9 @@ class="er-control__input er-control__input--bool" onchange="this.value=this.chec
                 return `<option value="${opt.value}"${selected}>${opt.label}</option>`;
             }).join("");
 
-            const input = `<select id="${uniqueId}" class="er-control__input er-control__input--select"${$.FlexRenderer.UIControls.styleAttr(css)}>${optionHtml}</select>`;
-            return $.FlexRenderer.UIControls.renderControl("select", params.title, input, classes, params.title ? 2 : 1);
+            const input = UI.renderInput("select", "select", uniqueId, "", css,
+                UI.resolveInputClasses("select", renderOptions && renderOptions.inputClasses)) + `${optionHtml}</select>`;
+            return UI.renderControl("select", UI.titleFrom(params), input, classes, params.title ? 2 : 1);
         },
         glUniformFunName: function() {
             return "uniform1i";
@@ -520,10 +865,47 @@ $.FlexRenderer.UIControls.IControl = class IControl {
     }
 
     /**
+     * Whether the control holds state glDrawing can upload. Controls whose drawable state lives
+     * somewhere other than 'value' override this.
+     * @return {boolean}
+     */
+    _isInitialized() {
+        return this.value !== undefined;
+    }
+
+    /**
+     * Lazy fallback for a control drawn before init() ran: the shader missed the one-shot init in
+     * useProgram, or its own init() threw before reaching the control. Uploading the missing state
+     * either throws out of the render loop (vector uniform setters reject undefined) or silently
+     * feeds NaN. Try init() once per draw; if it still leaves the control uninitialized, warn once
+     * and let the caller skip the upload, keeping its dirty flag so a later set()/init() lands.
+     * @return {boolean} true when glDrawing may upload
+     */
+    _ensureInitialized() {
+        if (this._isInitialized()) {
+            return true;
+        }
+        try {
+            this.init();
+        } catch (e) {
+            // reported below
+        }
+        if (this._isInitialized()) {
+            return true;
+        }
+        if (!this._warnedUninitialized) {
+            this._warnedUninitialized = true;
+            $.console.warn(`FlexRenderer: control '${this.webGLVariableName}' of shader ` +
+                `'${this.owner && this.owner.id}' has no value at draw time; uniform upload skipped.`);
+        }
+        return false;
+    }
+
+    /**
      * Report a control whose HTML mount is not present in the DOM.
      *
-     * Control init() runs inside FlexRenderer's per-shader try/catch, which reduces any throw to a
-     * generic "the shader control will not work" and drops the reason. A missing mount is a host
+     * Control init() runs inside ShaderLayer.init()'s per-control try/catch, which reduces any throw
+     * to a generic "init() failed" and drops the reason. A missing mount is a host
      * integration problem (markup not inserted, or inserted after init), so it is reported here
      * where the control identity is still known and the caller skips the interactive wiring.
      *
@@ -705,13 +1087,35 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      *  - these can be referenced in this.init(...)
      *  - should respect this.params.interactive attribute and return non-interactive output if interactive=false
      *      - don't forget to no to work with DOM elements in init(...) in this case
+     *  - classes: extra classes for the control root, css: inline style of the main widget,
+     *    options.inputClasses: per-role input classes (see UIControls.resolveInputClasses)
      *
      * todo: when overrided value before 'init' call on params, toHtml was already called, changes might not get propagated
      *  - either: delay toHtml to trigger insertion later (not nice)
      *  - do not allow changes before init call, these changes must happen at constructor
      */
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         throw "FlexRenderer.UIControls.IControl::toHtml() must be implemented.";
+    }
+
+    /**
+     * Release resources held outside the control (DOM widgets, document listeners, timers).
+     * Must be idempotent and safe to call before init(). No-op by default.
+     */
+    destroy() {
+    }
+
+    /**
+     * Translate a human-readable string of this control, honoring per-control
+     * overrides in params.strings. See UIControls.t().
+     * @param {string} key
+     * @param {string} fallback
+     * @param {object} [vars]
+     * @return {string} plain text, escape before inserting into HTML
+     */
+    t(key, fallback, vars = undefined) {
+        const params = this.params;
+        return $.FlexRenderer.UIControls.t(key, fallback, vars, params && params.strings);
     }
 
     /**
@@ -839,9 +1243,65 @@ $.FlexRenderer.UIControls.IControl = class IControl {
      * @return {*} cached or default value
      */
     load(defaultValue, paramName = "") {
-        return this.owner.loadProperty(this.name + (paramName === "default" ? "" : paramName),
-            defaultValue === undefined ? this.supports[paramName] : defaultValue,
-        );
+        const key = this.name + (paramName === "default" ? "" : paramName);
+        const fallback = defaultValue === undefined ? this.supports[paramName] : defaultValue;
+        const owner = this.owner;
+        if (typeof owner.hasProperty === "function" && owner.hasProperty(key)) {
+            const cached = owner.loadProperty(key, fallback);
+            if (this.acceptsStoredValue(cached, paramName)) {
+                return cached;
+            }
+            owner.storeProperty(key, undefined);
+            this.report("cache-value-rejected",
+                `Control '${this.name}' of layer '${owner.id}': saved value does not fit the ` +
+                `control and is dropped; using the configured default.`, { value: cached, key: key });
+            return fallback;
+        }
+        return owner.loadProperty(key, fallback);
+    }
+
+    /**
+     * Whether a value read from the cache fits this control. A rejected value is removed from the
+     * cache and load() returns the default instead. Override where a stale or foreign value would
+     * otherwise be misused (e.g. a hex string where a palette array is expected).
+     * @param {*} value cached value
+     * @param {string} paramName as passed to load()
+     * @return {boolean}
+     */
+    acceptsStoredValue(value, paramName = "") {
+        return true;
+    }
+
+    /**
+     * Report a control-level fallback: UIControls.report() (host reporter or console) and the
+     * renderer's `shader-warning` event.
+     * @param {string} code stable identifier
+     * @param {string} message
+     * @param {object} [extra] merged into the details
+     * @param {string} [level="warn"]
+     */
+    report(code, message, extra = {}, level = "warn") {
+        const owner = this.owner || {};
+        let shaderType;
+        try {
+            shaderType = owner.constructor && typeof owner.constructor.type === "function" ?
+                owner.constructor.type() : undefined;
+        } catch (e) {
+            shaderType = undefined;
+        }
+        const details = Object.assign({
+            layerId: owner.id,
+            shaderType: shaderType,
+            control: this.name,
+            code: code,
+            level: level,
+            message: message
+        }, extra);
+        $.FlexRenderer.UIControls.report(level, code, details);
+        const renderer = owner.backend && owner.backend.renderer;
+        if (renderer && typeof renderer.notifyShaderWarning === "function") {
+            renderer.notifyShaderWarning(details);
+        }
     }
 
     /**
@@ -1046,6 +1506,11 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
             // debugging purposes
             // console.debug('Setting', this.component.glUniformFunName(), 'corresponding to', this.webGLVariableName, 'to value', this.value);
 
+            // Keeps _needsLoad on failure, so a later set()/init() still reaches the GPU.
+            if (!this._ensureInitialized()) {
+                return;
+            }
+
             // A uniform upload is only valid while its own program is the current one. Under a
             // shared WebGL context CURRENT_PROGRAM is context-global, so a stale binding shows up
             // here as "location is not from the associated program" with no clue which control is
@@ -1071,11 +1536,11 @@ $.FlexRenderer.UIControls.SimpleUIControl = class extends $.FlexRenderer.UIContr
         this._needsLoad = true;
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         if (!this.params.interactive) {
             return "";
         }
-        return this.component.html(this.id, this.params, classes, css);
+        return this.component.html(this.id, this.params, classes, css, options || {});
     }
 
     define() {
@@ -1147,7 +1612,8 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         const _this = this;
         this._c2._params = this._c1._params;
         this._c1.init();
-        this._c2.init();
+        // Wire the mirroring before _c2.init(): _isInitialized() only tracks _c1, so a throw
+        // from _c2 must not leave a drawable control without its _c1/_c2 sync.
         this._c1.on("default", function(value, encoded, owner) {
             const c2 = document.getElementById(_this._c2.id);
             if (c2) {
@@ -1168,6 +1634,7 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
             _this._c1._needsLoad = true;
             _this.changed("default", value, encoded, owner);
         }, true); //silently fail if registered
+        this._c2.init();
     }
 
     /**
@@ -1178,7 +1645,15 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         this._c1.set(encodedValue);
     }
 
+    _isInitialized() {
+        return this._c1.value !== undefined;
+    }
+
     glDrawing(program, gl) {
+        // _c1 would self-heal alone, but only this init() wires the _c1/_c2 mirroring.
+        if (!this._ensureInitialized()) {
+            return;
+        }
         this._c1.glDrawing(program, gl);
     }
 
@@ -1186,31 +1661,32 @@ $.FlexRenderer.UIControls.SliderWithInput = class extends $.FlexRenderer.UIContr
         this._c1.glLoaded(program, gl);
     }
 
-    toHtml(classes = "", css = "") {
+    toHtml(classes = "", css = "", options = {}) {
         if (!this._c1.params.interactive) {
             return "";
         }
 
-        const titleHtml = this._c1.params.title
-            ? `<span class="er-control__title er-control__title--slider-with-input">${this._c1.params.title}</span>`
-            : "";
+        const UI = $.FlexRenderer.UIControls;
+        const titleHtml = UI.renderTitle(UI.titleFrom(this._c1.params), "slider-with-input");
 
         const rangeHtml = $.FlexRenderer.UIControls.getUiElement("range").html(
             this._c1.id,
             { ...this._c1.params, title: "" },
-            classes,
-            `${css}width:100%;`
+            "",
+            `${css}width:100%;`,
+            options || {}
         );
 
         const numberHtml = $.FlexRenderer.UIControls.getUiElement("number").html(
             this._c2.id,
             { ...this._c2.params, title: "" },
-            classes,
-            css
+            "",
+            css,
+            options || {}
         );
 
         return [
-            `<div class="er-control er-control--slider-with-input" data-columns="${this.layoutColumns}">`,
+            `<div class="${$.FlexRenderer.UIControls.joinClasses("er-control", "er-control--slider-with-input", classes)}" data-columns="${this.layoutColumns}">`,
             titleHtml,
             `<div class="er-control__body er-control__body--slider-with-input">`,
             rangeHtml,

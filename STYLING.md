@@ -73,7 +73,7 @@ drawerOptions: {
 - tabs, cards, accordions, drawers, sidebars, modals
 - whether shader title, status, and help text are shown around the controls
 
-### `shaderLayer.htmlControls(wrapper, classes, css)`
+### `shaderLayer.htmlControls(wrapper, classes, css, options)`
 
 This returns the renderer-native control markup for a single shader.
 
@@ -82,9 +82,14 @@ Arguments:
 - `wrapper`
   Optional function applied to each generated control block.
 - `classes`
-  Extra class string passed through to each control root.
+  Extra class string passed through to each control root (`.er-control`).
 - `css`
   Extra inline CSS string passed through to the main interactive element or control widget.
+- `options.inputClasses`
+  Per-call input classes, see [Input classes](#input-classes).
+
+The same arguments can be passed as one object:
+`htmlControls({wrapper, classes, css, inputClasses})`.
 
 Example:
 
@@ -94,6 +99,13 @@ const html = shaderLayer.htmlControls(
     "my-control-root",
     "font-size: 0.875rem;"
 );
+
+// object form
+const compact = shaderLayer.htmlControls({
+    wrapper: inner => `<div class="my-control-row">${inner}</div>`,
+    classes: "my-control-root",
+    inputClasses: { number: "form-control form-control-sm" }
+});
 ```
 
 Use this when you need:
@@ -101,6 +113,46 @@ Use this when you need:
 - consistent wrapper structure around each control
 - root-level selector hooks via `classes`
 - small per-control widget overrides via `css`
+- framework classes on the emitted inputs via `inputClasses`
+
+Each control's `toHtml(classes, css, options)` takes the same three trailing arguments,
+so a host rendering a single control directly gets the same hooks.
+
+### Input classes
+
+Every emitted input and button carries its BEM classes (`er-control__input er-control__input--<type>`,
+`er-control__button ...`) plus a per-role default class string. The defaults target DaisyUI:
+
+| Role | Element | Default classes |
+| --- | --- | --- |
+| `number` | number input | `input input-bordered input-sm` |
+| `range` | range input | `range range-sm` |
+| `color` | color input | *(none)* |
+| `bool` | checkbox | `checkbox checkbox-sm` |
+| `select` | select | `select select-bordered select-sm` |
+| `colormap` | colormap select | `select select-bordered select-sm` |
+| `textarea` | textarea | `textarea textarea-bordered textarea-sm` |
+| `button` | `button` control | `btn btn-sm btn-outline` |
+| `image-number` | image id input | `input input-bordered input-sm` |
+| `image-file` | image file input | `file-input file-input-bordered file-input-sm` |
+| `image-upload` | image upload button | `btn btn-sm btn-outline` |
+| `icon-trigger` | icon picker trigger | `btn btn-sm btn-square btn-outline` |
+| `icon-close` | icon popup close | `btn btn-ghost btn-xs btn-circle` |
+| `icon-query` | icon search input | `input input-bordered input-sm` |
+
+Per call, `options.inputClasses` adjusts them:
+
+- a string is appended to every role's default: `inputClasses: "my-input"`
+- an object replaces the default of the roles it names: `inputClasses: { number: "form-control" }`;
+  `null` or `""` for a role clears it; roles not named keep their default
+
+Globally, `OpenSeadragon.FlexRenderer.UIControls`:
+
+- `inputClassDefaults` returns a copy of the current map
+- `setInputClassDefaults(map)` merges into it; `setInputClassDefaults(map, { merge: false })` replaces it
+- `setInputClassDefaults(null)` clears every role to `""`: **do this on hosts that do not use DaisyUI**,
+  so only the BEM classes remain
+- `resolveInputClasses(role, inputClasses)` returns the classes a role resolves to
 
 ## Renderer Control Classes
 
@@ -111,7 +163,7 @@ Removed:
 - `text-white-shadow`
 - `form-control`
 
-The goal is that host applications style controls through stable renderer classes instead of inheriting opinionated utility or framework classes from the library.
+The goal is that host applications style controls through stable renderer classes instead of inheriting opinionated utility or framework classes from the library. The one exception is the per-role input classes (DaisyUI by default), which are configurable and can be cleared entirely — see [Input classes](#input-classes).
 
 ### Shared classes
 
@@ -137,8 +189,8 @@ These are the main stable hooks:
   Base class for non-input display widgets.
 - `.er-control__widget`
   Base class for custom widget containers.
-- `.er-control__group`
-  Base class for multi-part controls rendered inside a single control row.
+- `.er-control__aux`
+  Second content column of a three-column control (the number input of `range_input`).
 
 ### Type-specific modifiers
 
@@ -159,10 +211,13 @@ Simple control input elements:
 - `.er-control__input--bool`
 - `.er-control__input--select`
 
-Composite helper:
+Composite helper (`range_input`): the root `.er-control--slider-with-input` holds the range in
+`.er-control__body--slider-with-input` and the number input in `.er-control__aux--slider-with-input`.
+Each of those wraps a nested, title-less `.er-control--range` / `.er-control--number` row; the
+`classes` argument lands only on the outer root.
 
-- `.er-control__group`
-- `.er-control__group--slider-with-input`
+- `.er-control__body--slider-with-input`
+- `.er-control__aux--slider-with-input`
 
 Advanced controls:
 
@@ -177,6 +232,7 @@ Advanced controls:
 Advanced control elements:
 
 - `.er-control__input--colormap`
+- `.er-control__colormap-preview` (gradient strip under the interactive colormap select)
 - `.er-control__display--colormap`
 - `.er-control__display--custom-colormap`
 - `.er-control__widget--advanced-slider`
@@ -194,11 +250,12 @@ Advanced control elements:
 - `.er-control__preview--icon`
 - `.er-control__popup--icon`
 - `.er-control__popup-header--icon`
+- `.er-control__popup-title--icon`
 - `.er-control__button--icon-close`
 - `.er-control__search--icon`
 - `.er-control__input--icon-query`
-- `.er-control__color-picker--icon`
 - `.er-control__input--icon-color`
+- `.er-control__color-mode` (the "tint" badge)
 - `.er-control__results--icon`
 
 The icon control renders its glyphs onto a `<canvas>`, so its colors come from
@@ -207,6 +264,106 @@ own is the icon font itself: FlexRenderer bundles no webfont, and the Phosphor
 and Font Awesome sets render only once the page loads the corresponding font.
 See "Icon Fonts" in [README.md](README.md#icon-fonts) for the set/font table and
 the stylesheet links. The default `html-glyphs` set needs no font at all.
+
+### Required stylesheet: `assets/ui.controls.css`
+
+The host page must include `assets/ui.controls.css`. Besides the row/column grid it carries
+the rules that make some controls display their state at all — the renderer no longer writes
+those as inline styles:
+
+| Hook | Set by | Default rule in `ui.controls.css` |
+| --- | --- | --- |
+| `--er-colormap` (custom property) | `colormap` / `custom_colormap`, on the `.er-control` root (or the display node when mounted without one) | read as `background-image` by `.er-control__colormap-preview`, `.er-control__display--colormap`, `.er-control__display--custom-colormap` |
+| `.er-control__colormap-preview` | interactive `colormap` (sibling of the select) | thin gradient strip under the select |
+| `.er-slider__connect--active` | `advanced_slider`, on each `.noUi-connect` interval whose mask is on (off, when `inverted`) | `background: var(--er-slider-connect-active, #c62828)` |
+| `--er-slider-connect-active` (custom property) | host | color of active slider intervals |
+| `.er-control--button > .er-control__body` | — | right-aligns the button |
+
+Without the stylesheet the colormap gradient and the active slider intervals are invisible.
+To restyle them, override these rules, e.g.:
+
+```css
+#shader-ui .er-control__colormap-preview { height: .75rem; }
+#shader-ui { --er-slider-connect-active: #1565c0; }
+/* follow a DaisyUI theme: v4 stores raw oklch channels, v5 a full color */
+#shader-ui { --er-slider-connect-active: oklch(var(--er)); }       /* DaisyUI 4 */
+#shader-ui { --er-slider-connect-active: var(--color-error); }     /* DaisyUI 5 */
+```
+
+The `button` control renders its title as the button label: there is no
+`.er-control__title` span on `.er-control--button`, and the root always has `data-columns="1"`.
+
+## Localization
+
+Controls that emit their own text (`image`, `icon`) translate it through one hook:
+
+```js
+OpenSeadragon.FlexRenderer.UIControls.setTranslator((key, fallback, vars) => {
+    return myI18n.exists(key) ? myI18n.t(key, vars) : fallback;
+});
+```
+
+- the translator is called as `fn(key, fallback, vars)`; a non-string return value falls back to the
+  English default, and a translator that throws is reported with `console.warn` and falls back too
+- `setTranslator(null)` removes it
+- per control, `params.strings` (a `{ key: "text" }` map in the control config) wins over the translator
+- `{name}` placeholders in the result are substituted from `vars`
+- translated text is HTML-escaped before it is inserted into the markup
+- `UIControls.t(key, fallback, vars, overrides)` and `control.t(key, fallback, vars)` are available
+  to custom controls
+
+Fallbacks (a dropped cache value, an invalid palette, a control that failed to build) go through a
+sibling hook instead of the console:
+
+```js
+OpenSeadragon.FlexRenderer.UIControls.setReporter((level, code, details) => {
+    myToasts.push(level, myI18n.t(`flex.${code}`, details) || details.message);
+});
+```
+
+- called as `fn(level, code, details)`, `level` is `"warn"` or `"error"`; see `shader-warning` in
+  `src/EVENTS.md` for the codes and the `details` shape
+- `setReporter(null)` restores console output; a reporter that throws falls back to it
+- custom controls report through `control.report(code, message, extra, level)` and can reject
+  stale cached values by overriding `acceptsStoredValue(value, paramName)`
+
+| Key | English default |
+| --- | --- |
+| `image.hint` | The atlas starts empty. Upload an image to create a new atlas entry. |
+| `image.selected` | Selected: |
+| `image.upload` | Upload Image |
+| `image.noFile` | No file selected (upload clicked without a file; shown with `alert`) |
+| `icon.pickerTitle` | Icon picker |
+| `icon.close` | Close (aria-label of the popup close button) |
+| `icon.searchPlaceholder` | Search icons, aliases, glyphs |
+| `icon.color` | Icon color (color input tooltip) |
+| `icon.tintColor` | Tint color (applied over original colors) |
+| `icon.tintBadge` | tint |
+| `icon.unknown` | Unknown icon (preview tooltip) |
+
+Control titles come from the shader configuration (`title`) and are not passed through the translator.
+They are inserted as text (HTML-escaped). To put markup such as an icon into a title, the host page
+must first opt in globally, and the control must set `titleHtml: true` (a boolean; strings are ignored).
+Shader configuration cannot turn the opt-in on itself, so enable it only when every configuration
+the page renders is trusted (not loaded from URLs, sessions or shared links):
+
+```js
+OpenSeadragon.FlexRenderer.UIControls.allowHtmlTitles = true; // host code, once
+
+run: { type: "button", title: '<i class="fa fa-play"></i> Run', titleHtml: true }
+```
+
+Example config override:
+
+```js
+params: {
+    overlay: { type: "image", title: "Obrázky", strings: { "image.upload": "Nahrát obrázek" } }
+}
+```
+
+Keys starting with `_` in a shader configuration (e.g. `_controls`) are renderer-owned instance
+state: `FlexRenderer.jsonReplacer` strips them on export and the published schema rejects them, so
+do not put UI configuration there.
 
 ### Suggested styling pattern
 
@@ -253,6 +410,10 @@ Example:
 There is no special renderer-wide CSS variable contract here.
 
 `--er` is just a host-side variable you use to tint UI red. It is not a formal FlexRenderer API and it is not meant to describe the entire control theme.
+
+`ui.controls.css` does not read `--er` at all: its format depends on the host (DaisyUI 4 themes
+define it as raw oklch channels, not a complete color). Active `advanced_slider` intervals use
+`var(--er-slider-connect-active, #c62828)`; map that variable to your theme color if needed.
 
 Example:
 
@@ -376,7 +537,9 @@ If you use Tailwind, DaisyUI, Bootstrap, or similar:
 
 - let the framework style the outer shells you build in `htmlHandler(...)`
 - use wrapper classes around `shaderLayer.htmlControls(...)`
-- avoid assuming the renderer outputs framework-specific classes internally
+- emitted inputs carry DaisyUI classes by default (see [Input classes](#input-classes)); with another
+  framework, call `UIControls.setInputClassDefaults(null)` once and map your own classes per role
+  via `setInputClassDefaults({...})` or `htmlControls({ inputClasses })`
 
 ### Component frameworks
 
@@ -400,7 +563,7 @@ When adjusting the UI, keep these in mind:
 
 Use this as the default mental model:
 
-1. create one scoped mount container for renderer controls
+1. create one scoped mount container for renderer controls, and include `assets/ui.controls.css`
 2. optionally define `--er` on that mount if you want the red tint hook
 3. build your own section/card layout in `htmlHandler(...)`
 4. insert `shaderLayer.htmlControls(...)` inside those sections

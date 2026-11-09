@@ -145,6 +145,109 @@
         });
     });
 
+    QUnit.test('glDrawing before init() uploads a defined value instead of throwing', function(assert) {
+        // A shader that missed the one-shot init in useProgram used to reach glDrawing with
+        // value === undefined; uniform3fv(loc, undefined) throws out of the render loop.
+        const control = buildControl("color");
+        const uploads = [];
+        const gl = {
+            uniform3fv: (location, value) => {
+                if (!value || typeof value[Symbol.iterator] !== "function") {
+                    throw new TypeError("The provided value cannot be converted to a sequence.");
+                }
+                uploads.push(Array.from(value));
+            }
+        };
+
+        control.glDrawing(null, gl);
+
+        assert.strictEqual(uploads.length, 1, "uniform was uploaded once");
+        assert.strictEqual(uploads[0].length, 3, "uploaded value is a vec3");
+    });
+
+    QUnit.test('every control type survives glDrawing before init()', function(assert) {
+        // Same failure for controls with their own glDrawing: AdvancedSlider packed an undefined
+        // array, ColorMap never baked its LUT. Vector setters reject non-sequences like WebGL
+        // does; scalar setters also reject NaN, which WebGL would swallow silently.
+        const types = Object.keys(UIControls._items).concat(Object.keys(UIControls._impls));
+        const bad = [];
+        let current;
+        const gl = new Proxy({}, {
+            get: (target, fn) => (location, value) => {
+                if (typeof fn !== "string" || !fn.startsWith("uniform")) {
+                    return undefined;
+                }
+                const ok = fn.endsWith("v") ?
+                    value && typeof value[Symbol.iterator] === "function" &&
+                        Array.from(value).every(Number.isFinite) :
+                    Number.isFinite(value);
+                if (!ok) {
+                    bad.push(`${current}: ${fn}(${value})`);
+                }
+                return undefined;
+            }
+        });
+
+        types.forEach(type => {
+            current = type;
+            const control = buildControl(type);
+            if (!control) {
+                assert.ok(false, `${type}: control was built`);
+                return;
+            }
+            try {
+                control.glDrawing(null, gl);
+                assert.ok(true, `${type}: glDrawing did not throw`);
+                if (control instanceof UIControls.ColorMap) {
+                    assert.notOk(control._lutDirty, `${type}: LUT was baked on the first draw`);
+                }
+            } catch (e) {
+                assert.ok(false, `${type}: glDrawing threw ${e}`);
+            }
+        });
+
+        assert.deepEqual(bad, [], "no uniform received an undefined or NaN value");
+    });
+
+    /**
+     * Build a control declared like ShaderLayer opacity (range 0..1) but configured with another type.
+     */
+    function buildOverridden(customParams) {
+        const definition = {
+            default: { type: "range", default: 1, min: 0, max: 1, step: 0.1 },
+            accepts: () => true,
+            required: {}
+        };
+        return UIControls.build(makeOwner(), "opacity", definition, "control_api_override", customParams);
+    }
+
+    QUnit.test('type override with the same glType keeps the value domain', function(assert) {
+        ["range_input", "number"].forEach(type => {
+            const control = buildOverridden({ type: type, default: 0.5 });
+            control.init();
+            assert.strictEqual(control.params.min, 0, `${type}: min carried over`);
+            assert.strictEqual(control.params.max, 1, `${type}: max carried over`);
+            assert.strictEqual(control.params.step, 0.1, `${type}: step carried over`);
+            assert.strictEqual(control.raw, 0.5, `${type}: 0.5 reaches the shader as 0.5`);
+        });
+
+        const custom = buildOverridden({ type: "number", default: 5, max: 10 });
+        assert.strictEqual(custom.params.max, 10, "explicit max wins over the carried domain");
+    });
+
+    QUnit.test('type override with a different glType warns that the domain is dropped', function(assert) {
+        const warn = console.warn;
+        const warnings = [];
+        console.warn = (...args) => warnings.push(args.join(" "));
+        try {
+            buildOverridden({ type: "bool", default: true });
+        } finally {
+            console.warn = warn;
+        }
+        assert.ok(warnings.some(w => w.includes("opacity") && w.includes("dropped")),
+            "warning names the control and the dropped domain");
+    });
+
     QUnit.test('cache object round-trips through loadCacheObject', function(assert) {
         const cases = fixtures();
 
@@ -169,5 +272,61 @@
 
             assert.deepEqual(control.encoded, cached, `${type}: cache restored the encoded value`);
         });
+    });
+
+    QUnit.test('a half-run ColorMap init() is retried at draw time', function(assert) {
+        // init() assigns 'value' before the palette lookup that can throw; 'value' alone must not
+        // count as initialized, or the LUT stays dirty forever.
+        const control = buildControl("colormap");
+        control.value = control.params.default;
+        control._lutDirty = true;
+
+        control.glDrawing(null, { uniform1i: () => {} });
+
+        assert.ok(control.pallete, "init() ran and produced a palette");
+        assert.notOk(control._lutDirty, "the LUT was baked");
+    });
+
+    QUnit.test('SliderWithInput keeps its range/number sync when the number half fails to init', function(assert) {
+        const control = buildControl("range_input");
+        const c2Init = control._c2.init;
+        control._c2.init = () => {
+            throw new Error("number half failed");
+        };
+        assert.throws(() => control.init(), /number half failed/, "init() surfaced the failure");
+        control._c2.init = c2Init;
+
+        control._c2.set(0.3);
+
+        assert.strictEqual(control._c1.encodedValue, 0.3, "the number half still mirrors into the range half");
+        assert.ok(control._c1._needsLoad, "and requests the range uniform upload");
+    });
+
+    QUnit.test('a control whose init() keeps failing retries per draw, warns once and never throws', function(assert) {
+        const control = buildControl("color");
+        let calls = 0;
+        control.init = () => {
+            calls++;
+            throw new Error("always fails");
+        };
+        const warn = OpenSeadragon.console.warn;
+        let warnings = 0;
+        OpenSeadragon.console.warn = () => {
+            warnings++;
+        };
+        const uploads = [];
+        control._needsLoad = true;
+        try {
+            for (let i = 0; i < 5; i++) {
+                control.glDrawing(null, { uniform3fv: (location, value) => uploads.push(value) });
+            }
+        } finally {
+            OpenSeadragon.console.warn = warn;
+        }
+
+        assert.strictEqual(calls, 5, "init() is retried once per draw");
+        assert.strictEqual(warnings, 1, "the failure is reported once");
+        assert.strictEqual(uploads.length, 0, "nothing undefined was uploaded");
+        assert.ok(control._needsLoad, "the upload stays pending for a later set()/init()");
     });
 })();

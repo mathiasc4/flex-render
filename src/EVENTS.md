@@ -46,7 +46,7 @@ Canonical semantic event for persistence, sync, autosave, undo/redo, and history
                     fixed: false,
                     tiledImages: [0],
                     params: { ... },
-                cache: { ... }
+                cache: { identity: { ... } }   // per shader type
             }
         }
     },
@@ -366,6 +366,43 @@ renderer.addHandler('shader-program-failed', (e) => {
 
 ---
 
+### `shader-warning`
+
+Fired when a control or layer fell back instead of doing what the configuration asked: a cached
+value that does not fit its control was dropped, a palette was invalid, a control failed to build
+or init, or a layer was hidden for an assembly error (`config.error`). The same details reach the
+reporter installed with `OpenSeadragon.FlexRenderer.UIControls.setReporter(fn)`, which replaces the
+console output; without one, they are logged with `$.console`.
+
+### Payload
+
+```js
+{
+    layerId: "shaderA",
+    shaderType: "colormap",
+    control: "color",            // null for layer-level reports
+    code: "cache-value-rejected" | "palette-invalid" | "control-build-failed" |
+          "control-init-failed" | "layer-assembly-failed",
+    level: "warn" | "error",
+    message: "...",              // English, human-readable
+    value: ...,                  // present for cache-value-rejected / palette-invalid
+    key: "color",                // cache key, cache-value-rejected only
+    error: Error                 // present when an exception caused the fallback
+}
+```
+
+### Example
+
+```js
+OpenSeadragon.FlexRenderer.UIControls.setReporter((level, code, details) => {
+    myToasts.push(level, details.message);
+});
+// or per renderer:
+renderer.addHandler('shader-warning', (e) => myToasts.push(e.level, e.message));
+```
+
+---
+
 ## Snapshot / export API
 
 ### Get current visualization snapshot
@@ -394,7 +431,7 @@ const snapshot = renderer.exportVisualization();
                 fixed: false,
                 tiledImages: [0],
                 params: { ... },
-            cache: { ... }
+            cache: { identity: { ... } }   // per shader type
         }
     }
 }
