@@ -2,6 +2,40 @@ OPENSEADRAGON FLEX RENDERER
 ===========================
 
 0.0.2
+Pre/post module pipeline on every ShaderLayer (params.pipeline):
+ * NEW params.pipeline = {enabled, pre: [{id, type, params}], post: [...]} on every layer type.
+   Nodes are vec4 color -> vec4 color ShaderModules (ShaderModule.isPipelineCapable). post wraps
+   fr_compute_<uid> (before opacity/blend/clip); pre wraps non-raw sampleChannel() results.
+   Invalid nodes are skipped with 'pipeline-node-invalid' / 'pipeline-node-compile-failed'.
+ * NEW ShaderLayer#resetPipeline(params), #getPipelineControl(stage, nodeId, control),
+   #setPipelineEnabled(bool) (bool uniform, no relink), #isPipelineEnabled(),
+   htmlControls({includePipeline: false}). Controls flattened as pre_/post_<node>_<ctl>, cached in
+   the type-independent config.cache.__pipeline bucket; changeShaderType keeps params.pipeline.
+ * use_gamma / use_exposure / use_logscale now run as pre nodes (legacy_gamma, ...;
+   ShaderLayer.filterModules) under the pipeline toggle. filter() applies only these; custom
+   ShaderLayer.filters one-liners still work. time-series / channel-series delegates use the
+   wrapper's pipeline (option pipelineHost, static delegatesSampling); the delegate's legacy
+   filter nodes run in the wrapper's pipeline (_collectLegacyPreNodes), so toggle and bypass
+   reach them.
+ * NEW ShaderLayer#setPipelineBypass(bool) / #isPipelineBypassed(): transient before/after peek.
+   Raw uniform <uid>_pipeline_bypass only: no params write, no cache write, no
+   visualization-change; mirrored to the navigator. No-op on a layer without a pipeline.
+ * NEW modules: levels, brightness-contrast, saturation, hue-rotate, color-temperature, exposure,
+   logscale. The color modules are identities at their defaults; exposure / logscale (legacy
+   filter migration targets) have no identity value. NEW ShaderModule#sampleValue(name) de-normalizes float controls (range/number/
+   range_input upload (v-min)/(max-min)).
+ * FIX gamma: uniform was normalized (gamma 1 reached GLSL as 0.1), now range 0.1..10 de-normalized.
+   FIX invert: .rbg swizzle. Both: no bare 'vec4 color' local (two nodes failed to compile),
+   classes renamed, new 'color' output port ('adjusted' / 'inverted' kept). invert gains 'amount'
+   (default 1 = previous full inversion).
+ * FIX setPipelineEnabled on a layer without a pipeline stored pipeline_enabled in the per-type
+   cache bucket; it now always lives in config.cache.__pipeline.
+ * FIX resetFilters / resetChannel: 'Object.keys(options) === 0' was always false, so a call
+   without options never fell back to the layer params; filter-change notify guards a missing
+   backend.
+ * Schema: $defs.shaderLayerPipeline, $defs.shaderLayerPipelineNodes; params.pipeline on every layer.
+ * Navigator mirrors pipeline structure changes (resetPipeline + program rebuild). Test pipeline.js.
+
 Control cache scoped per shader type:
  * config.cache is { [type]: { [controlKey]: value } } again (as in xOpat 2.x). Flat 3.x caches
    share one key space across types: a former heatmap's cache.color "#2962ff" was loaded by a

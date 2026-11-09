@@ -400,6 +400,39 @@ With ``use_mode=show`` the blending is ignored. With `blend`, blending is respec
 
 Updates to the configuration are generally reflected immediately, if you re-build the program.
 
+#### Pre/post pipeline
+
+Every shader layer, whatever its type, accepts ``params.pipeline``: chains of ``vec4 color -> vec4 color``
+shader modules (``levels``, ``brightness-contrast``, ``saturation``, ``hue-rotate``, ``color-temperature``,
+``invert``, ``gamma``, ...). The color modules are identities at their default values; ``exposure`` and
+``logscale`` exist as targets of the legacy filters and change the image at any value.
+
+````json
+"params": {
+  "pipeline": {
+    "enabled": true,
+    "pre":  [{"id": "g", "type": "gamma", "params": {"gamma": 1.4}}],
+    "post": [{"id": "lv", "type": "levels", "params": {"black": 0.05}}]
+  }
+}
+````
+
+- ``post`` runs on the layer's result, in order, before opacity, blending and clipping.
+- ``pre`` runs on every non-raw ``sampleChannel(...)`` result. Raw samplers (stain separation,
+  bipolar heatmap) and ``modular`` layers (whose graph samples directly) get only ``post``.
+- Node controls are flattened as ``pre_<node>_<control>`` / ``post_<node>_<control>`` and cached
+  independently of the layer type, so ``changeShaderType`` keeps them.
+- ``layer.resetPipeline()`` rebuilds after adding/removing nodes (then rebuild the program);
+  ``layer.getPipelineControl("post", "lv", "black").set(0.1)`` changes a value without a relink;
+  ``layer.setPipelineEnabled(false)`` switches the whole pipeline off via a uniform (a persisted
+  setting: written to ``params.pipeline.enabled`` and the cache, raises ``control-change``).
+- ``layer.setPipelineBypass(true)`` / ``isPipelineBypassed()`` is the transient before/after peek: a
+  uniform only, no params or cache write, no event; mirrored to the navigator; ignored without a pipeline.
+- ``htmlControls({includePipeline: false})`` omits the pipeline controls from the layer's markup.
+- Legacy ``use_gamma`` / ``use_exposure`` / ``use_logscale`` are read aliases: they become ``pre`` nodes
+  (``legacy_gamma``, ...) that run first and are covered by ``setPipelineEnabled`` and ``setPipelineBypass``,
+  also inside ``time-series`` / ``channel-series`` (whose inner layer's nodes run in the wrapper's pipeline).
+
 ### UI Components
 When you want to let users to control shader inputs through UI, you need to provide
 a handler for rendering the UI components. This handler MUST register the component

@@ -650,10 +650,38 @@
             //   - config.params.use_<filter>         (UTILITIES.setFilterOfLayer)
             // For mode/blend we re-run resetMode on the nav shader; for filters, resetFilters.
             // Both are idempotent and read directly from the params object.
+            let navProgramDirty = false;
             const syncConfig = (mainShader, navShader) => {
                 const mainConfig = typeof mainShader.getConfig === "function" ? mainShader.getConfig() : null;
                 const navConfig = typeof navShader.getConfig === "function" ? navShader.getConfig() : null;
-                if (!mainConfig || !navConfig || mainConfig === navConfig) {
+                if (!mainConfig || !navConfig) {
+                    return;
+                }
+
+                // Pipeline node structure (ids, types) changes the GLSL: mirror params.pipeline and
+                // rebuild the nav pipeline + program. Values and the on/off toggle are controls and
+                // ride syncControls below. Checked even for a shared config object, where only the
+                // nav layer's built pipeline can be stale.
+                if (typeof navShader.resetPipeline === "function" &&
+                        navShader.__pipelineStructureKey !== mainShader.__pipelineStructureKey) {
+                    if (mainConfig !== navConfig) {
+                        navConfig.params = navConfig.params || {};
+                        const mainPipeline = mainConfig.params && mainConfig.params.pipeline;
+                        if (mainPipeline === undefined) {
+                            delete navConfig.params.pipeline;
+                        } else {
+                            navConfig.params.pipeline = $.extend(true, {}, mainPipeline);
+                        }
+                    }
+                    try {
+                        navShader.resetPipeline(navConfig.params || {}, false);
+                        navProgramDirty = true;
+                    } catch (e) {
+                        $.console.warn("FlexDrawer: nav resetPipeline failed", mainShader.id, e);
+                    }
+                }
+
+                if (mainConfig === navConfig) {
                     return;
                 }
 
@@ -695,6 +723,8 @@
                 if (filterChanged && typeof navShader.resetFilters === "function") {
                     try {
                         navShader.resetFilters(navParams, true, false);
+                        // legacy filters are pipeline nodes now: the nav GLSL changed
+                        navProgramDirty = true;
                     } catch (e) {
                         $.console.warn("FlexDrawer: nav resetFilters failed", mainShader.id, e);
                     }
@@ -762,6 +792,13 @@
                     }
                     syncConfig(mainShader, navShader);
                     syncControls(mainShader, navShader);
+                    // transient before/after bypass: layer state, not a control or param, so
+                    // mirrored here without touching the (possibly shared) config or cache
+                    if (typeof navShader._applyPipelineBypass === "function" &&
+                            typeof mainShader.isPipelineBypassed === "function" &&
+                            navShader.isPipelineBypassed() !== mainShader.isPipelineBypassed()) {
+                        navShader._applyPipelineBypass(mainShader.isPipelineBypassed());
+                    }
                     if (mainShader.shaderLayers && navShader.shaderLayers) {
                         walk(mainShader.shaderLayers, navShader.shaderLayers);
                     }
@@ -769,6 +806,15 @@
             };
 
             walk(this.renderer.getAllShaders(), nav.drawer.renderer.getAllShaders());
+
+            if (navProgramDirty) {
+                const navRenderer = nav.drawer.renderer;
+                try {
+                    navRenderer.registerProgram(null, navRenderer.backend.secondPassProgramKey);
+                } catch (e) {
+                    $.console.warn("FlexDrawer: navigator program rebuild after pipeline sync failed", e);
+                }
+            }
         }
 
         _handleRefetchRequest(request = undefined) {

@@ -3330,9 +3330,10 @@
             }
 
             for (const key of Object.keys(params)) {
-                // Keep any use_* key (filters, mode, blend, per-source channel, future additions).
+                // Keep any use_* key (filters, mode, blend, per-source channel, future additions)
+                // and the type-independent pre/post pipeline.
                 // Keep keys that match a control on the new shader.
-                if (!key.startsWith("use_") && !controlNames.has(key)) {
+                if (!key.startsWith("use_") && key !== "pipeline" && !controlNames.has(key)) {
                     delete params[key];
                     continue;
                 }

@@ -201,7 +201,25 @@ vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
         }
 
         try {
-            const definition = `
+            const computeName = this.getShaderLayerComputeName(shaderLayer);
+            // Pipeline first: its pre functions must exist before any layer helper that samples.
+            const pipelineDefinition = typeof shaderLayer.getPipelineDefinition === "function" ?
+                shaderLayer.getPipelineDefinition() : "";
+            const hasPost = typeof shaderLayer.hasPostPipeline === "function" && shaderLayer.hasPostPipeline();
+            // With a post stage the layer body moves to <compute>_body and the compute function
+            // applies the post chain, so every consumer (blend, clip, group stacks) sees it,
+            // always before opacity, blending and clipping.
+            const bodyName = hasPost ? `${computeName}_body` : computeName;
+            const postWrapper = hasPost ? `
+// ${shaderLayer.uid} - Post pipeline
+vec4 ${computeName}() {
+    return ${shaderLayer.getPostPipelineFunctionName()}(${bodyName}());
+}
+` : "";
+            const definition = `${pipelineDefinition ? `
+// ${shaderLayer.uid} - Pipeline
+${pipelineDefinition}
+` : ""}
 // ${shaderLayer.uid} - Definition
 ${shaderLayer.getFragmentShaderDefinition()}
 
@@ -209,10 +227,10 @@ ${shaderLayer.getFragmentShaderDefinition()}
 ${shaderLayer.getCustomBlendFunction(shaderLayer.uid + "_blend_func")}
 
 // ${shaderLayer.uid} - Shader code execution
-vec4 ${this.getShaderLayerComputeName(shaderLayer)}() {
+vec4 ${bodyName}() {
 ${shaderLayer.getFragmentShaderExecution()}
 }
-`;
+${postWrapper}`;
             // One unbalanced brace in one layer would otherwise fail the whole program, hiding
             // every other layer; isolate it like any other assembly error.
             const imbalance = $.FlexRenderer.findGlslImbalance(definition);

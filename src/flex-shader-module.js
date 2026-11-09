@@ -242,6 +242,47 @@
              * @type {Object<string, string>}
              */
             this.inputRefs = this.config.inputs || {};
+
+            /**
+             * Prefix of the flat control names this node exposes on its owner. Graph nodes
+             * use "m"; ShaderLayerPipeline nodes use their stage ("pre" / "post").
+             *
+             * @private
+             * @type {string}
+             */
+            this._controlPrefix = options.controlPrefix || "m";
+        }
+
+        /**
+         * Whether a ShaderModule class can be used as a ShaderLayer pipeline node: a pure
+         * `vec4 color -> vec4 color` transform. Its static inputs() must declare `color` as a
+         * vec4 and require nothing else, and its static outputs() must offer a vec4 `color`.
+         *
+         * @param {typeof $.FlexRenderer.ShaderModule} Module - Module class to inspect.
+         * @returns {boolean} True when the module can be chained as a pipeline node.
+         */
+        static isPipelineCapable(Module) {
+            if (!Module || typeof Module.inputs !== "function" || typeof Module.outputs !== "function") {
+                return false;
+            }
+            const hasVec4 = (port) => {
+                if (!port) {
+                    return false;
+                }
+                const type = port.type;
+                return Array.isArray(type) ? type.length === 1 && type[0] === "vec4" : type === "vec4";
+            };
+            let inputs, outputs;
+            try {
+                inputs = Module.inputs() || {};
+                outputs = Module.outputs() || {};
+            } catch (e) {
+                return false;
+            }
+            if (!hasVec4(inputs.color) || !hasVec4(outputs.color)) {
+                return false;
+            }
+            return Object.keys(inputs).every(name => name === "color" || !inputs[name] || !inputs[name].required);
         }
 
         /**
@@ -444,7 +485,7 @@
          * @returns {string} GLSL-safe flat control name owned by the parent ShaderLayer.
          */
         getControlName(localName) {
-            return $.FlexRenderer.sanitizeKey(`m_${this.id}_${localName}`);
+            return $.FlexRenderer.sanitizeKey(`${this._controlPrefix}_${this.id}_${localName}`);
         }
 
         /**
@@ -475,6 +516,34 @@
          */
         control(localName) {
             return this.owner[this.getControlName(localName)];
+        }
+
+        /**
+         * Return a GLSL float expression carrying the *raw* value of a module-local float
+         * control, in the units of its configured `min`..`max` domain.
+         *
+         * The `range`, `number` and `range_input` controls upload a value normalized to
+         * `(v - min) / (max - min)`, so `control(name).sample()` alone yields 0..1, not the
+         * value the user picked. This de-normalizes it with the (compile-time constant)
+         * domain. Controls without a numeric domain return their plain sample().
+         *
+         * @param {string} localName - Module-local control name.
+         * @returns {string} GLSL float expression.
+         */
+        sampleValue(localName) {
+            const control = this.control(localName);
+            if (!control) {
+                throw new Error(`ShaderModule '${this.id}': control '${localName}' is not available.`);
+            }
+            const uniform = control.sample();
+            const params = control.params || {};
+            const min = Number(params.min);
+            const max = Number(params.max);
+            if (control.type !== "float" || !Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+                return uniform;
+            }
+            const f = (v) => $.FlexRenderer.ShaderLayer.toShaderFloatString(v, 0, 6);
+            return `(${f(min)} + ${f(max - min)} * ${uniform})`;
         }
 
         /**
@@ -591,7 +660,8 @@
          */
         output(name, type) {
             this.graph.validateType(type, `node '${this.node.id}' output '${name}'`);
-            return $.FlexRenderer.sanitizeKey(`${this.graph.owner.uid}_${this.node.id}_output_${name}`);
+            const prefix = this.graph.outputPrefix || this.graph.owner.uid;
+            return $.FlexRenderer.sanitizeKey(`${prefix}_${this.node.id}_output_${name}`);
         }
 
         /**
@@ -2893,5 +2963,13 @@ ${compiled.execution}
     ShaderModuleRegistry._modules = {};
 
     $.FlexRenderer.ShaderModuleRegistry = ShaderModuleRegistry;
+
+    /**
+     * Compile context class passed to ShaderModule#compile. Exposed so that other module
+     * hosts (ShaderLayerPipeline) compile modules exactly the way ShaderModuleGraph does.
+     *
+     * @private
+     */
+    $.FlexRenderer.ShaderModuleNodeCompileContext = ShaderModuleNodeCompileContext;
 
 })(OpenSeadragon);

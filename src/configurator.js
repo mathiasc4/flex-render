@@ -469,6 +469,8 @@
             const uiControlEnvelopes = this._compileJsonSchemaUiControlEnvelopes();
             const shaderModules = this._compileShaderModuleJsonSchemas();
             const shaderModuleGraph = this._compileShaderModuleGraphJsonSchema(shaderModules);
+            const shaderLayerPipelineNodes = this._compileShaderLayerPipelineNodeJsonSchemas();
+            const shaderLayerPipeline = this._compileShaderLayerPipelineJsonSchema(shaderLayerPipelineNodes);
             const shaderLayerRefs = availableShaders.map(Shader => ({
                 $ref: `#/$defs/shaderLayers/${Shader.type()}`
             }));
@@ -518,7 +520,9 @@
                     uiControlEnvelopes,
                     shaderLayers,
                     shaderModules,
-                    shaderModuleGraph
+                    shaderModuleGraph,
+                    shaderLayerPipelineNodes,
+                    shaderLayerPipeline
                 },
                 "x-schemaVersion": 3
             };
@@ -1381,6 +1385,74 @@
             };
         },
 
+        /**
+         * Node schemas for `params.pipeline.pre/post`, one per pipeline-capable module
+         * (ShaderModule.isPipelineCapable: vec4 color -> vec4 color).
+         * @returns {Object<string, object>}
+         */
+        _compileShaderLayerPipelineNodeJsonSchemas() {
+            const Mediator = $.FlexRenderer.ShaderModuleRegistry;
+            const schemas = {};
+            if (!Mediator || typeof Mediator.availableShaderModules !== "function" ||
+                    !$.FlexRenderer.ShaderModule || typeof $.FlexRenderer.ShaderModule.isPipelineCapable !== "function") {
+                return schemas;
+            }
+
+            for (const Module of Mediator.availableShaderModules()) {
+                if (!$.FlexRenderer.ShaderModule.isPipelineCapable(Module)) {
+                    continue;
+                }
+                const type = Module.type();
+                schemas[type] = {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["id", "type"],
+                    properties: {
+                        id: {
+                            type: "string",
+                            pattern: "^[0-9a-zA-Z]+(_[0-9a-zA-Z]+)*$",
+                            description: "GLSL-safe node id, unique within its stage. Controls are flattened as <stage>_<id>_<control>."
+                        },
+                        type: { const: type },
+                        params: {
+                            type: "object",
+                            description: "Initial values of the module controls, keyed by control name."
+                        }
+                    },
+                    title: typeof Module.name === "function" ? Module.name() : type,
+                    description: typeof Module.description === "function" ? Module.description() : "",
+                    "x-controls": this._compileShaderModuleControlDescriptors(Module)
+                };
+            }
+            return schemas;
+        },
+
+        _compileShaderLayerPipelineJsonSchema(nodeSchemas = {}) {
+            const types = Object.keys(nodeSchemas).sort();
+            const refs = types.map(type => ({ $ref: `#/$defs/shaderLayerPipelineNodes/${type}` }));
+            const stage = (description) => ({
+                type: "array",
+                items: refs.length ? { discriminator: { propertyName: "type" }, oneOf: refs } : { type: "object" },
+                description
+            });
+
+            return {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                    enabled: {
+                        type: "boolean",
+                        default: true,
+                        description: "Seeds the runtime on/off switch (ShaderLayer#setPipelineEnabled); a uniform, not a recompile."
+                    },
+                    pre: stage("Chain applied, in order, to every non-raw sampled value of the layer."),
+                    post: stage("Chain applied, in order, to the layer's computed color before opacity, blending and clipping.")
+                },
+                description: "Pre/post chains of vec4 -> vec4 ShaderModules, available on every shader layer.",
+                "x-moduleTypes": types
+            };
+        },
+
         _compileShaderModuleRefJsonSchema(description) {
             return {
                 type: "string",
@@ -1735,6 +1807,11 @@
 
             for (const item of compiled.customParams || []) {
                 properties[item.key] = this._compileCustomParamJsonSchema(Shader, item);
+            }
+
+            // every ShaderLayer accepts the pre/post module pipeline
+            if (!properties.pipeline) {
+                properties.pipeline = { $ref: "#/$defs/shaderLayerPipeline" };
             }
 
             return {
