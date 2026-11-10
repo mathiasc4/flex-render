@@ -6,8 +6,19 @@
                 return "channel-series";
             }
 
+            // GLSL comes from the delegate layer; see ShaderLayer.delegatesSampling
+            static get delegatesSampling() {
+                return true;
+            }
+
             static name() {
                 return "Channel Series";
+            }
+
+            // the delegate samples, so its migrated legacy filter nodes run in this wrapper's
+            // pipeline; its use_* come from channelRendererConfig.params, not the wrapper's
+            _collectLegacyPreNodes() {
+                return (this._delegateShader && this._delegateShader.__legacyFilterNodes) || [];
             }
 
             static description() {
@@ -232,7 +243,9 @@
                     refresh: this._refresh,
                     refetch: this._refetch,
                     // same namespace as this wrapper, so wrappers in different groups stay distinct
-                    uidPrefix: this._uidPrefix
+                    uidPrefix: this._uidPrefix,
+                    // the wrapper owns params.pipeline; the delegate's sampling uses the wrapper's pre stage
+                    pipelineHost: this
                 });
                 this._delegateShader.construct();
 

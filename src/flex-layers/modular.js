@@ -119,6 +119,8 @@
                 this.resetChannel(resetOptions, false, false);
                 this.resetMode(this._params, false, false);
                 this.resetFilters(this._params, false, false);
+                // graph sampling bypasses sampleChannel(), so only the post stage affects output
+                this.resetPipeline(this._params, false);
                 this._buildControls();
             }
 

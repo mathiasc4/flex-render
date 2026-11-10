@@ -15,6 +15,10 @@
      * @property {OpenSeadragon.TiledImage[] | number[]} tiledImages - Mapping from source indexes (the array index) to tiled images that provide the data for the shader layer.
      * @property {object} params - Settings for the ShaderLayer as well as parameters for its controls.
      * @property {object} cache - Cache object used by the ShaderLayer.
+     *
+     * Every ShaderLayer accepts `params.pipeline` ({@link ShaderLayerPipelineConfig}):
+     * `{enabled, pre: [{id, type, params}], post: [...]}`, chains of vec4 -> vec4
+     * ShaderModules run on each sampled value (`pre`) and on the layer's result (`post`).
      * @property {"float16"|"unorm8"} [precision] - Per-instance override of the first-pass color
      *      target precision, honored only while the renderer option `precision` is `"auto"`.
      *      `"float16"` demands a high-precision (RGBA16F) target even over 8-bit data — any
@@ -38,6 +42,8 @@
      * @property {Function} refresh     // callback to recreate the ShaderLayer when control layout changes
      * @property {Function} refetch     // callback to request source/config refetch work from the owning drawer
      * @property {WebGLImplementation} backend
+     * @property {ShaderLayer} [pipelineHost] - wrapper layer (time-series, channel-series) whose
+     *      pipeline this delegate layer uses instead of building its own
      */
 
     /**
@@ -124,6 +130,19 @@
             // parameters used for applying filters
             this.__filterPrefix = null;
             this.__filterSuffix = null;
+            // legacy use_* filters migrated to pre-pipeline nodes (see ShaderLayer.filterModules)
+            this.__legacyFilterNodes = [];
+
+            // pre/post module pipeline (params.pipeline), see ShaderLayerPipeline
+            this._pipeline = null;
+            this.__pipelineControlNames = new Set();
+            this.__controlsBuilt = false;
+            // a delegate layer (time-series / channel-series child) defers to its wrapper
+            this._pipelineHost = options.pipelineHost || null;
+            // transient before/after bypass (setPipelineBypass): a raw uniform, never cached
+            this.__pipelineBypass = false;
+            this.__bypassLocation = null;
+            this.__bypassNeedsLoad = true;
         }
 
         /**
@@ -138,6 +157,8 @@
             this.resetMode(this._params, false, false);
             // set up the filters to be applied to sampled data from the texture
             this.resetFilters(this._params, false, false);
+            // set up the pre/post module pipeline (controls are built by _buildControls)
+            this.resetPipeline(this._params, false);
 
             // build the ShaderLayer's controls
             this._buildControls();
@@ -540,6 +561,10 @@
             const glsl = [];
 
             for (const controlName in this._controls) {
+                // pipeline uniforms are emitted by getPipelineDefinition(), ahead of this block
+                if (this.__pipelineControlNames.has(controlName)) {
+                    continue;
+                }
                 let code = this[controlName].define();
                 if (code) {
                     // trim removes whitespace from beggining and the end of the string
@@ -547,6 +572,44 @@
                 }
             }
             return glsl.join("\n    ");
+        }
+
+        /**
+         * GLSL of this layer's pre/post pipeline: its control uniforms, per-node functions
+         * and the `<uid>_pipeline_pre` / `<uid>_pipeline_post` chain functions. The backend
+         * emits it before getFragmentShaderDefinition(), so helpers defined there may call
+         * sampleChannel(). Empty when the layer has no pipeline nodes.
+         *
+         * @return {string} glsl code
+         */
+        getPipelineDefinition() {
+            if (!this._pipeline || (!this._pipeline.hasPre() && !this._pipeline.hasPost())) {
+                return "";
+            }
+            const glsl = [];
+            for (const controlName of this.__pipelineControlNames) {
+                const control = this._controls[controlName];
+                const code = control && control.define();
+                if (code) {
+                    glsl.push(code.trim());
+                }
+            }
+            glsl.push(this._pipeline.getDefinition());
+            return glsl.join("\n");
+        }
+
+        /**
+         * @return {boolean} whether the layer's result passes through a post pipeline
+         */
+        hasPostPipeline() {
+            return !!(this._pipeline && this._pipeline.hasPost());
+        }
+
+        /**
+         * @return {string} GLSL name of the post chain function, vec4 -> vec4
+         */
+        getPostPipelineFunctionName() {
+            return this._pipeline ? this._pipeline.postFunctionName : "";
         }
 
         /**
@@ -619,7 +682,62 @@
                 this[controlName] = control;
             }
 
+            this.__controlsBuilt = true;
+            this._buildPipelineControls();
+
             this._warnOnUndeclaredParams(expandedControls);
+        }
+
+        /**
+         * Build the flattened pipeline controls (`pre_<node>_<ctl>`, `post_<node>_<ctl>`,
+         * `pipeline_enabled`) next to the layer's own controls.
+         * @private
+         */
+        _buildPipelineControls() {
+            this.__pipelineControlNames = new Set();
+            if (!this._pipeline) {
+                return;
+            }
+            const defs = this._pipeline.getControlDefinitions();
+            for (const name of Object.keys(defs)) {
+                if (this._controls[name]) {
+                    this._report("warn", "pipeline-control-collision",
+                        `ShaderLayer '${this.id}': pipeline control '${name}' collides with a layer control ` +
+                        `and is omitted.`, { control: name });
+                    continue;
+                }
+                const control = $.FlexRenderer.UIControls.build(this, name, defs[name],
+                    this.id + '_' + name, this._pipeline.getControlParams(name));
+                if (!control) {
+                    this._report("error", "control-build-failed",
+                        `ShaderLayer '${this.id}': pipeline control '${name}' could not be built and is omitted.`,
+                        { control: name });
+                    continue;
+                }
+                this._controls[name] = control;
+                this[name] = control;
+                this.__pipelineControlNames.add(name);
+            }
+        }
+
+        /**
+         * Remove (and destroy) the pipeline controls built by _buildPipelineControls().
+         * @private
+         */
+        _removePipelineControls() {
+            for (const name of this.__pipelineControlNames) {
+                const control = this._controls[name];
+                if (control && typeof control.destroy === "function") {
+                    try {
+                        control.destroy();
+                    } catch (e) {
+                        $.console.warn(`[flex-renderer] pipeline control '${name}' of layer '${this.id}' ` +
+                            `failed to destroy.`, e);
+                    }
+                }
+                this.removeControl(name);
+            }
+            this.__pipelineControlNames = new Set();
         }
 
         /**
@@ -650,7 +768,7 @@
             const customParams = this.constructor.customParams || {};
             const declared = Object.keys(expandedControls).concat(Object.keys(customParams));
             const undeclared = Object.keys(this._params).filter(
-                key => !key.startsWith("use_") &&
+                key => !key.startsWith("use_") && key !== "pipeline" &&
                     expandedControls[key] === undefined &&
                     customParams[key] === undefined
             );
@@ -662,7 +780,7 @@
             $.console.warn(`ShaderLayer '${this.id}' (${this.constructor.type()}): params ` +
                 `${undeclared.map(k => `'${k}'`).join(", ")} declared by no control or custom ` +
                 `param, and therefore ignored. Accepted here: ${declared.join(", ")}, ` +
-                `plus any use_* built-in.`);
+                `plus 'pipeline' and any use_* built-in.`);
         }
 
         _expandControlDefinitions(controlDefinitions) {
@@ -723,6 +841,8 @@
          * @param {object} [options] render options passed to every control's toHtml()
          * @param {string|Object<string, string|null>} [options.inputClasses] per-role input classes,
          *   see OpenSeadragon.FlexRenderer.UIControls.resolveInputClasses
+         * @param {boolean} [options.includePipeline=true] false omits the pre/post pipeline controls
+         *   (hosts that render their own adjustment panels)
          * @returns {String} HTML code
          */
         htmlControls(wrapper = null, classes = "", css = "", options = {}) {
@@ -735,10 +855,17 @@
                 if (opts.inputClasses !== undefined) {
                     options.inputClasses = opts.inputClasses;
                 }
+                if (opts.includePipeline !== undefined) {
+                    options.includePipeline = opts.includePipeline;
+                }
             }
             options = options && typeof options === "object" ? options : {};
+            const skipPipeline = options.includePipeline === false;
             let controlsHtmls = [];
             for (const controlName in this._controls) {
+                if (skipPipeline && this.__pipelineControlNames.has(controlName)) {
+                    continue;
+                }
                 const control = this[controlName];
                 controlsHtmls.push(control.toHtml(classes || "", css || "", options));
             }
@@ -780,6 +907,9 @@
             for (const controlName in this._controls) {
                 this[controlName].glLoaded(program, gl);
             }
+            this.__bypassLocation = this._pipeline ?
+                gl.getUniformLocation(program, this._pipeline.bypassUniformName) : null;
+            this.__bypassNeedsLoad = true;
         }
 
         /**
@@ -801,6 +931,10 @@
             }
             for (const controlName in this._controls) {
                 this[controlName].glDrawing(program, gl);
+            }
+            if (this.__bypassNeedsLoad && this.__bypassLocation) {
+                gl.uniform1i(this.__bypassLocation, this.__pipelineBypass ? 1 : 0);
+                this.__bypassNeedsLoad = false;
             }
         }
 
@@ -904,6 +1038,9 @@
             }
             const bucket = {};
             for (const key of keys) {
+                if (key === "__pipeline") {
+                    continue;
+                }
                 bucket[key] = root[key];
                 delete root[key];
             }
@@ -920,8 +1057,42 @@
          * @return {String}
          */
         loadProperty(name, defaultValue) {
-            const value = this.cache[name];
+            const value = this._cacheFor(name)[name];
             return value !== undefined ? value : defaultValue;
+        }
+
+        /**
+         * Type-independent cache bucket (`config.cache.__pipeline`) of the pre/post pipeline:
+         * adjustments survive changeShaderType and the per-type buckets.
+         * @return {Object}
+         * @private
+         */
+        get _pipelineCache() {
+            // normalizes a legacy flat root first, so the bucket is never swept into a type bucket
+            this.cache; // eslint-disable-line no-unused-expressions
+            const root = this.__shaderConfig.cache;
+            let bucket = root.__pipeline;
+            if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) {
+                bucket = root.__pipeline = {};
+            }
+            return bucket;
+        }
+
+        /**
+         * @param {String} name cache key
+         * @return {Object} the bucket the key lives in
+         * @private
+         */
+        _cacheFor(name) {
+            const pipeline = this._pipeline;
+            // the toggle lives in the pipeline bucket even before any node exists, so a value
+            // set early is honored once resetPipeline() builds a pipeline
+            const enabledName = ShaderLayer.PIPELINE_ENABLED_CONTROL;
+            if ((typeof name === "string" && name.startsWith(enabledName)) ||
+                    (pipeline && pipeline.ownsCacheKey(name))) {
+                return this._pipelineCache;
+            }
+            return this.cache;
         }
 
         /**
@@ -930,7 +1101,7 @@
          * @return {boolean}
          */
         hasProperty(name) {
-            return this.cache[name] !== undefined;
+            return this._cacheFor(name)[name] !== undefined;
         }
 
         /**
@@ -939,11 +1110,12 @@
          * @param {String} value
          */
         storeProperty(name, value) {
+            const bucket = this._cacheFor(name);
             if (value === undefined) {
-                delete this.cache[name];
+                delete bucket[name];
                 return;
             }
-            this.cache[name] = value;
+            bucket[name] = value;
         }
 
         /**
@@ -985,8 +1157,8 @@
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
         resetChannel(options = {}, force = true, evented = true) {
-            if (Object.keys(options) === 0) {
-                options = this._params;
+            if (!options || Object.keys(options).length === 0) {
+                options = this._params || {};
             }
 
             // regex to compare with value used with use_channel, to check its correctness
@@ -1134,7 +1306,7 @@
             const chanPattern = this.__channels[sourceIndex] || "r";
             const glslExpr = this._buildChannelSampleExpr(sourceIndex, textureCoords, baseChannel, chanPattern);
 
-            return raw ? glslExpr : this.filter(glslExpr);
+            return raw ? glslExpr : this._applyPrePipeline(glslExpr);
         }
 
         /**
@@ -1604,12 +1776,14 @@ ${code}
          * @param {boolean} [force=true] when false, cached values are prioritized
          */
         resetFilters(options = {}, force = true, evented = true) {
-            if (Object.keys(options) === 0) {
-                options = this._params;
+            if (!options || Object.keys(options).length === 0) {
+                options = this._params || {};
             }
 
             this.__filterPrefix = [];
             this.__filterSuffix = [];
+            this.__legacyFilterNodes = [];
+            const filterModules = ShaderLayer.filterModules || {};
             for (let key in this.constructor.filters) {
                 const predefined = this.constructor.defaultControls[key];
                 let value = predefined ? predefined.required : undefined;
@@ -1621,16 +1795,48 @@ ${code}
                     }
                 }
 
-                if (value !== undefined) {
-                    let filter = this.constructor.filters[key](value);
-                    this.__filterPrefix.push(filter[0]);
-                    this.__filterSuffix.push(filter[1]);
+                if (value === undefined) {
+                    continue;
                 }
+
+                // Built-in filters run as pre-pipeline nodes (ShaderLayer.filterModules); filters a
+                // host registered on ShaderLayer.filters keep the prefix/suffix one-liner.
+                // A wrapper (time-series, channel-series) never samples itself; its delegate
+                // builds the nodes and the wrapper pulls them into its own pipeline
+                // (_collectLegacyPreNodes), so the toggle and the bypass reach them too.
+                if (this.constructor.delegatesSampling) {
+                    continue;
+                }
+                const migration = $.FlexRenderer.ShaderLayerPipeline ? filterModules[key] : null;
+                if (migration) {
+                    const number = Number.parseFloat(value);
+                    this.__legacyFilterNodes.push({
+                        id: migration.id,
+                        type: migration.type,
+                        params: { [migration.param]: Number.isFinite(number) ? number : migration.fallback }
+                    });
+                    continue;
+                }
+
+                let filter = this.constructor.filters[key](value);
+                this.__filterPrefix.push(filter[0]);
+                this.__filterSuffix.push(filter[1]);
             }
             this.__filterPrefix = this.__filterPrefix.join("");
             this.__filterSuffix = this.__filterSuffix.reverse().join("");
 
-            if (evented) {
+            // after construct(), the migrated nodes live in the pipeline: rebuild it (the
+            // wrapper's, for a delegate)
+            const host = this._pipelineHost;
+            if (host) {
+                if (host.__controlsBuilt && typeof host.resetPipeline === "function") {
+                    host.resetPipeline(host._params, false);
+                }
+            } else if (this.__controlsBuilt) {
+                this.resetPipeline(this._params, false);
+            }
+
+            if (evented && this.backend && this.backend.renderer) {
                 this.backend.renderer.notifyVisualizationChanged({
                     reason: "filter-change",
                     shaderId: this.id,
@@ -1640,12 +1846,230 @@ ${code}
         }
 
         /**
-         * Apply global filters on value
+         * Apply global filters on value: the legacy use_* filters (run as migrated pre nodes) and
+         * any host-registered ShaderLayer.filters one-liner. params.pipeline.pre is NOT applied
+         * here; it runs on non-raw sampleChannel() results only, so raw samplers that filter a
+         * derived value (stain-separation, bipolar-heatmap) keep their legacy behavior.
          * @param {String} value GLSL code string, value to filter
          * @return {String} filtered value (GLSL oneliner without ';')
          */
         filter(value) {
-            return `${this.__filterPrefix}${value}${this.__filterSuffix}`;
+            const legacy = `${this.__filterPrefix || ""}${value}${this.__filterSuffix || ""}`;
+            const host = this._pipelineHost || this;
+            const pipeline = host._pipeline;
+            return pipeline && pipeline.hasLegacyPre() ? `${pipeline.legacyFunctionName}(${legacy})` : legacy;
+        }
+
+        /**
+         * Apply the whole pre stage (legacy filter nodes + params.pipeline.pre) to a sampled value.
+         * Used by non-raw sampleChannel().
+         * @param {String} value GLSL float/vec2/vec3/vec4 expression
+         * @return {String}
+         * @private
+         */
+        _applyPrePipeline(value) {
+            const legacy = `${this.__filterPrefix || ""}${value}${this.__filterSuffix || ""}`;
+            const host = this._pipelineHost || this;
+            const pipeline = host._pipeline;
+            return pipeline && pipeline.hasPre() ? `${pipeline.preFunctionName}(${legacy})` : legacy;
+        }
+
+        // PIPELINE LOGIC
+        /**
+         * Nodes migrated from legacy use_* filters that run first in this layer's pre stage.
+         * Wrappers (time-series, channel-series) return their delegate's nodes, since the
+         * delegate samples but the wrapper owns the pipeline.
+         * @return {ShaderLayerPipelineNodeConfig[]}
+         * @protected
+         */
+        _collectLegacyPreNodes() {
+            return this.__legacyFilterNodes || [];
+        }
+
+        /**
+         * (Re)build the pre/post module pipeline from `params.pipeline` (plus the nodes migrated
+         * from legacy use_gamma / use_exposure / use_logscale filters, which run first in `pre`).
+         *
+         * Like resetFilters(), this changes the generated GLSL: the caller rebuilds the program
+         * afterwards. Adding or removing a node needs this; changing a node's value does not
+         * (use getPipelineControl(...).set(...)), neither does toggling (setPipelineEnabled).
+         *
+         * A delegate layer created with `pipelineHost` never builds its own pipeline.
+         *
+         * @param {Object} [params=this._params] object carrying `pipeline`
+         * @param {boolean} [evented=true] whether to raise a visualization-change event
+         */
+        resetPipeline(params = undefined, evented = true) {
+            const source = params && typeof params === "object" ? params : (this._params || {});
+            const config = source.pipeline !== undefined ? source.pipeline : (this._params || {}).pipeline;
+
+            this._removePipelineControls();
+            this._pipeline = null;
+
+            const Pipeline = $.FlexRenderer.ShaderLayerPipeline;
+            if (!Pipeline || !$.FlexRenderer.ShaderModuleRegistry) {
+                // a build without the module system: no pipeline, legacy filters as one-liners
+                this.__pipelineStructureKey = "";
+                return;
+            }
+            // structural signature, compared by the navigator sync to detect rebuild-worthy changes
+            const legacyNodes = this._pipelineHost ? [] : (this._collectLegacyPreNodes() || []);
+            this.__pipelineStructureKey = Pipeline.structureKey(config) +
+                "|" + legacyNodes.map(n => n.id).join(",");
+
+            if (!this._pipelineHost) {
+                const pipeline = new Pipeline(this, config, legacyNodes);
+                if (pipeline.hasPre() || pipeline.hasPost()) {
+                    this._pipeline = pipeline;
+
+                    // The config is authoritative for the toggle and for migrated legacy values:
+                    // controls load the cache first, so seed it from the config.
+                    const enabledName = ShaderLayer.PIPELINE_ENABLED_CONTROL;
+                    const configured = config && typeof config === "object" ? config.enabled : undefined;
+                    if (configured !== undefined || !this.hasProperty(enabledName)) {
+                        this.storeProperty(enabledName, configured !== false);
+                    }
+                    for (const node of pipeline.stages.pre) {
+                        if (!node.legacy) {
+                            continue;
+                        }
+                        for (const [flatName, ref] of Object.entries(pipeline.controlMap)) {
+                            if (ref.stage === "pre" && ref.nodeId === node.id) {
+                                const value = pipeline.getControlParams(flatName);
+                                if (value !== undefined) {
+                                    this.storeProperty(flatName, value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (this.__controlsBuilt) {
+                this._buildPipelineControls();
+            }
+
+            // the bypass is transient layer state: it survives a node add/remove, and is dropped
+            // together with the pipeline. The uniform location is resolved again in glLoaded().
+            if (!this._pipeline) {
+                this.__pipelineBypass = false;
+                this.__bypassLocation = null;
+            }
+            this.__bypassNeedsLoad = true;
+
+            if (evented && this.backend && this.backend.renderer) {
+                this.backend.renderer.notifyVisualizationChanged({
+                    reason: "pipeline-change",
+                    shaderId: this.id,
+                    shaderType: this.constructor.type()
+                });
+            }
+        }
+
+        /**
+         * Control of one pipeline node, so callers never reconstruct the flattened name.
+         *
+         * @param {"pre"|"post"} stage
+         * @param {string} nodeId node id from params.pipeline
+         * @param {string} controlName module-local control name (e.g. "black" of `levels`)
+         * @return {OpenSeadragon.FlexRenderer.UIControls.IControl|undefined}
+         */
+        getPipelineControl(stage, nodeId, controlName) {
+            if (stage !== "pre" && stage !== "post") {
+                return undefined;
+            }
+            let name;
+            try {
+                name = $.FlexRenderer.sanitizeKey(`${stage}_${nodeId}_${controlName}`);
+            } catch (e) {
+                return undefined;
+            }
+            return this.__pipelineControlNames.has(name) ? this._controls[name] : undefined;
+        }
+
+        /**
+         * Switch the whole pipeline (pre and post, legacy filter nodes included) on or off.
+         * A uniform update, never a relink. This is a persisted setting: it writes
+         * `params.pipeline.enabled` and the `__pipeline` cache and raises `control-change`.
+         * For a transient before/after peek use setPipelineBypass().
+         *
+         * @param {boolean} enabled
+         */
+        setPipelineEnabled(enabled) {
+            enabled = !!enabled;
+            const params = this._params;
+            if (params && params.pipeline && typeof params.pipeline === "object") {
+                params.pipeline.enabled = enabled;
+            }
+            const name = ShaderLayer.PIPELINE_ENABLED_CONTROL;
+            const control = this.__pipelineControlNames.has(name) ? this._controls[name] : null;
+            if (control) {
+                control.set(enabled);
+            } else {
+                this.storeProperty(name, enabled);
+            }
+            if (typeof this.invalidate === "function") {
+                this.invalidate();
+            }
+        }
+
+        /**
+         * @return {boolean} whether the pipeline is currently applied (true when there is none)
+         */
+        isPipelineEnabled() {
+            const name = ShaderLayer.PIPELINE_ENABLED_CONTROL;
+            const control = this.__pipelineControlNames.has(name) ? this._controls[name] : null;
+            if (control && control.encoded !== undefined) {
+                return !!$.FlexRenderer.UIControls.getUiElement("bool").decode(control.encoded);
+            }
+            const params = this._params || {};
+            return !(params.pipeline && params.pipeline.enabled === false);
+        }
+
+        /**
+         * Transient before/after bypass of the whole pipeline (pre and post, legacy filter nodes
+         * included). Uploads a uniform only: no params write, no cache write, no
+         * visualization-change event, so a peek never becomes an undo step or session state.
+         * The navigator mirrors it. A layer without a pipeline ignores the call. The flag lives
+         * on the layer instance: it survives resetPipeline() while a pipeline remains, and is
+         * reset by changeShaderType() (a new instance).
+         *
+         * @param {boolean} bypassed
+         */
+        setPipelineBypass(bypassed) {
+            if (this._applyPipelineBypass(bypassed)) {
+                const host = this._pipelineHost || this;
+                if (typeof host.invalidate === "function") {
+                    host.invalidate();
+                }
+            }
+        }
+
+        /**
+         * @return {boolean} whether the pipeline is currently bypassed (false when there is none)
+         */
+        isPipelineBypassed() {
+            const host = this._pipelineHost || this;
+            return !!host._pipeline && !!host.__pipelineBypass;
+        }
+
+        /**
+         * setPipelineBypass() without the redraw request; used by the navigator sync.
+         * @param {boolean} bypassed
+         * @return {boolean} whether the layer has a pipeline (and so took the value)
+         * @private
+         */
+        _applyPipelineBypass(bypassed) {
+            const host = this._pipelineHost || this;
+            if (!host._pipeline) {
+                return false;
+            }
+            bypassed = !!bypassed;
+            if (host.__pipelineBypass !== bypassed) {
+                host.__pipelineBypass = bypassed;
+                host.__bypassNeedsLoad = true;
+            }
+            return true;
         }
 
         /**
@@ -1726,6 +2150,22 @@ ${code}
     ShaderLayer.customParams = {};
 
     /**
+     * True for wrapper layers whose GLSL is produced by an inner delegate ShaderLayer
+     * (time-series, channel-series). The wrapper owns the pre/post pipeline (the delegate is
+     * built with `pipelineHost: wrapper`) but does not run legacy use_* filters itself: the
+     * delegate migrates its own and the wrapper pulls them in via _collectLegacyPreNodes().
+     * @type {boolean}
+     */
+    ShaderLayer.delegatesSampling = false;
+
+    /**
+     * Flat name of the bool control backing setPipelineEnabled(); kept in sync with
+     * ShaderLayerPipeline.ENABLED_CONTROL.
+     * @type {string}
+     */
+    ShaderLayer.PIPELINE_ENABLED_CONTROL = "pipeline_enabled";
+
+    /**
      * Parameter to save shaderLayer's functionality that can be shared and reused between ShaderLayer instantions.
      */
     ShaderLayer.__globalIncludes = {};
@@ -1738,7 +2178,8 @@ ${code}
     //expression should be wrapped in parenthesses for safety: ["(....(", ")....)"] in the middle the
     // filtered variable will be inserted, notice pow does not need inner brackets since its an argument...
     //note: pow avoided in gamma, not usable on vectors, we use pow(x, y) === exp(y*log(x))
-    // TODO: implement filters as shader nodes instead!
+    // The built-in three run as pre-pipeline ShaderModule nodes, see ShaderLayer.filterModules;
+    // the one-liners below are kept for hosts that read them and as the contract for custom filters.
     ShaderLayer.filters = {};
     ShaderLayer.filters["use_gamma"] = (x) => ["exp(log(", `) / ${ShaderLayer.toShaderFloatString(x, 1)})`];
     ShaderLayer.filters["use_exposure"] = (x) => ["(1.0 - exp(-(", `)* ${ShaderLayer.toShaderFloatString(x, 1)}))`];
@@ -1751,6 +2192,20 @@ ${code}
     ShaderLayer.filterNames["use_gamma"] = "Gamma";
     ShaderLayer.filterNames["use_exposure"] = "Exposure";
     ShaderLayer.filterNames["use_logscale"] = "Logarithmic scale";
+
+    /**
+     * Legacy filters that run as pre-pipeline ShaderModule nodes instead of their
+     * ShaderLayer.filters one-liner. The use_* param stays a read alias: its value seeds
+     * the node's control, and the node runs before params.pipeline.pre. The node is
+     * flattened like any pipeline node (e.g. `pre_legacy_gamma_gamma`) and is subject to
+     * setPipelineEnabled().
+     *
+     * @type {Object<string, {id: string, type: string, param: string, fallback: number}>}
+     */
+    ShaderLayer.filterModules = {};
+    ShaderLayer.filterModules["use_gamma"] = { id: "legacy_gamma", type: "gamma", param: "gamma", fallback: 1 };
+    ShaderLayer.filterModules["use_exposure"] = { id: "legacy_exposure", type: "exposure", param: "exposure", fallback: 1 };
+    ShaderLayer.filterModules["use_logscale"] = { id: "legacy_logscale", type: "logscale", param: "scale", fallback: 1 };
 
 
     $.FlexRenderer.ShaderLayer = ShaderLayer;

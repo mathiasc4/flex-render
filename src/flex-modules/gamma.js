@@ -1,7 +1,7 @@
 (function ($) {
 
     $.FlexRenderer.ShaderModuleRegistry.register(
-        class HeatmapModule extends $.FlexRenderer.ShaderModule {
+        class GammaModule extends $.FlexRenderer.ShaderModule {
             static type() {
                 return "gamma";
             }
@@ -11,7 +11,7 @@
             }
 
             static description() {
-                return "Applies a gamma filter to a color.";
+                return "Applies a gamma curve, rgb^(1/gamma), to a color. Alpha is kept. Identity at gamma 1.";
             }
 
             static inputs() {
@@ -26,9 +26,13 @@
 
             static outputs() {
                 return {
-                    adjusted: {
+                    color: {
                         type: ["vec4"],
                         description: "RGBA color produced."
+                    },
+                    adjusted: {
+                        type: ["vec4"],
+                        description: "Legacy alias of 'color'."
                     },
                 };
             }
@@ -45,9 +49,13 @@
 
             getOutputDefinitions() {
                 return {
-                    adjusted: {
+                    color: {
                         type: "vec4",
                         description: "RGBA color produced."
+                    },
+                    adjusted: {
+                        type: "vec4",
+                        description: "Legacy alias of 'color'."
                     },
                 };
             }
@@ -56,11 +64,11 @@
                 return {
                     gamma: {
                         default: {
-                            type: "range_input",
+                            type: "range",
                             default: 1,
-                            min: 0,
+                            min: 0.1,
                             max: 10,
-                            step: 0.1,
+                            step: 0.05,
                             title: "Gamma",
                         },
                         accepts: (type) => type === "float"
@@ -70,16 +78,20 @@
 
             compile(context) {
                 const color = context.input("color");
-                const output = context.output("inverted", "vec4");
-
-                const gamma = this.control("gamma").sample();
+                const output = context.output("color", "vec4");
+                // De-normalized: the range control uploads (v-min)/(max-min). The domain floor
+                // (0.1) keeps the division away from zero.
+                const gamma = this.sampleValue("gamma");
 
                 return {
                     statements: `
-    vec4 color = ${color};
-    vec4 ${output} = vec4(pow(color.rgb, vec3(1.0 / ${gamma})), color.a);
+    vec4 ${output} = vec4(pow(max((${color}).rgb, vec3(0.0)), vec3(1.0 / max(${gamma}, 1e-4))), (${color}).a);
 `,
                     outputs: {
+                        color: {
+                            type: "vec4",
+                            expr: output,
+                        },
                         adjusted: {
                             type: "vec4",
                             expr: output,

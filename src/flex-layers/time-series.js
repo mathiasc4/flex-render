@@ -6,8 +6,38 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
         return "time-series";
     }
 
+    // GLSL comes from the delegate layer; see ShaderLayer.delegatesSampling
+    static get delegatesSampling() {
+        return true;
+    }
+
     static name() {
         return "Time Series";
+    }
+
+    // the delegate samples, so its migrated legacy filter nodes run in this wrapper's pipeline
+    _collectLegacyPreNodes() {
+        return (this._renderer && this._renderer.__legacyFilterNodes) || [];
+    }
+
+    resetFilters(options = {}, force = true, evented = true) {
+        super.resetFilters(options, force, evented);
+        // the delegate params copy this wrapper's use_* (see _getDelegateShaderConfig), so a
+        // filter change on the wrapper (e.g. navigator sync) must reach the delegate too
+        const delegate = this._renderer;
+        if (!delegate || typeof delegate.resetFilters !== "function") {
+            return;
+        }
+        const source = options && Object.keys(options).length ? options : (this._params || {});
+        const delegateParams = delegate._params || (delegate._params = {});
+        for (const key in this.constructor.filters) {
+            if (source[key] === undefined) {
+                delete delegateParams[key];
+            } else {
+                delegateParams[key] = source[key];
+            }
+        }
+        delegate.resetFilters(delegateParams, force, false);
     }
 
     static description() {
@@ -263,7 +293,9 @@ $.FlexRenderer.ShaderLayerRegistry.register(class extends $.FlexRenderer.ShaderL
             refresh: this._refresh,
             refetch: this._refetch,
             // same namespace as this wrapper, so wrappers in different groups stay distinct
-            uidPrefix: this._uidPrefix
+            uidPrefix: this._uidPrefix,
+            // the wrapper owns params.pipeline; the delegate's sampling uses the wrapper's pre stage
+            pipelineHost: this
         });
         this._renderer.construct();
         this._renderer.removeControl("opacity");
