@@ -3082,25 +3082,29 @@ $.FlexRenderer.WebGL20.FirstPassProgram = class extends $.FlexRenderer.WGLProgra
         // mantissa, silently undoing the float target. Stays mediump for RGBA8.
         const targetPrecision = this.context.colorTargetGlslPrecision;
 
-        // Vertex stage matches the fragment stage: mismatched precision on the shared
-        // varyings is a link error on some drivers.
+        // Geometry always runs in highp, independent of targetPrecision. Drivers that honor
+        // mediump as real fp16 (e.g. Mesa radeonsi via ANGLE's GLES backend) otherwise place
+        // tile corners several framebuffer pixels off, leaving transparent seams between tiles.
+        // The shared uniform and the varyings are declared highp explicitly in both stages:
+        // precision mismatches on them are link errors, and the fragment default float
+        // precision follows targetPrecision.
         this.vertexShader = `#version 300 es
 precision mediump int;
-precision ${targetPrecision} float;
+precision highp float;
 
 layout(location = 0) in mat3 a_transform_matrix;
 // Generic payload args. Used for texture positions, vector positions and colors.
 layout(location = 4) in vec4 a_payload0; // first 4 raster texture coords or vector positions and atlas texture ID (x, y, z, textureId)
 layout(location = 5) in vec4 a_payload1; // second 4 raster texture coords or vector colors or icon parameters (x, y, width, height)
 
-uniform vec2 u_renderClippingParams;
+uniform highp vec2 u_renderClippingParams;
 uniform mat3 u_geomMatrix;
 
 flat out int instance_id;
-out vec2 v_texture_coords;
-out float v_vecDepth;
+out highp vec2 v_texture_coords;
+out highp float v_vecDepth;
 flat out int v_textureId;
-out vec4 v_vecColor;
+out highp vec4 v_vecColor;
 
 const vec3 viewport[4] = vec3[4] (
     vec3(0.0, 1.0, 1.0),
@@ -3138,13 +3142,13 @@ precision ${targetPrecision} float;
 precision ${targetPrecision} sampler2D;
 precision ${targetPrecision} sampler2DArray;
 
-uniform vec2 u_renderClippingParams;
+uniform highp vec2 u_renderClippingParams;
 
 flat in int instance_id;
-in vec2 v_texture_coords;
-in float v_vecDepth;
+in highp vec2 v_texture_coords;
+in highp float v_vecDepth;
 flat in int v_textureId;
-in vec4 v_vecColor;
+in highp vec4 v_vecColor;
 
 uniform sampler2DArray u_textures[${this._maxTextures}];
 uniform int u_tileLayer;
